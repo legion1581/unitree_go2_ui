@@ -1,0 +1,201 @@
+import type { ConNotifyResponse, ConnectionCallbacks, SdpPayload } from '../types';
+import { aesEncrypt, aesDecrypt, aesGcmDecrypt, generateAesKey } from '../crypto/aes';
+import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
+import { LOCAL_PORT, LOCAL_OFFER_PORT } from './modes';
+import { WebRTCConnection } from './webrtc';
+
+function proxyUrl(path: string): string {
+  return `/robot-api${path}`;
+}
+
+function proxyHeaders(host: string, contentType?: string): Record<string, string> {
+  const headers: Record<string, string> = { 'X-Robot-Host': host };
+  if (contentType) headers['Content-Type'] = contentType;
+  return headers;
+}
+
+function extractPathEnding(data1: string): string {
+  const tail = data1.slice(-10);
+  const lookup = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'];
+  let path = '';
+  for (let i = 0; i < tail.length; i += 2) {
+    const ch = tail[i + 1];
+    const idx = lookup.indexOf(ch);
+    path += idx >= 0 ? idx.toString() : '0';
+  }
+  return path;
+}
+
+async function decryptData1(resp: ConNotifyResponse): Promise<string> {
+  if (resp.data2 === 2) {
+    return await aesGcmDecrypt(resp.data1);
+  }
+  return resp.data1;
+}
+
+async function detectPort(ip: string): Promise<'new' | 'old'> {
+  // Try port 9991 first (newer firmware), then 8081 (older firmware)
+  try {
+    const resp = await fetch(proxyUrl('/con_notify'), {
+      method: 'POST',
+      headers: proxyHeaders(`${ip}:${LOCAL_PORT}`),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (resp.ok) {
+      console.log(`[go2] Port ${LOCAL_PORT} available (new method)`);
+      return 'new';
+    }
+  } catch { /* port not available */ }
+
+  try {
+    const resp = await fetch(proxyUrl('/'), {
+      method: 'HEAD',
+      headers: proxyHeaders(`${ip}:${LOCAL_OFFER_PORT}`),
+      signal: AbortSignal.timeout(3000),
+    });
+    // Even a 404 means the port is reachable
+    if (resp.status !== 502) {
+      console.log(`[go2] Port ${LOCAL_OFFER_PORT} available (old method)`);
+      return 'old';
+    }
+  } catch { /* port not available */ }
+
+  throw new Error(`Robot not responding at ${ip} — verify IP and that the robot is powered on`);
+}
+
+export async function connectLocal(
+  ip: string,
+  mode: 'AP' | 'STA-L',
+  callbacks: ConnectionCallbacks,
+  onStep?: (msg: string) => void,
+): Promise<WebRTCConnection> {
+  console.log(`[go2] Connecting to ${ip} in ${mode} mode...`);
+
+  onStep?.(`Detecting robot at ${ip}...`);
+  const method = await detectPort(ip);
+  console.log(`[go2] Using ${method} method`);
+
+  onStep?.('Creating WebRTC offer...');
+  const webrtc = new WebRTCConnection(callbacks);
+  const sdpString = await webrtc.createOffer();
+  console.log(`[go2] Created WebRTC offer (${sdpString.length} bytes)`);
+
+  const id = mode === 'AP' ? 'abcd' : 'STA_localNetwork';
+  const sdpPayload: SdpPayload = {
+    id,
+    sdp: sdpString,
+    type: 'offer',
+    token: '',
+  };
+
+  try {
+    let answerSdp: string;
+
+    onStep?.('Exchanging SDP with robot...');
+    if (method === 'new') {
+      answerSdp = await exchangeSdpNew(ip, sdpPayload);
+    } else {
+      answerSdp = await exchangeSdpOld(ip, sdpPayload);
+    }
+
+    if (answerSdp === 'reject') {
+      webrtc.close();
+      throw new Error('Device rejected connection — another client may be connected');
+    }
+
+    console.log(`[go2] Received answer SDP (${answerSdp.length} bytes)`);
+    console.log(`[go2] Answer SDP starts with: ${answerSdp.slice(0, 80)}...`);
+
+    onStep?.('Setting remote description...');
+    await webrtc.setAnswer(answerSdp);
+    console.log(`[go2] Remote description set, waiting for connection...`);
+
+    return webrtc;
+  } catch (err) {
+    webrtc.close();
+    throw err;
+  }
+}
+
+async function exchangeSdpNew(ip: string, payload: SdpPayload): Promise<string> {
+  const host = `${ip}:${LOCAL_PORT}`;
+
+  // Step 1: con_notify — get public key
+  console.log(`[go2] Sending con_notify to ${host}...`);
+  const notifyResp = await fetch(proxyUrl('/con_notify'), {
+    method: 'POST',
+    headers: proxyHeaders(host),
+  });
+
+  if (!notifyResp.ok) {
+    throw new Error(`con_notify failed: HTTP ${notifyResp.status}`);
+  }
+
+  const notifyB64 = await notifyResp.text();
+  const notifyJson: ConNotifyResponse = JSON.parse(atob(notifyB64));
+  console.log(`[go2] con_notify response: data2=${notifyJson.data2}, data1 length=${notifyJson.data1.length}`);
+
+  // Decrypt data1 if encrypted (data2 === 2)
+  const data1 = await decryptData1(notifyJson);
+  console.log(`[go2] Decrypted data1 length: ${data1.length}`);
+
+  // Extract public key (strip 10-char padding each end)
+  const pubKeyB64 = data1.slice(10, data1.length - 10);
+  const publicKey = loadPublicKey(pubKeyB64);
+
+  // Compute path ending from decrypted data1
+  const pathEnding = extractPathEnding(data1);
+  console.log(`[go2] Path ending: ${pathEnding}`);
+
+  // Step 2: con_ing — encrypted SDP exchange
+  const aesKey = generateAesKey();
+  console.log(`[go2] AES key: ${aesKey}`);
+
+  const encryptedSdp = await aesEncrypt(JSON.stringify(payload), aesKey);
+  const encryptedKey = rsaEncrypt(aesKey, publicKey);
+
+  const body = JSON.stringify({
+    data1: encryptedSdp,
+    data2: encryptedKey,
+  });
+
+  console.log(`[go2] Sending con_ing_${pathEnding} (body: ${body.length} bytes)...`);
+  const ingResp = await fetch(proxyUrl(`/con_ing_${pathEnding}`), {
+    method: 'POST',
+    headers: proxyHeaders(host, 'application/x-www-form-urlencoded'),
+    body,
+  });
+
+  if (!ingResp.ok) {
+    const errText = await ingResp.text();
+    throw new Error(`con_ing failed: HTTP ${ingResp.status} — ${errText}`);
+  }
+
+  const encryptedAnswer = await ingResp.text();
+  console.log(`[go2] con_ing response length: ${encryptedAnswer.length}`);
+
+  const decryptedAnswer = await aesDecrypt(encryptedAnswer, aesKey);
+  console.log(`[go2] Decrypted answer: ${decryptedAnswer.slice(0, 100)}...`);
+
+  const answerJson = JSON.parse(decryptedAnswer);
+  return answerJson.sdp;
+}
+
+async function exchangeSdpOld(ip: string, payload: SdpPayload): Promise<string> {
+  const host = `${ip}:${LOCAL_OFFER_PORT}`;
+
+  console.log(`[go2] Sending SDP to ${host}/offer...`);
+  const resp = await fetch(proxyUrl('/offer'), {
+    method: 'POST',
+    headers: proxyHeaders(host, 'application/json'),
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`offer failed: HTTP ${resp.status}`);
+  }
+
+  const answer = await resp.json();
+  console.log(`[go2] Received answer from old endpoint`);
+  return answer.sdp;
+}

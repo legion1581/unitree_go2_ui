@@ -1,0 +1,137 @@
+import type { ConnectionCallbacks, DataChannelMessage } from '../types';
+import type { WebRTCConnection } from '../connection/webrtc';
+import { handleValidation } from './validation';
+import { startHeartbeat, stopHeartbeat } from './heartbeat';
+import { DATA_CHANNEL_TYPE } from './topics';
+
+export class DataChannelHandler {
+  private webrtc: WebRTCConnection;
+  private validated = false;
+  private callbacks: ConnectionCallbacks;
+  lastValidationKey: string = '';
+  /** App-level handler for topic data messages (set by App after construction). */
+  onTopicData: ((msg: DataChannelMessage) => void) | null = null;
+
+  constructor(webrtc: WebRTCConnection, callbacks: ConnectionCallbacks) {
+    this.webrtc = webrtc;
+    this.callbacks = callbacks;
+  }
+
+  handleMessage(msg: DataChannelMessage): void {
+    if (msg.type === DATA_CHANNEL_TYPE.VALIDATION) {
+      if (msg.data && msg.data !== 'Validation Ok.') {
+        this.lastValidationKey = msg.data as string;
+      }
+      handleValidation(msg, this.webrtc, () => {
+        this.validated = true;
+        startHeartbeat(this.webrtc);
+        this.callbacks.onValidated();
+      });
+      return;
+    }
+
+    // Robot sends "Validation Needed." as an err message if it missed our response
+    if (msg.type === DATA_CHANNEL_TYPE.ERR) {
+      const info = (msg as { info?: string }).info;
+      if (info === 'Validation Needed.') {
+        console.log('[go2:dc] Re-sending validation (err: Validation Needed)');
+        handleValidation(
+          { type: DATA_CHANNEL_TYPE.VALIDATION, topic: '', data: this.lastValidationKey },
+          this.webrtc,
+          () => {
+            this.validated = true;
+            startHeartbeat(this.webrtc);
+            this.callbacks.onValidated();
+          },
+        );
+        return;
+      }
+    }
+
+    // Handle RTC inner requests (RTT probes, network status responses, etc.)
+    if (msg.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ) {
+      const info = (msg as { info?: { req_type?: string; status?: string } }).info;
+      if (info && (info as { req_type?: string }).req_type === 'rtt_probe_send_from_mechine') {
+        // Echo RTT probes back to the robot (required for connection health)
+        this.webrtc.send({
+          type: DATA_CHANNEL_TYPE.RTC_INNER_REQ,
+          topic: '',
+          data: info,
+        });
+        return;
+      }
+      // Forward other RTC_INNER_REQ messages (e.g. network status) to app handler
+      if (this.onTopicData) {
+        this.onTopicData(msg);
+      }
+      return;
+    }
+
+    // Silently ignore heartbeat echoes and error messages
+    if (msg.type === DATA_CHANNEL_TYPE.HEARTBEAT) return;
+    if (msg.type === DATA_CHANNEL_TYPE.ERRORS) return;
+
+    // Forward topic data to the app-level handler (avoids recursive loop with callbacks.onMessage)
+    if (this.onTopicData) {
+      this.onTopicData(msg);
+    }
+  }
+
+  subscribe(topic: string): void {
+    this.webrtc.send({
+      type: DATA_CHANNEL_TYPE.SUBSCRIBE,
+      topic,
+    });
+  }
+
+  unsubscribe(topic: string): void {
+    this.webrtc.send({
+      type: DATA_CHANNEL_TYPE.UNSUBSCRIBE,
+      topic,
+    });
+  }
+
+  publish(topic: string, data: unknown): void {
+    this.webrtc.send({
+      type: DATA_CHANNEL_TYPE.MSG,
+      topic,
+      data,
+    });
+  }
+
+  /** Send a message with a specific data channel type (e.g. VID to enable video). */
+  publishTyped(topic: string, data: unknown, type: string): void {
+    this.webrtc.send({ type, topic, data });
+  }
+
+  /** Send a request matching the SDK format: header + parameter (JSON string) + binary. */
+  publishRequest(topic: string, apiId: number, parameter: string = '{}'): void {
+    this.webrtc.send({
+      type: DATA_CHANNEL_TYPE.REQUEST,
+      topic,
+      data: {
+        header: {
+          identity: {
+            id: Math.floor(Math.random() * 2147483647),
+            api_id: apiId,
+          },
+          policy: {
+            priority: 0,
+            noreply: false,
+          },
+        },
+        parameter,
+        binary: [],
+      },
+    });
+  }
+
+  isValidated(): boolean {
+    return this.validated;
+  }
+
+  destroy(): void {
+    stopHeartbeat();
+    this.validated = false;
+  }
+}

@@ -1,0 +1,349 @@
+export interface RobotStatus {
+  batteryPercent: number;
+  batteryCurrent: number;
+  batteryVoltage: number;
+  batteryCycles: number;
+  batteryTemp: number;
+  motorStates: Array<{ q: number; dq: number; tau: number; temp: number; lost: number }>;
+  networkType: string;
+  footForce: number[];
+  imuTemp: number;
+  mode: number;
+  gaitType: number;
+  position: number[];
+  velocity: number[];
+  firmwareVersion: string;
+  motionMode: string;
+  lidarState: string;
+  selfTestResults: string[];
+}
+
+const MOTOR_NAMES = [
+  'FR Hip', 'FR Thigh', 'FR Calf',
+  'FL Hip', 'FL Thigh', 'FL Calf',
+  'RR Hip', 'RR Thigh', 'RR Calf',
+  'RL Hip', 'RL Thigh', 'RL Calf',
+];
+
+const MODE_NAMES: Record<number, string> = {
+  0: 'Idle', 1: 'Balancing', 2: 'Walking', 3: 'Running',
+  5: 'Stair Climbing', 6: 'Standing', 7: 'Sitting', 9: 'Damping',
+};
+
+export class StatusPage {
+  private container: HTMLElement;
+  private vals: Map<string, HTMLElement> = new Map();
+  private motorRows: HTMLElement[] = [];
+  private footForceRow: HTMLElement | null = null;
+  private lidarBody: HTMLElement | null = null;
+  private built = false;
+  private updateTimer = 0;
+  private pendingState: RobotStatus | null = null;
+
+  constructor(parent: HTMLElement, initialState: RobotStatus, onBack: () => void) {
+    this.container = document.createElement('div');
+    this.container.className = 'status-page';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'page-header';
+    const backBtn = document.createElement('button');
+    backBtn.className = 'page-back-btn';
+    backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
+    backBtn.addEventListener('click', onBack);
+    header.appendChild(backBtn);
+    const title = document.createElement('h2');
+    title.textContent = 'Robot Status';
+    header.appendChild(title);
+    this.container.appendChild(header);
+
+    const content = document.createElement('div');
+    content.className = 'page-content';
+    this.buildSections(content);
+    this.container.appendChild(content);
+    parent.appendChild(this.container);
+
+    this.built = true;
+    this.applyState(initialState);
+  }
+
+  /** Throttled update — max ~4 updates/sec to prevent flicker. */
+  update(state: RobotStatus): void {
+    this.pendingState = state;
+    if (this.updateTimer) return;
+    this.updateTimer = window.setTimeout(() => {
+      this.updateTimer = 0;
+      if (this.pendingState) {
+        this.applyState(this.pendingState);
+        this.pendingState = null;
+      }
+    }, 250);
+  }
+
+  private applyState(s: RobotStatus): void {
+    if (!this.built) return;
+
+    // Firmware
+    this.setVal('fw-version', s.firmwareVersion || 'Fetching...');
+    this.setVal('fw-mode', s.motionMode || 'Unknown');
+
+    // Battery
+    const batColor = s.batteryPercent <= 33 ? '#FF3D3D' : s.batteryPercent <= 66 ? '#FCD335' : '#42CF55';
+    this.setVal('bat-pct', `${s.batteryPercent}%`, batColor);
+    const fill = this.vals.get('bat-fill');
+    if (fill) { fill.style.width = `${s.batteryPercent}%`; fill.style.background = batColor; }
+    this.setVal('bat-voltage', `${(s.batteryVoltage / 1000).toFixed(1)} V`);
+    this.setVal('bat-current', `${s.batteryCurrent} mA`);
+    this.setVal('bat-temp', `${s.batteryTemp}°C`);
+    this.setVal('bat-cycles', `${s.batteryCycles}`);
+
+    // Motors
+    this.updateMotors(s);
+
+    // IMU
+    const modeName = MODE_NAMES[s.mode] || `Mode ${s.mode}`;
+    this.setVal('imu-mode', modeName);
+    this.setVal('imu-gait', `${s.gaitType}`);
+    this.setVal('imu-temp', `${s.imuTemp.toFixed(1)}°C`);
+    this.setVal('imu-pos', s.position.map((v) => v.toFixed(2)).join(', '));
+    this.setVal('imu-vel', s.velocity.map((v) => v.toFixed(2)).join(', '));
+
+    // LiDAR
+    this.updateLidar(s);
+
+    // Network
+    this.setVal('net-type', s.networkType || 'Unknown');
+  }
+
+  private setVal(id: string, text: string, color?: string): void {
+    const el = this.vals.get(id);
+    if (!el) return;
+    if (el.textContent !== text) el.textContent = text;
+    if (color) el.style.color = color;
+  }
+
+  private buildSections(content: HTMLElement): void {
+    // Firmware
+    content.appendChild(this.buildSection('Firmware', [
+      this.row('Package Version', 'fw-version'),
+      this.row('Motion Mode', 'fw-mode'),
+    ]));
+
+    // Battery
+    const batPctRow = this.row('Charge', 'bat-pct');
+    const barTrack = document.createElement('div');
+    barTrack.className = 'status-bar-track';
+    const barFill = document.createElement('div');
+    barFill.className = 'status-bar-fill';
+    barTrack.appendChild(barFill);
+    this.vals.set('bat-fill', barFill);
+
+    content.appendChild(this.buildSection('Battery', [
+      batPctRow, barTrack,
+      this.row('Voltage', 'bat-voltage'),
+      this.row('Current', 'bat-current'),
+      this.row('Temperature', 'bat-temp'),
+      this.row('Charge Cycles', 'bat-cycles'),
+    ]));
+
+    // Motors
+    const motorEls: HTMLElement[] = [];
+    const motorHeader = document.createElement('div');
+    motorHeader.className = 'status-motor-header';
+    for (const label of ['Motor', 'Pos', 'Vel', 'Torque', 'Temp', 'Lost']) {
+      const s = document.createElement('span');
+      s.textContent = label;
+      motorHeader.appendChild(s);
+    }
+    motorEls.push(motorHeader);
+
+    for (let i = 0; i < 12; i++) {
+      const r = document.createElement('div');
+      r.className = 'status-motor-row';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'motor-name';
+      nameSpan.textContent = MOTOR_NAMES[i];
+      r.appendChild(nameSpan);
+      for (let c = 0; c < 5; c++) {
+        const cell = document.createElement('span');
+        cell.textContent = '-';
+        r.appendChild(cell);
+      }
+      this.motorRows.push(r);
+      motorEls.push(r);
+    }
+
+    const summary = document.createElement('div');
+    summary.className = 'status-summary';
+    summary.appendChild(this.row('Communication Quality', 'motor-quality'));
+    summary.appendChild(this.row('Max Motor Temp', 'motor-max-temp'));
+    motorEls.push(summary);
+
+    const footSummary = document.createElement('div');
+    footSummary.className = 'status-summary';
+    const footLabel = document.createElement('div');
+    footLabel.className = 'status-row';
+    const footLabelText = document.createElement('span');
+    footLabelText.className = 'status-label';
+    footLabelText.textContent = 'Foot Force';
+    footLabel.appendChild(footLabelText);
+    footSummary.appendChild(footLabel);
+    const footHeader = document.createElement('div');
+    footHeader.className = 'status-motor-header';
+    footHeader.style.gridTemplateColumns = 'repeat(4,1fr)';
+    for (const label of ['FR', 'FL', 'RR', 'RL']) {
+      const s = document.createElement('span');
+      s.textContent = label;
+      footHeader.appendChild(s);
+    }
+    footSummary.appendChild(footHeader);
+    this.footForceRow = document.createElement('div');
+    this.footForceRow.className = 'status-motor-row';
+    this.footForceRow.style.gridTemplateColumns = 'repeat(4,1fr)';
+    for (let c = 0; c < 4; c++) {
+      const cell = document.createElement('span');
+      cell.textContent = '-';
+      this.footForceRow.appendChild(cell);
+    }
+    footSummary.appendChild(this.footForceRow);
+    motorEls.push(footSummary);
+
+    content.appendChild(this.buildSection('Motor Data', motorEls));
+
+    // IMU
+    content.appendChild(this.buildSection('IMU & Position', [
+      this.row('Robot Mode', 'imu-mode'),
+      this.row('Gait Type', 'imu-gait'),
+      this.row('IMU Temperature', 'imu-temp'),
+      this.row('Position (x, y, z)', 'imu-pos'),
+      this.row('Velocity (x, y, z)', 'imu-vel'),
+    ]));
+
+    // LiDAR
+    this.lidarBody = document.createElement('div');
+    this.lidarBody.className = 'status-section-body';
+    const lidarWait = document.createElement('div');
+    lidarWait.className = 'status-row';
+    const lidarWaitLabel = document.createElement('span');
+    lidarWaitLabel.className = 'status-label';
+    lidarWaitLabel.textContent = 'Waiting for LiDAR state...';
+    lidarWait.appendChild(lidarWaitLabel);
+    this.lidarBody.appendChild(lidarWait);
+    content.appendChild(this.buildSection('LiDAR', [], this.lidarBody));
+
+    // Network
+    content.appendChild(this.buildSection('Network', [
+      this.row('Connection Type', 'net-type'),
+    ]));
+  }
+
+  private buildSection(title: string, children: HTMLElement[], customBody?: HTMLElement): HTMLElement {
+    const section = document.createElement('div');
+    section.className = 'status-section';
+    const heading = document.createElement('div');
+    heading.className = 'status-section-title';
+    heading.textContent = title;
+    section.appendChild(heading);
+
+    if (customBody) {
+      section.appendChild(customBody);
+    } else {
+      const body = document.createElement('div');
+      body.className = 'status-section-body';
+      for (const child of children) body.appendChild(child);
+      section.appendChild(body);
+    }
+    return section;
+  }
+
+  private row(label: string, valId: string): HTMLElement {
+    const r = document.createElement('div');
+    r.className = 'status-row';
+    const lbl = document.createElement('span');
+    lbl.className = 'status-label';
+    lbl.textContent = label;
+    const val = document.createElement('span');
+    val.className = 'status-value';
+    val.textContent = '-';
+    r.appendChild(lbl);
+    r.appendChild(val);
+    this.vals.set(valId, val);
+    return r;
+  }
+
+  private updateMotors(s: RobotStatus): void {
+    if (s.motorStates.length === 0) return;
+
+    let totalLost = 0;
+    let maxTemp = 0;
+
+    s.motorStates.forEach((m, i) => {
+      const row = this.motorRows[i];
+      if (!row) return;
+      const cells = row.children;
+      // cells: [name, pos, vel, torque, temp, lost]
+      cells[1].textContent = (m.q ?? 0).toFixed(2);
+      cells[2].textContent = (m.dq ?? 0).toFixed(1);
+      cells[3].textContent = (m.tau ?? 0).toFixed(1);
+      const temp = m.temp ?? 0;
+      const tempColor = temp > 70 ? '#FF3D3D' : temp > 50 ? '#FCD335' : '#42CF55';
+      (cells[4] as HTMLElement).textContent = `${temp}°`;
+      (cells[4] as HTMLElement).style.color = tempColor;
+      const lost = m.lost ?? 0;
+      const lostColor = lost > 0 ? '#FF3D3D' : '#42CF55';
+      (cells[5] as HTMLElement).textContent = `${lost}`;
+      (cells[5] as HTMLElement).style.color = lostColor;
+      totalLost += lost;
+      if (temp > maxTemp) maxTemp = temp;
+    });
+
+    const qualColor = totalLost > 0 ? '#FF3D3D' : '#42CF55';
+    this.setVal('motor-quality', totalLost === 0 ? 'Good' : `${totalLost} lost`, qualColor);
+    const maxTempColor = maxTemp > 70 ? '#FF3D3D' : maxTemp > 50 ? '#FCD335' : '#42CF55';
+    this.setVal('motor-max-temp', `${maxTemp}°C`, maxTempColor);
+
+    if (s.footForce.length > 0 && this.footForceRow) {
+      const cells = this.footForceRow.children;
+      s.footForce.forEach((f, i) => {
+        if (cells[i]) cells[i].textContent = `${f}`;
+      });
+    }
+  }
+
+  private lidarKeys: string[] = [];
+
+  private updateLidar(s: RobotStatus): void {
+    if (!this.lidarBody) return;
+    if (!s.lidarState) return;
+
+    try {
+      const lidar = JSON.parse(s.lidarState) as Record<string, unknown>;
+      const keys = Object.keys(lidar);
+
+      // Only add new rows if keys changed — never remove/rebuild existing DOM
+      if (keys.length !== this.lidarKeys.length || keys.some((k, i) => k !== this.lidarKeys[i])) {
+        // Clear the "Waiting..." placeholder on first data
+        if (this.lidarKeys.length === 0) {
+          this.lidarBody.innerHTML = '';
+        }
+        // Add rows for any new keys
+        for (const key of keys) {
+          if (!this.vals.has(`lidar-${key}`)) {
+            const r = this.row(this.formatKey(key), `lidar-${key}`);
+            this.lidarBody.appendChild(r);
+          }
+        }
+        this.lidarKeys = keys;
+      }
+
+      // Update values only
+      for (const [key, value] of Object.entries(lidar)) {
+        this.setVal(`lidar-${key}`, String(value));
+      }
+    } catch { /* ignore */ }
+  }
+
+  private formatKey(key: string): string {
+    return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
