@@ -114,7 +114,7 @@ server/
 
 ## Sport Commands (API IDs)
 
-Actions and modes use the MCF sport API IDs matching firmware v1.1.x:
+Actions and modes use the MCF sport API IDs matching firmware v1.1.11:
 
 | Action | ID | Mode | ID |
 |--------|----|------|----|
