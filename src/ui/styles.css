@@ -709,7 +709,7 @@ body {
   bottom: 60px;
   left: 50%;
   transform: translateX(-50%);
-  width: 340px;
+  width: 480px;
   max-height: 360px;
   overflow-y: auto;
   background: rgba(17, 17, 39, 0.95);
@@ -764,7 +764,7 @@ body {
 
 .action-popup-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
 }
 
