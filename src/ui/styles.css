@@ -533,7 +533,7 @@ body {
 /* ── Emergency Stop (APK: swipe-left to activate) ── */
 .emergency-stop {
   position: absolute;
-  top: 138px;
+  top: 142px;
   right: 0;
   height: 28px;
   background-color: #ff4848;
