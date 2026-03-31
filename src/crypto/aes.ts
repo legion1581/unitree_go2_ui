@@ -37,6 +37,10 @@ const CON_NOTIFY_KEY = new Uint8Array([
  *
  * Pass `key` (16 / 24 / 32 raw bytes) to override the legacy static key —
  * required for `data2 === 3` payloads.
+ *
+ * Implemented via node-forge (not WebCrypto) so it works in non-secure
+ * contexts — i.e. when the dev server is opened from a LAN URL like
+ * `http://192.168.x.x:5173`, where `crypto.subtle` is undefined.
  */
 export async function aesGcmDecrypt(
   encryptedBase64: string,
@@ -48,21 +52,16 @@ export async function aesGcmDecrypt(
   const nonce = raw.slice(raw.length - 28, raw.length - 16);
   const tag = raw.slice(raw.length - 16);
 
-  const cipherWithTag = new Uint8Array(ciphertext.length + tag.length);
-  cipherWithTag.set(ciphertext);
-  cipherWithTag.set(tag, ciphertext.length);
+  const keyBuf = forge.util.createBuffer(String.fromCharCode(...key));
+  const iv = forge.util.createBuffer(String.fromCharCode(...nonce));
 
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw', key as BufferSource, 'AES-GCM', false, ['decrypt'],
-  );
+  const decipher = forge.cipher.createDecipher('AES-GCM', keyBuf);
+  decipher.start({ iv, tag: forge.util.createBuffer(String.fromCharCode(...tag)) });
+  decipher.update(forge.util.createBuffer(String.fromCharCode(...ciphertext)));
+  const ok = decipher.finish();
+  if (!ok) throw new Error('AES-GCM decryption failed (authentication tag mismatch)');
 
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce },
-    cryptoKey,
-    cipherWithTag,
-  );
-
-  return new TextDecoder().decode(decrypted);
+  return forge.util.decodeUtf8(decipher.output.getBytes());
 }
 
 /** Convert a hex-encoded AES key (e.g. `dev.key` from `device/bind/list`) to raw bytes. */
