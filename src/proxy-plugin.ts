@@ -65,6 +65,26 @@ export function robotProxyPlugin(): Plugin {
   return {
     name: 'robot-proxy',
     configureServer(server) {
+      const defaultPrintUrls = server.printUrls.bind(server);
+
+      server.printUrls = () => {
+        const urls = server.resolvedUrls;
+        if (!urls) {
+          defaultPrintUrls();
+          return;
+        }
+
+        for (const url of urls.local) {
+          server.config.logger.info(`  ->  Local:   ${url}`);
+        }
+        for (const url of urls.network) {
+          server.config.logger.info(`  ->  Network: ${url}`);
+        }
+        if (urls.network.length === 0) {
+          server.config.logger.info('  ->  Network: run `npm run dev:host` to expose on your LAN');
+        }
+      };
+
       // Handle /scan requests directly (no separate scanner process needed)
       server.middlewares.use((req, res, next) => {
         const url = new URL(req.url || '/', 'http://localhost');
