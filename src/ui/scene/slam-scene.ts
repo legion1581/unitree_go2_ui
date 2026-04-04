@@ -40,10 +40,10 @@ export class SlamScene {
 
     this.scene = new THREE.Scene();
 
-    // Z-up camera
+    // Z-up camera — top-down angled view like APK
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
     this.camera.up.set(0, 0, 1);
-    this.camera.position.set(0, -8, 10);
+    this.camera.position.set(0, -5, 8);
 
     // Controls
     this.controls = new OrbitControls(this.camera, canvas);
@@ -66,15 +66,15 @@ export class SlamScene {
     // Origin axes
     this.scene.add(new THREE.AxesHelper(2));
 
-    // Filtered point cloud (accumulated map — white)
+    // Filtered point cloud (accumulated map — green)
     const filteredGeo = new THREE.BufferGeometry();
-    const filteredMat = new THREE.PointsMaterial({ size: 0.04, color: 0xcccccc });
+    const filteredMat = new THREE.PointsMaterial({ size: 0.03, color: 0x42CF55 });
     this.filteredPoints = new THREE.Points(filteredGeo, filteredMat);
     this.scene.add(this.filteredPoints);
 
-    // Laser point cloud (current scan)
+    // Laser point cloud (current scan — white)
     const laserGeo = new THREE.BufferGeometry();
-    const laserMat = new THREE.PointsMaterial({ size: 0.08, color: 0x00ff88 });
+    const laserMat = new THREE.PointsMaterial({ size: 0.05, color: 0xffffff });
     this.laserPoints = new THREE.Points(laserGeo, laserMat);
     this.scene.add(this.laserPoints);
 
@@ -146,9 +146,18 @@ export class SlamScene {
 
   // ── Robot Position ──
 
+  private firstPose = true;
+
   updateRobotPose(position: { x: number; y: number; z: number }, yaw: number): void {
     this.robotMarker.position.set(position.x, position.y, position.z);
     this.robotMarker.rotation.set(0, 0, yaw);
+
+    // Auto-center camera on robot on first pose
+    if (this.firstPose) {
+      this.firstPose = false;
+      this.controls.target.set(position.x, position.y, 0);
+      this.camera.position.set(position.x, position.y - 5, 8);
+    }
   }
 
   // ── Movement Trace ──
