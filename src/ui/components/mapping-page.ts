@@ -1,5 +1,6 @@
 import { SlamScene, type ClickMode } from '../scene/slam-scene';
 import { RTC_TOPIC } from '../../protocol/topics';
+import SlamWorker from '../../workers/slam-worker?worker';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
 
@@ -27,6 +28,8 @@ export class MappingPage {
   private logEl!: HTMLElement;
   private activeClickBtn: HTMLButtonElement | null = null;
   private patrolCount = 0;
+  private slamWorker: Worker | null = null;
+  private workerReady = false;
 
   constructor(
     parent: HTMLElement,
@@ -86,6 +89,28 @@ export class MappingPage {
       this.slamScene.onMapClick = (x, y) => this.handleMapClick(x, y);
     });
 
+    // Init SLAM worker (libvoxel.wasm for point cloud processing)
+    const worker = new SlamWorker();
+    this.slamWorker = worker;
+    worker.onmessage = (e: MessageEvent) => {
+      const msg = e.data;
+      if (msg.type === 'ready') {
+        this.workerReady = true;
+        console.log('[slam] Worker ready');
+      } else if (msg.type === 'newMap') {
+        const { output, directOutput } = msg.data as {
+          output: Float32Array;
+          directOutput: Float32Array;
+          outputCount: number;
+          directCount: number;
+        };
+        // output = accumulated/deduplicated map (green)
+        // directOutput = current scan (white)
+        this.slamScene?.updatePointCloud(output);
+        this.slamScene?.updateLaserCloud(directOutput);
+      }
+    };
+
     // Subscribe to USLAM topics
     for (const topic of USLAM_TOPICS) {
       this.subscribe(topic);
@@ -108,8 +133,7 @@ export class MappingPage {
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
         this.slamScene?.clearPointCloud();
         this.slamScene?.clearTrace();
-        this.accumulatedPositions = [];
-        this.cloudLogCount = 0;
+        this.slamWorker?.postMessage('clear');
         this.sendCmd('mapping/start');
         this.setState('mapping');
       }));
@@ -391,44 +415,8 @@ export class MappingPage {
     }
   }
 
-  private cloudLogCount = 0;
-  private accumulatedPositions: number[] = [];
-  private maxAccumulatedPoints = 500000;
-  private accUpdateTimer = 0;
-
-  /**
-   * Decode cloud_world_ds point cloud data.
-   * Format: each point is 6 bytes (3 × Uint16), quantized to bounds.
-   * Dequantize: value = uint16 / 65535 * (max - min) + min
-   */
-  private decodeCloudPoints(
-    buffer: ArrayBuffer,
-    xmin: number, xmax: number,
-    ymin: number, ymax: number,
-    zmin: number, zmax: number,
-  ): Float32Array {
-    const u8 = new Uint8Array(buffer);
-    const numPoints = Math.floor(u8.length / 6);
-    const positions = new Float32Array(numPoints * 3);
-    const xRange = xmax - xmin;
-    const yRange = ymax - ymin;
-    const zRange = zmax - zmin;
-
-    for (let i = 0; i < numPoints; i++) {
-      const off = i * 6;
-      // Uint16 little-endian
-      const ux = u8[off] | (u8[off + 1] << 8);
-      const uy = u8[off + 2] | (u8[off + 3] << 8);
-      const uz = u8[off + 4] | (u8[off + 5] << 8);
-      positions[i * 3] = (ux / 65535) * xRange + xmin;
-      positions[i * 3 + 1] = (uy / 65535) * yRange + ymin;
-      positions[i * 3 + 2] = (uz / 65535) * zRange + zmin;
-    }
-    return positions;
-  }
-
   private handleCloudWorld(data: unknown): void {
-    if (!this.slamScene) return;
+    if (!this.slamWorker || !this.workerReady) return;
 
     const d = data as Record<string, unknown>;
     let buffer: ArrayBuffer | null = null;
@@ -441,45 +429,20 @@ export class MappingPage {
 
     if (!buffer || buffer.byteLength < 6) return;
 
-    const xmin = (d.xmin as number) ?? 0;
-    const xmax = (d.xmax as number) ?? 1;
-    const ymin = (d.ymin as number) ?? 0;
-    const ymax = (d.ymax as number) ?? 1;
-    const zmin = (d.zmin as number) ?? 0;
-    const zmax = (d.zmax as number) ?? 1;
-
-    // Decode quantized Uint16 → Float32 XYZ
-    const positions = this.decodeCloudPoints(buffer, xmin, xmax, ymin, ymax, zmin, zmax);
-
-    if (this.cloudLogCount < 3) {
-      console.log(`[slam] Decoded ${positions.length / 3} points`,
-        `sample: (${positions[0]?.toFixed(3)}, ${positions[1]?.toFixed(3)}, ${positions[2]?.toFixed(3)})`,
-        `bounds: x[${xmin.toFixed(2)},${xmax.toFixed(2)}] y[${ymin.toFixed(2)},${ymax.toFixed(2)}] z[${zmin.toFixed(2)},${zmax.toFixed(2)}]`);
-      this.cloudLogCount++;
-    }
-
-    // Current scan (green)
-    this.slamScene.updateLaserCloud(positions);
-
-    // Accumulate into map (white)
-    for (let i = 0; i < positions.length; i++) {
-      this.accumulatedPositions.push(positions[i]);
-    }
-
-    // Cap accumulated points
-    if (this.accumulatedPositions.length > this.maxAccumulatedPoints * 3) {
-      this.accumulatedPositions = this.accumulatedPositions.slice(
-        this.accumulatedPositions.length - this.maxAccumulatedPoints * 3,
-      );
-    }
-
-    // Throttle accumulated map geometry rebuild
-    if (!this.accUpdateTimer) {
-      this.accUpdateTimer = window.setTimeout(() => {
-        this.accUpdateTimer = 0;
-        this.slamScene?.updatePointCloud(new Float32Array(this.accumulatedPositions));
-      }, 500);
-    }
+    // Forward to SLAM worker for dequantization via libvoxel.wasm
+    // Worker accumulates and deduplicates points internally
+    this.slamWorker.postMessage({
+      type: 'newMap',
+      data: {
+        xmin: d.xmin ?? 0,
+        xmax: d.xmax ?? 1,
+        ymin: d.ymin ?? 0,
+        ymax: d.ymax ?? 1,
+        zmin: d.zmin ?? 0,
+        zmax: d.zmax ?? 1,
+        data: buffer,
+      },
+    });
   }
 
   private odomLogCount = 0;
@@ -578,6 +541,8 @@ export class MappingPage {
 
   destroy(): void {
     this.cleanup();
+    this.slamWorker?.terminate();
+    this.slamWorker = null;
     this.slamScene?.destroy();
     this.slamScene = null;
   }
