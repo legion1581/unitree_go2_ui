@@ -101,16 +101,47 @@ export class MappingPage {
       body.appendChild(this.stateEl);
     }));
 
-    // Mapping section
-    sidebar.appendChild(this.buildSection('Mapping', (body) => {
-      body.appendChild(this.btn('Start Mapping', 'mapping-btn-start', () => {
+    // Map Management section
+    sidebar.appendChild(this.buildSection('Map', (body) => {
+      const row = document.createElement('div');
+      row.className = 'mapping-btn-row';
+      row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
+        this.slamScene?.clearPointCloud();
+        this.slamScene?.clearTrace();
         this.sendCmd('mapping/start');
         this.setState('mapping');
       }));
-      body.appendChild(this.btn('Stop Mapping', 'mapping-btn-stop', () => {
+      row.appendChild(this.btn('Stop & Save', 'mapping-btn-stop', () => {
         this.sendCmd('mapping/stop');
         this.setState('idle');
       }));
+      body.appendChild(row);
+
+      // Map ID input for loading saved maps
+      const mapIdRow = document.createElement('div');
+      mapIdRow.className = 'mapping-map-id-row';
+      const mapIdInput = document.createElement('input');
+      mapIdInput.className = 'mapping-input';
+      mapIdInput.placeholder = 'Map ID';
+      mapIdInput.id = 'map-id-input';
+      mapIdRow.appendChild(mapIdInput);
+      const loadBtn = this.btn('Load', '', () => {
+        const id = mapIdInput.value.trim();
+        if (id) {
+          const b64 = btoa(id);
+          this.sendCmd(`common/set_map_id/${b64}`);
+          this.addLog(`Loading map: ${id}`);
+        }
+      });
+      loadBtn.style.width = 'auto';
+      loadBtn.style.minWidth = '60px';
+      mapIdRow.appendChild(loadBtn);
+      body.appendChild(mapIdRow);
+
+      const getIdBtn = this.btn('Get Current Map ID', '', () => {
+        this.sendCmd('common/get_map_id');
+      });
+      body.appendChild(getIdBtn);
     }));
 
     // Localization section
@@ -326,7 +357,7 @@ export class MappingPage {
         this.handleNavPath(data);
         break;
       case RTC_TOPIC.USLAM_CLOUD_MAP:
-        console.log('[slam] Cloud map data received:', typeof data);
+        this.handleCloudMap(data);
         break;
     }
   }
@@ -338,32 +369,73 @@ export class MappingPage {
 
     // State transitions from server messages
     if (msg.includes('mapping/stop/success')) this.setState('idle');
+    if (msg.includes('mapping/start/success')) this.setState('mapping');
     if (msg.includes('localization') && msg.includes('succeed')) this.setState('localized');
     if (msg.includes('REACHED')) this.setState('localized');
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
-  }
 
-  private handleCloudWorld(data: unknown): void {
-    if (!this.slamScene) return;
-
-    // Point cloud data — could be binary ArrayBuffer or object with data field
-    if (data instanceof ArrayBuffer) {
-      const positions = new Float32Array(data);
-      this.slamScene.updatePointCloud(positions);
-    } else if (data && typeof data === 'object') {
-      const d = data as { data?: ArrayBuffer | Float32Array; indices?: unknown; geometryData?: unknown };
-      if (d.data instanceof ArrayBuffer) {
-        this.slamScene.updatePointCloud(new Float32Array(d.data));
-      } else if (d.data instanceof Float32Array) {
-        this.slamScene.updatePointCloud(d.data);
-      } else {
-        console.log('[slam] Cloud world data format:', Object.keys(d));
+    // Map ID response — populate the input field
+    if (msg.includes('get_map_id') || msg.includes('map_id')) {
+      const input = this.container.querySelector('#map-id-input') as HTMLInputElement;
+      if (input) {
+        // Try to extract map ID from the message
+        try {
+          const decoded = atob(msg.split('/').pop() || '');
+          if (decoded) input.value = decoded;
+        } catch {
+          // Not base64, show raw
+        }
       }
     }
   }
 
+  private cloudLogCount = 0;
+
+  private handleCloudWorld(data: unknown): void {
+    if (!this.slamScene) return;
+
+    // Log first few messages to debug data format
+    if (this.cloudLogCount < 5) {
+      console.log('[slam] Cloud world data type:', typeof data,
+        data instanceof ArrayBuffer ? `ArrayBuffer(${data.byteLength})` : '',
+        data && typeof data === 'object' && !(data instanceof ArrayBuffer) ? `keys: ${Object.keys(data as object)}` : '');
+      this.cloudLogCount++;
+    }
+
+    // Extract the binary payload - may be nested in data.data from binary framing
+    let buffer: ArrayBuffer | null = null;
+
+    if (data instanceof ArrayBuffer) {
+      buffer = data;
+    } else if (data && typeof data === 'object') {
+      const d = data as Record<string, unknown>;
+      if (d.data instanceof ArrayBuffer) {
+        buffer = d.data;
+      }
+    }
+
+    if (buffer && buffer.byteLength >= 12) {
+      // Parse point cloud: positions as Float32 XYZ triples
+      const positions = new Float32Array(buffer);
+      if (positions.length >= 3) {
+        this.slamScene.updatePointCloud(positions);
+        if (this.cloudLogCount <= 5) {
+          console.log(`[slam] Point cloud: ${positions.length / 3} points`);
+        }
+      }
+    }
+  }
+
+  private odomLogCount = 0;
+
   private handleOdom(data: unknown): void {
     if (!this.slamScene) return;
+
+    if (this.odomLogCount < 3) {
+      console.log('[slam] Odom data:', JSON.stringify(data).slice(0, 300));
+      this.odomLogCount++;
+    }
+
     const d = data as {
       pose?: { position?: { x: number; y: number; z: number }; orientation?: { x: number; y: number; z: number; w: number } };
       position?: { x: number; y: number; z: number };
@@ -398,6 +470,45 @@ export class MappingPage {
         positions[i * 3 + 2] = p.z ?? 0;
       });
       this.slamScene.updateNavPath(positions);
+    }
+  }
+
+  private handleCloudMap(data: unknown): void {
+    console.log('[slam] Cloud map received, type:', typeof data,
+      data instanceof ArrayBuffer ? `ArrayBuffer(${data.byteLength})` : '');
+
+    // PCD data may arrive as binary ArrayBuffer or nested in data.data
+    let buffer: ArrayBuffer | null = null;
+    if (data instanceof ArrayBuffer) {
+      buffer = data;
+    } else if (data && typeof data === 'object') {
+      const d = data as Record<string, unknown>;
+      if (d.data instanceof ArrayBuffer) {
+        buffer = d.data;
+      }
+    }
+
+    if (buffer) {
+      // Offer download as .pcd file
+      const blob = new Blob([buffer], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `go2_map_${Date.now()}.pcd`;
+      a.click();
+      URL.revokeObjectURL(url);
+      this.addLog(`Map downloaded: ${a.download} (${(buffer.byteLength / 1024).toFixed(1)} KB)`);
+
+      // Also try to load it as point cloud for visualization
+      try {
+        const positions = new Float32Array(buffer);
+        if (positions.length >= 3) {
+          this.slamScene?.updatePointCloud(positions);
+          this.addLog(`Map loaded: ${positions.length / 3} points`);
+        }
+      } catch {
+        this.addLog('Map data format not recognized as raw Float32 points');
+      }
     }
   }
 

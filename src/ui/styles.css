@@ -1482,6 +1482,26 @@ body {
   width: auto;
 }
 
+.mapping-map-id-row {
+  display: flex;
+  gap: 6px;
+}
+
+.mapping-input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a2d35;
+  background: #12141a;
+  color: #e0e0e0;
+  font-size: 12px;
+  outline: none;
+}
+
+.mapping-input:focus {
+  border-color: #6879e4;
+}
+
 /* State indicator */
 .mapping-state {
   display: flex;
