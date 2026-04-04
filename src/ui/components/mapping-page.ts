@@ -108,6 +108,8 @@ export class MappingPage {
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
         this.slamScene?.clearPointCloud();
         this.slamScene?.clearTrace();
+        this.accumulatedPositions = [];
+        this.cloudLogCount = 0;
         this.sendCmd('mapping/start');
         this.setState('mapping');
       }));
@@ -390,39 +392,58 @@ export class MappingPage {
   }
 
   private cloudLogCount = 0;
+  private accumulatedPositions: number[] = [];
+  private maxAccumulatedPoints = 500000; // 500k points max
+  private accUpdateTimer = 0;
 
   private handleCloudWorld(data: unknown): void {
     if (!this.slamScene) return;
 
-    // Log first few messages to debug data format
-    if (this.cloudLogCount < 5) {
-      console.log('[slam] Cloud world data type:', typeof data,
-        data instanceof ArrayBuffer ? `ArrayBuffer(${data.byteLength})` : '',
-        data && typeof data === 'object' && !(data instanceof ArrayBuffer) ? `keys: ${Object.keys(data as object)}` : '');
-      this.cloudLogCount++;
-    }
-
-    // Extract the binary payload - may be nested in data.data from binary framing
+    // Extract binary data from the message
     let buffer: ArrayBuffer | null = null;
 
     if (data instanceof ArrayBuffer) {
       buffer = data;
     } else if (data && typeof data === 'object') {
       const d = data as Record<string, unknown>;
+      // cloud_world_ds format: {header, is_dense, xmin..zmax, data: ArrayBuffer}
       if (d.data instanceof ArrayBuffer) {
         buffer = d.data;
       }
     }
 
-    if (buffer && buffer.byteLength >= 12) {
-      // Parse point cloud: positions as Float32 XYZ triples
-      const positions = new Float32Array(buffer);
-      if (positions.length >= 3) {
-        this.slamScene.updatePointCloud(positions);
-        if (this.cloudLogCount <= 5) {
-          console.log(`[slam] Point cloud: ${positions.length / 3} points`);
-        }
-      }
+    if (!buffer || buffer.byteLength < 12) return;
+
+    const positions = new Float32Array(buffer);
+    if (positions.length < 3) return;
+
+    if (this.cloudLogCount < 3) {
+      console.log(`[slam] Point cloud: ${positions.length / 3} points, accumulated: ${this.accumulatedPositions.length / 3}`);
+      this.cloudLogCount++;
+    }
+
+    // Show current scan as green laser points
+    this.slamScene.updateLaserCloud(positions);
+
+    // Accumulate into the filtered (white) map
+    for (let i = 0; i < positions.length; i++) {
+      this.accumulatedPositions.push(positions[i]);
+    }
+
+    // Cap accumulated points to avoid memory issues
+    if (this.accumulatedPositions.length > this.maxAccumulatedPoints * 3) {
+      // Keep the most recent half
+      this.accumulatedPositions = this.accumulatedPositions.slice(
+        this.accumulatedPositions.length - this.maxAccumulatedPoints * 3,
+      );
+    }
+
+    // Throttle accumulated map geometry rebuild to max every 500ms
+    if (!this.accUpdateTimer) {
+      this.accUpdateTimer = window.setTimeout(() => {
+        this.accUpdateTimer = 0;
+        this.slamScene?.updatePointCloud(new Float32Array(this.accumulatedPositions));
+      }, 500);
     }
   }
 

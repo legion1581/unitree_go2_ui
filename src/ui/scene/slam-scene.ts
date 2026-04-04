@@ -66,9 +66,9 @@ export class SlamScene {
     // Origin axes
     this.scene.add(new THREE.AxesHelper(2));
 
-    // Filtered point cloud (accumulated map)
+    // Filtered point cloud (accumulated map — white)
     const filteredGeo = new THREE.BufferGeometry();
-    const filteredMat = new THREE.PointsMaterial({ size: 0.05, vertexColors: true });
+    const filteredMat = new THREE.PointsMaterial({ size: 0.04, color: 0xcccccc });
     this.filteredPoints = new THREE.Points(filteredGeo, filteredMat);
     this.scene.add(this.filteredPoints);
 
