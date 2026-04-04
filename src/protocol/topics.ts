@@ -28,6 +28,17 @@ export const RTC_TOPIC = {
   BATTERY_ALARM: 'rt/lf/battery_alarm',
   UWB_STATE: 'rt/uwbstate',
   PUBLIC_NETWORK_STATUS: 'rt/public_network_status',
+
+  // USLAM (3D LiDAR Mapping / Navigation / Patrol)
+  USLAM_CMD: 'rt/uslam/client_command',
+  USLAM_SERVER_LOG: 'rt/uslam/server_log',
+  USLAM_CLOUD_WORLD: 'rt/uslam/frontend/cloud_world_ds',
+  USLAM_ODOM: 'rt/uslam/frontend/odom',
+  USLAM_CLOUD_MAP: 'rt/uslam/cloud_map',
+  USLAM_LOC_ODOM: 'rt/uslam/localization/odom',
+  USLAM_LOC_CLOUD: 'rt/uslam/localization/cloud_world',
+  USLAM_NAV_PATH: 'rt/uslam/navigation/global_path',
+  USLAM_GRID_MAP: 'rt/mapping/grid_map',
 } as const;
 
 export const SPORT_CMD = {

@@ -980,7 +980,7 @@ body {
 }
 
 .hub-container {
-  width: 480px;
+  width: 640px;
   text-align: center;
 }
 
@@ -1363,4 +1363,154 @@ body {
   font-size: 11px;
   color: #FCD335;
   animation: toastFade 3s forwards;
+}
+
+/* ── 3D LiDAR Mapping Page ── */
+.app-root.mapping-screen {
+  background: #0f1114;
+  overflow: hidden;
+}
+
+.mapping-page {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.mapping-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.mapping-viewport {
+  flex: 1;
+  position: relative;
+  background: #1a1d23;
+}
+
+.mapping-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mapping-sidebar {
+  width: 280px;
+  overflow-y: auto;
+  background: #12141a;
+  border-left: 1px solid #1f2229;
+  padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2d35 transparent;
+}
+
+.mapping-section {
+  margin-bottom: 14px;
+  background: rgba(26, 29, 35, 0.5);
+  border-radius: 8px;
+  padding: 10px 12px;
+  border: 1px solid #1f2229;
+}
+
+.mapping-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6879e4;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.mapping-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mapping-btn {
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid #2a2d35;
+  background: #1a1d23;
+  color: #ccc;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: center;
+}
+
+.mapping-btn:active {
+  background: #252830;
+}
+
+.mapping-btn-start {
+  border-color: rgba(66, 207, 85, 0.3);
+  color: #42CF55;
+}
+
+.mapping-btn-stop {
+  border-color: rgba(255, 61, 61, 0.3);
+  color: #FF3D3D;
+}
+
+.mapping-btn-warn {
+  border-color: rgba(252, 211, 53, 0.3);
+  color: #FCD335;
+}
+
+.mapping-btn-click-mode {
+  border-color: rgba(104, 121, 228, 0.3);
+  color: #6879e4;
+}
+
+.mapping-btn-click-mode.active {
+  background: rgba(104, 121, 228, 0.2);
+  border-color: #6879e4;
+  color: #fff;
+}
+
+.mapping-btn-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+}
+
+.mapping-btn-row .mapping-btn {
+  width: auto;
+}
+
+/* State indicator */
+.mapping-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.mapping-state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Server log */
+.mapping-log {
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: #888;
+  scrollbar-width: thin;
+  scrollbar-color: #2a2d35 transparent;
+}
+
+.mapping-log-line {
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(26, 29, 35, 0.5);
+  word-break: break-all;
 }
