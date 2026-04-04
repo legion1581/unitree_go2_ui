@@ -115,6 +115,8 @@ export class SlamScene {
 
   // ── Point Cloud ──
 
+  private pcLogCount = 0;
+
   updatePointCloud(positions: Float32Array, colors?: Float32Array): void {
     const geo = this.filteredPoints.geometry;
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -122,6 +124,11 @@ export class SlamScene {
       geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     }
     geo.computeBoundingSphere();
+    if (this.pcLogCount < 3) {
+      const bs = geo.boundingSphere;
+      console.log(`[slam-scene] Filtered points set: ${positions.length / 3} pts, bounds: center(${bs?.center.x.toFixed(2)},${bs?.center.y.toFixed(2)},${bs?.center.z.toFixed(2)}) r=${bs?.radius.toFixed(2)}`);
+      this.pcLogCount++;
+    }
   }
 
   updateLaserCloud(positions: Float32Array): void {

@@ -418,7 +418,18 @@ export class MappingPage {
     if (positions.length < 3) return;
 
     if (this.cloudLogCount < 3) {
-      console.log(`[slam] Point cloud: ${positions.length / 3} points, accumulated: ${this.accumulatedPositions.length / 3}`);
+      const numPts = positions.length / 3;
+      // Log first few point coordinates and bounds to verify data format
+      const sample = [];
+      for (let i = 0; i < Math.min(3, numPts); i++) {
+        sample.push(`(${positions[i*3].toFixed(3)}, ${positions[i*3+1].toFixed(3)}, ${positions[i*3+2].toFixed(3)})`);
+      }
+      // Also extract bounds from the parent message
+      const d = data as Record<string, unknown>;
+      console.log(`[slam] Point cloud: ${numPts} points, accumulated: ${this.accumulatedPositions.length / 3}`,
+        `\n  sample: ${sample.join(', ')}`,
+        `\n  bounds: x[${d.xmin},${d.xmax}] y[${d.ymin},${d.ymax}] z[${d.zmin},${d.zmax}]`,
+        `\n  buffer bytes: ${buffer!.byteLength}, floats: ${positions.length}`);
       this.cloudLogCount++;
     }
 
