@@ -418,18 +418,18 @@ export class MappingPage {
     if (positions.length < 3) return;
 
     if (this.cloudLogCount < 3) {
-      const numPts = positions.length / 3;
-      // Log first few point coordinates and bounds to verify data format
-      const sample = [];
-      for (let i = 0; i < Math.min(3, numPts); i++) {
-        sample.push(`(${positions[i*3].toFixed(3)}, ${positions[i*3+1].toFixed(3)}, ${positions[i*3+2].toFixed(3)})`);
-      }
-      // Also extract bounds from the parent message
       const d = data as Record<string, unknown>;
-      console.log(`[slam] Point cloud: ${numPts} points, accumulated: ${this.accumulatedPositions.length / 3}`,
-        `\n  sample: ${sample.join(', ')}`,
+      // Log raw bytes to understand encoding
+      const u8 = new Uint8Array(buffer!);
+      const u16 = new Uint16Array(buffer!);
+      const i16 = new Int16Array(buffer!);
+      console.log(`[slam] Point cloud: ${positions.length / 3} pts, accumulated: ${this.accumulatedPositions.length / 3}`,
         `\n  bounds: x[${d.xmin},${d.xmax}] y[${d.ymin},${d.ymax}] z[${d.zmin},${d.zmax}]`,
-        `\n  buffer bytes: ${buffer!.byteLength}, floats: ${positions.length}`);
+        `\n  buffer: ${buffer!.byteLength} bytes`,
+        `\n  first 24 bytes (Uint8):`, Array.from(u8.slice(0, 24)),
+        `\n  first 12 as Uint16:`, Array.from(u16.slice(0, 12)),
+        `\n  first 12 as Int16:`, Array.from(i16.slice(0, 12)),
+        `\n  first 6 as Float32:`, Array.from(positions.slice(0, 6)));
       this.cloudLogCount++;
     }
 
