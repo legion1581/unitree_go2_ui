@@ -393,63 +393,87 @@ export class MappingPage {
 
   private cloudLogCount = 0;
   private accumulatedPositions: number[] = [];
-  private maxAccumulatedPoints = 500000; // 500k points max
+  private maxAccumulatedPoints = 500000;
   private accUpdateTimer = 0;
+
+  /**
+   * Decode cloud_world_ds point cloud data.
+   * Format: each point is 6 bytes (3 × Uint16), quantized to bounds.
+   * Dequantize: value = uint16 / 65535 * (max - min) + min
+   */
+  private decodeCloudPoints(
+    buffer: ArrayBuffer,
+    xmin: number, xmax: number,
+    ymin: number, ymax: number,
+    zmin: number, zmax: number,
+  ): Float32Array {
+    const u8 = new Uint8Array(buffer);
+    const numPoints = Math.floor(u8.length / 6);
+    const positions = new Float32Array(numPoints * 3);
+    const xRange = xmax - xmin;
+    const yRange = ymax - ymin;
+    const zRange = zmax - zmin;
+
+    for (let i = 0; i < numPoints; i++) {
+      const off = i * 6;
+      // Uint16 little-endian
+      const ux = u8[off] | (u8[off + 1] << 8);
+      const uy = u8[off + 2] | (u8[off + 3] << 8);
+      const uz = u8[off + 4] | (u8[off + 5] << 8);
+      positions[i * 3] = (ux / 65535) * xRange + xmin;
+      positions[i * 3 + 1] = (uy / 65535) * yRange + ymin;
+      positions[i * 3 + 2] = (uz / 65535) * zRange + zmin;
+    }
+    return positions;
+  }
 
   private handleCloudWorld(data: unknown): void {
     if (!this.slamScene) return;
 
-    // Extract binary data from the message
+    const d = data as Record<string, unknown>;
     let buffer: ArrayBuffer | null = null;
 
-    if (data instanceof ArrayBuffer) {
+    if (d.data instanceof ArrayBuffer) {
+      buffer = d.data;
+    } else if (data instanceof ArrayBuffer) {
       buffer = data;
-    } else if (data && typeof data === 'object') {
-      const d = data as Record<string, unknown>;
-      // cloud_world_ds format: {header, is_dense, xmin..zmax, data: ArrayBuffer}
-      if (d.data instanceof ArrayBuffer) {
-        buffer = d.data;
-      }
     }
 
-    if (!buffer || buffer.byteLength < 12) return;
+    if (!buffer || buffer.byteLength < 6) return;
 
-    const positions = new Float32Array(buffer);
-    if (positions.length < 3) return;
+    const xmin = (d.xmin as number) ?? 0;
+    const xmax = (d.xmax as number) ?? 1;
+    const ymin = (d.ymin as number) ?? 0;
+    const ymax = (d.ymax as number) ?? 1;
+    const zmin = (d.zmin as number) ?? 0;
+    const zmax = (d.zmax as number) ?? 1;
+
+    // Decode quantized Uint16 → Float32 XYZ
+    const positions = this.decodeCloudPoints(buffer, xmin, xmax, ymin, ymax, zmin, zmax);
 
     if (this.cloudLogCount < 3) {
-      const d = data as Record<string, unknown>;
-      // Log raw bytes to understand encoding
-      const u8 = new Uint8Array(buffer!);
-      const u16 = new Uint16Array(buffer!);
-      const i16 = new Int16Array(buffer!);
-      console.log(`[slam] Point cloud: ${positions.length / 3} pts, accumulated: ${this.accumulatedPositions.length / 3}`,
-        `\n  bounds: x[${d.xmin},${d.xmax}] y[${d.ymin},${d.ymax}] z[${d.zmin},${d.zmax}]`,
-        `\n  buffer: ${buffer!.byteLength} bytes`,
-        `\n  first 24 bytes (Uint8):`, Array.from(u8.slice(0, 24)),
-        `\n  first 12 as Uint16:`, Array.from(u16.slice(0, 12)),
-        `\n  first 12 as Int16:`, Array.from(i16.slice(0, 12)),
-        `\n  first 6 as Float32:`, Array.from(positions.slice(0, 6)));
+      console.log(`[slam] Decoded ${positions.length / 3} points`,
+        `sample: (${positions[0]?.toFixed(3)}, ${positions[1]?.toFixed(3)}, ${positions[2]?.toFixed(3)})`,
+        `bounds: x[${xmin.toFixed(2)},${xmax.toFixed(2)}] y[${ymin.toFixed(2)},${ymax.toFixed(2)}] z[${zmin.toFixed(2)},${zmax.toFixed(2)}]`);
       this.cloudLogCount++;
     }
 
-    // Show current scan as green laser points
+    // Current scan (green)
     this.slamScene.updateLaserCloud(positions);
 
-    // Accumulate into the filtered (white) map
+    // Accumulate into map (white)
     for (let i = 0; i < positions.length; i++) {
       this.accumulatedPositions.push(positions[i]);
     }
 
-    // Cap accumulated points to avoid memory issues
+    // Cap accumulated points
     if (this.accumulatedPositions.length > this.maxAccumulatedPoints * 3) {
-      // Keep the most recent half
       this.accumulatedPositions = this.accumulatedPositions.slice(
         this.accumulatedPositions.length - this.maxAccumulatedPoints * 3,
       );
     }
 
-    // Throttle accumulated map geometry rebuild to max every 500ms
+    // Throttle accumulated map geometry rebuild
     if (!this.accUpdateTimer) {
       this.accUpdateTimer = window.setTimeout(() => {
         this.accUpdateTimer = 0;
