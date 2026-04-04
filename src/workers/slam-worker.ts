@@ -12,7 +12,6 @@
 
 interface SlamWasmModule {
   _generate: (...args: number[]) => void;
-  _reset: () => void;
   _malloc: (size: number) => number;
   _free: (size: number) => void;
   HEAPU8: Uint8Array;
@@ -46,7 +45,6 @@ class SlamProcessor {
   clear(): void {
     this.mod.HEAPU8.fill(0, this._outputDict, this._outputDict + 67_108_864);
     this.mod.HEAPU8.fill(0, this._outputIndices, this._outputIndices + MAX_POINTS * 4);
-    this.mod._reset();
   }
 
   generate(
@@ -87,23 +85,35 @@ class SlamProcessor {
 
 async function loadWasm(): Promise<SlamWasmModule> {
   const wasmUrl = new URL('/libvoxel.wasm', self.location.href).href;
+  const wasmBytes = await fetch(wasmUrl).then((r) => r.arrayBuffer());
+
+  let heapU8: Uint8Array;
+
   const imports = {
     a: {
-      a: () => { throw new Error('OOM'); },
+      // emscripten_resize_heap
+      a: () => 0,
+      // emscripten_memcpy_js
+      b: (dest: number, src: number, num: number) => {
+        if (heapU8) heapU8.copyWithin(dest, src, src + num);
+      },
     },
   };
 
-  const result = await WebAssembly.instantiateStreaming(fetch(wasmUrl), imports);
-  const exports = result.instance.exports;
-  const memory = exports.b as WebAssembly.Memory;
-  const HEAPU8 = new Uint8Array(memory.buffer);
+  const result = await WebAssembly.instantiate(wasmBytes, imports);
+  const exports = result.instance.exports as Record<string, unknown>;
+  const memory = exports.c as WebAssembly.Memory;
+  heapU8 = new Uint8Array(memory.buffer);
+
+  // Run __wasm_call_ctors
+  const ctors = exports.d as (() => void) | undefined;
+  if (ctors) ctors();
 
   const mod: SlamWasmModule = {
     _generate: exports.e as (...args: number[]) => void,
-    _reset: exports.d as () => void,
     _malloc: exports.f as (size: number) => number,
     _free: exports.g as (size: number) => void,
-    HEAPU8,
+    HEAPU8: heapU8,
     memory,
     getValue: (ptr: number, type: string) => {
       const buf = memory.buffer;
@@ -114,10 +124,6 @@ async function loadWasm(): Promise<SlamWasmModule> {
       }
     },
   };
-
-  // Run init
-  const initFn = exports.c as () => void;
-  if (initFn) initFn();
 
   return mod;
 }
