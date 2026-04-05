@@ -145,7 +145,27 @@ self.addEventListener('message', (e: MessageEvent) => {
       d.zmin as number, d.zmax as number,
       new Uint8Array(d.data as ArrayBuffer),
     );
-
     self.postMessage({ type: 'newMap', data: result });
+
+  } else if (msg.type === 'preview' || msg.type === 'navigation-path') {
+    // PointCloud2 format (ROS2): {width, height, fields, point_step, data: ArrayBuffer}
+    const d = msg.data;
+    const width = (d.width as number) || 0;
+    const height = (d.height as number) || 1;
+    const numPoints = width * height;
+    const fields = d.fields as Array<{ offset: number }>;
+    const pointStep = d.point_step as number;
+    const buf = d.data as ArrayBuffer;
+
+    if (!buf || !fields || fields.length < 3 || numPoints === 0) return;
+
+    const view = new DataView(buf);
+    const positions = new Float32Array(numPoints * 3);
+    for (let i = 0; i < numPoints; i++) {
+      positions[i * 3] = view.getFloat32(i * pointStep + fields[0].offset, true);
+      positions[i * 3 + 1] = view.getFloat32(i * pointStep + fields[1].offset, true);
+      positions[i * 3 + 2] = view.getFloat32(i * pointStep + fields[2].offset, true);
+    }
+    self.postMessage({ type: msg.type, data: { points: positions } });
   }
 });

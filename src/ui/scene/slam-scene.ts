@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 export type ClickMode = 'none' | 'initial_pose' | 'goal' | 'patrol';
 
@@ -140,6 +141,9 @@ export class SlamScene {
     const planeMat = new THREE.MeshBasicMaterial({ visible: false });
     this.groundPlane = new THREE.Mesh(planeGeo, planeMat);
     this.scene.add(this.groundPlane);
+
+    // Load charging station model at origin
+    this.loadChargeStation();
 
     // Interaction handlers
     canvas.addEventListener('pointerdown', (e) => this.handlePointerDown(e));
@@ -399,6 +403,19 @@ export class SlamScene {
     this.poseArrow.add(line);
 
     this.scene.add(this.poseArrow);
+  }
+
+  // ── Charging Station ──
+
+  private loadChargeStation(): void {
+    const loader = new GLTFLoader();
+    loader.load('/models/charge.glb', (gltf) => {
+      const model = gltf.scene;
+      // Match APK: rotate X by PI/2 (Y-up to Z-up), scale 2.5x, at origin
+      model.rotateOnAxis(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+      model.scale.set(2.5, 2.5, 2.5);
+      this.scene.add(model);
+    });
   }
 
   // ── Camera ──

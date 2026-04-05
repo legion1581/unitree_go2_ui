@@ -107,13 +107,17 @@ export class MappingPage {
         const { output, directOutput } = msg.data as {
           output: Float32Array;
           directOutput: Float32Array;
-          outputCount: number;
-          directCount: number;
         };
-        // output = accumulated/deduplicated map (green)
-        // directOutput = current scan (white)
         this.slamScene?.updatePointCloud(output);
         this.slamScene?.updateLaserCloud(directOutput);
+      } else if (msg.type === 'preview') {
+        // Localization real-time point cloud (white, not accumulated)
+        const { points } = msg.data as { points: Float32Array };
+        this.slamScene?.updateLaserCloud(points);
+      } else if (msg.type === 'navigation-path') {
+        // Red navigation path
+        const { points } = msg.data as { points: Float32Array };
+        this.slamScene?.updateNavPath(points);
       }
     };
 
@@ -412,10 +416,10 @@ export class MappingPage {
         this.handleOdom(data);
         break;
       case RTC_TOPIC.USLAM_LOC_CLOUD:
-        this.handleCloudWorld(data);
+        this.handleLocalizationCloud(data);
         break;
       case RTC_TOPIC.USLAM_NAV_PATH:
-        this.handleNavPath(data);
+        this.handleLocalizationCloud(data, 'navigation-path');
         break;
       case RTC_TOPIC.USLAM_CLOUD_MAP:
         this.handleCloudMap(data);
@@ -531,20 +535,32 @@ export class MappingPage {
     }
   }
 
-  private handleNavPath(data: unknown): void {
-    if (!this.slamScene) return;
-    if (data instanceof ArrayBuffer) {
-      this.slamScene.updateNavPath(new Float32Array(data));
-    } else if (Array.isArray(data)) {
-      // Array of {x, y, z} points
-      const positions = new Float32Array(data.length * 3);
-      data.forEach((p: { x: number; y: number; z?: number }, i: number) => {
-        positions[i * 3] = p.x;
-        positions[i * 3 + 1] = p.y;
-        positions[i * 3 + 2] = p.z ?? 0;
-      });
-      this.slamScene.updateNavPath(positions);
+  /**
+   * Handle localization real-time clouds and navigation paths.
+   * These use PointCloud2 format (ROS2): {width, height, fields, point_step, data}
+   */
+  private handleLocalizationCloud(data: unknown, type: 'preview' | 'navigation-path' = 'preview'): void {
+    if (!this.slamWorker || !this.workerReady) return;
+
+    const d = data as Record<string, unknown>;
+    let buffer: ArrayBuffer | null = null;
+    if (d.data instanceof ArrayBuffer) {
+      buffer = d.data;
+    } else if (data instanceof ArrayBuffer) {
+      buffer = data;
     }
+    if (!buffer) return;
+
+    this.slamWorker.postMessage({
+      type,
+      data: {
+        width: d.width ?? 0,
+        height: d.height ?? 1,
+        fields: d.fields ?? [],
+        point_step: d.point_step ?? 12,
+        data: buffer,
+      },
+    });
   }
 
   private handleCloudMap(data: unknown): void {
