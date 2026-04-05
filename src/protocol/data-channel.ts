@@ -135,28 +135,28 @@ export class DataChannelHandler {
     const prevHandler = this.onTopicData;
     const handler = (msg: DataChannelMessage) => {
       const m = msg as { type?: string; info?: { req_uuid?: string; req_type?: string; file?: { enable_chunking?: boolean; chunk_index?: number; total_chunk_num?: number; data?: string } } };
-      // Log all RTC_INNER_REQ responses to debug file requests
-      if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ) {
-        console.log('[go2:dc] RTC_INNER_REQ response:', m.info?.req_type, 'uuid:', m.info?.req_uuid, 'file:', !!m.info?.file);
-      }
       if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ &&
           m.info?.req_type === 'request_static_file' &&
           m.info?.req_uuid === uuid) {
         const file = m.info.file;
+        console.log('[go2:dc] File response chunk:', file?.chunk_index, '/', file?.total_chunk_num, 'chunking:', file?.enable_chunking, 'data len:', file?.data?.length);
         if (file?.enable_chunking) {
           const chunk = file.data || '';
           chunks.push(chunk);
+          // APK: chunk_index < total_chunk_num means more chunks coming
+          // Last chunk: chunk_index >= total_chunk_num
           if (file.chunk_index !== undefined && file.total_chunk_num !== undefined &&
               file.chunk_index >= file.total_chunk_num) {
-            // Last chunk
+            console.log('[go2:dc] File complete, total chunks:', chunks.length, 'total size:', chunks.reduce((a, c) => a + c.length, 0));
             this.onTopicData = prevHandler;
             onComplete(chunks.join(''));
           }
-          // Wait for more chunks
         } else if (file?.data) {
+          console.log('[go2:dc] File complete (no chunking), size:', file.data.length);
           this.onTopicData = prevHandler;
           onComplete(file.data);
         } else {
+          console.log('[go2:dc] File response with no data');
           this.onTopicData = prevHandler;
           onComplete(null);
         }
