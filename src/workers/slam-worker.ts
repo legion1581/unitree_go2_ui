@@ -97,7 +97,7 @@ class SlamProcessor {
 // ── WASM Loading ──
 
 async function loadWasm(): Promise<SlamProcessor> {
-  const wasmUrl = new URL('/libvoxel-slam.wasm', self.location.href).href;
+  const wasmUrl = new URL('/libslam.wasm', self.location.href).href;
   const wasmBytes = await fetch(wasmUrl).then((r) => r.arrayBuffer());
 
   const imports = {
