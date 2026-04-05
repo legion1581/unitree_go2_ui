@@ -406,7 +406,13 @@ export class MappingPage {
 
   // ── Topic Message Handling ──
 
+  private topicLogCount = 0;
+
   handleTopicMessage(topic: string, data: unknown): void {
+    if (this.topicLogCount < 30) {
+      console.log('[slam] Topic:', topic, 'data type:', typeof data, data instanceof ArrayBuffer ? `AB(${data.byteLength})` : '');
+      this.topicLogCount++;
+    }
     switch (topic) {
       case RTC_TOPIC.USLAM_SERVER_LOG:
         this.handleServerLog(data);

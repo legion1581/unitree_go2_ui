@@ -191,9 +191,42 @@ export class SlamScene {
     }
   }
 
+  private robotModel: THREE.Group | null = null;
+
   showRobot(visible: boolean): void {
     this.robotMarker.visible = visible;
     this.robotVisible = visible;
+    // Load Go2 model on first show
+    if (visible && !this.robotModel) {
+      this.loadRobotModel();
+    }
+    if (this.robotModel) this.robotModel.visible = visible;
+  }
+
+  private loadRobotModel(): void {
+    const loader = new GLTFLoader();
+    loader.load('/models/Go2.glb', (gltf) => {
+      this.robotModel = gltf.scene;
+      this.robotModel.scale.set(1, 1, 1);
+      this.robotModel.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.material) {
+          const mat = child.material as THREE.MeshStandardMaterial;
+          mat.transparent = true;
+          mat.opacity = 0.85;
+        }
+      });
+      // Hide ExtendRail and Rod parts like control view
+      const rail = this.robotModel.getObjectByName('ExtendRail');
+      if (rail) rail.visible = false;
+      for (const leg of ['FL', 'FR', 'RL', 'RR']) {
+        const rod = this.robotModel.getObjectByName(`Rod${leg}`);
+        if (rod) rod.visible = false;
+      }
+      this.robotMarker.add(this.robotModel);
+      // Position model relative to marker (offset down to ground)
+      this.robotModel.position.set(0, 0, -0.25);
+      console.log('[slam-scene] Go2 model loaded');
+    });
   }
 
   // ── Movement Trace ──
