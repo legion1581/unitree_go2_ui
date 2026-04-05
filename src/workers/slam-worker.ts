@@ -1,28 +1,31 @@
 /**
- * Web Worker for SLAM point cloud processing using libvoxel.wasm.
+ * Web Worker for SLAM point cloud processing using libvoxel-slam.wasm.
  * Mirrors the APK's three.worker-4tXjtm4c.js logic exactly.
  *
- * Input messages:
- *   { type: "newMap", data: { xmin, xmax, ymin, ymax, zmin, zmax, data: ArrayBuffer } }
- *   "clear"
- *
- * Output messages:
- *   { type: "newMap", data: { output: Float32Array, directOutput: Float32Array, outputCount, directCount } }
+ * APK's WASM (libvoxel-amusQfn9.wasm) export layout:
+ *   b = memory
+ *   c = __wasm_call_ctors
+ *   d = _reset
+ *   e = _generate(xmin,xmax,ymin,ymax,zmin,zmax,numPts,input,maxPts,dict,indices,directOut,output,addedCount,outputCount)
+ *   f = _malloc
+ *   g = _free
+ *   Import: a.a = emscripten_resize_heap (1 import only)
  */
-
-interface SlamWasmModule {
-  _generate: (...args: number[]) => void;
-  _malloc: (size: number) => number;
-  _free: (size: number) => void;
-  HEAPU8: Uint8Array;
-  getValue: (ptr: number, type: string) => number;
-  memory: WebAssembly.Memory;
-}
 
 const MAX_POINTS = 1_000_000;
 
+interface SlamExports {
+  b: WebAssembly.Memory;
+  c: () => void;           // __wasm_call_ctors
+  d: () => void;           // _reset
+  e: (...args: number[]) => void; // _generate
+  f: (size: number) => number;    // _malloc
+  g: (ptr: number) => void;      // _free
+}
+
 class SlamProcessor {
-  private mod: SlamWasmModule;
+  private exports: SlamExports;
+  private heap: Uint8Array;
   private _input: number;
   private _directOutput: number;
   private _outputCount: number;
@@ -31,20 +34,25 @@ class SlamProcessor {
   private _outputIndices: number;
   private _output: number;
 
-  constructor(mod: SlamWasmModule) {
-    this.mod = mod;
-    this._input = mod._malloc(200_000);
-    this._directOutput = mod._malloc(300_000);
-    this._outputCount = mod._malloc(4);
-    this._addedCount = mod._malloc(4);
-    this._outputDict = mod._malloc(67_108_864); // 64MB voxel dictionary
-    this._outputIndices = mod._malloc(MAX_POINTS * 4);
-    this._output = mod._malloc(MAX_POINTS * 12); // 12 bytes per point (3 × Float32)
+  constructor(exports: SlamExports) {
+    this.exports = exports;
+    this.heap = new Uint8Array(exports.b.buffer);
+
+    this._input = exports.f(200_000);
+    this._directOutput = exports.f(300_000);
+    this._outputCount = exports.f(4);
+    this._addedCount = exports.f(4);
+    this._outputDict = exports.f(67_108_864);
+    this._outputIndices = exports.f(MAX_POINTS * 4);
+    this._output = exports.f(MAX_POINTS * 12);
   }
 
   clear(): void {
-    this.mod.HEAPU8.fill(0, this._outputDict, this._outputDict + 67_108_864);
-    this.mod.HEAPU8.fill(0, this._outputIndices, this._outputIndices + MAX_POINTS * 4);
+    // Refresh heap view in case memory grew
+    this.heap = new Uint8Array(this.exports.b.buffer);
+    this.heap.fill(0, this._outputDict, this._outputDict + 67_108_864);
+    this.heap.fill(0, this._outputIndices, this._outputIndices + MAX_POINTS * 4);
+    this.exports.d(); // _reset
   }
 
   generate(
@@ -53,10 +61,13 @@ class SlamProcessor {
     zmin: number, zmax: number,
     inputData: Uint8Array,
   ): { output: Float32Array; directOutput: Float32Array; outputCount: number; directCount: number } {
-    this.mod.HEAPU8.set(inputData, this._input);
+    // Refresh heap view
+    this.heap = new Uint8Array(this.exports.b.buffer);
+    this.heap.set(inputData, this._input);
+
     const numPoints = Math.floor(inputData.length / 6);
 
-    this.mod._generate(
+    this.exports.e(
       xmin, xmax, ymin, ymax, zmin, zmax,
       numPoints,
       this._input,
@@ -69,12 +80,14 @@ class SlamProcessor {
       this._outputCount,
     );
 
-    const outputCount = this.mod.getValue(this._outputCount, 'i32');
+    // Read results from heap
+    const buf = this.exports.b.buffer;
+    const outputCount = new Int32Array(buf, this._outputCount, 1)[0];
     const output = new Float32Array(
-      this.mod.HEAPU8.subarray(this._output, this._output + outputCount * 12).slice().buffer,
+      buf.slice(this._output, this._output + outputCount * 12),
     );
     const directOutput = new Float32Array(
-      this.mod.HEAPU8.subarray(this._directOutput, this._directOutput + numPoints * 12).slice().buffer,
+      buf.slice(this._directOutput, this._directOutput + numPoints * 12),
     );
 
     return { output, directOutput, outputCount, directCount: numPoints };
@@ -83,59 +96,35 @@ class SlamProcessor {
 
 // ── WASM Loading ──
 
-async function loadWasm(): Promise<SlamWasmModule> {
-  const wasmUrl = new URL('/libvoxel.wasm', self.location.href).href;
+async function loadWasm(): Promise<SlamProcessor> {
+  const wasmUrl = new URL('/libvoxel-slam.wasm', self.location.href).href;
   const wasmBytes = await fetch(wasmUrl).then((r) => r.arrayBuffer());
-
-  let heapU8: Uint8Array;
 
   const imports = {
     a: {
-      // emscripten_resize_heap
-      a: () => 0,
-      // emscripten_memcpy_js
-      b: (dest: number, src: number, num: number) => {
-        if (heapU8) heapU8.copyWithin(dest, src, src + num);
-      },
+      a: () => 0, // emscripten_resize_heap — only 1 import needed
     },
   };
 
   const result = await WebAssembly.instantiate(wasmBytes, imports);
-  const exports = result.instance.exports as Record<string, unknown>;
-  const memory = exports.c as WebAssembly.Memory;
-  heapU8 = new Uint8Array(memory.buffer);
+  const exports = result.instance.exports as unknown as SlamExports;
 
   // Run __wasm_call_ctors
-  const ctors = exports.d as (() => void) | undefined;
-  if (ctors) ctors();
+  exports.c();
 
-  const mod: SlamWasmModule = {
-    _generate: exports.e as (...args: number[]) => void,
-    _malloc: exports.f as (size: number) => number,
-    _free: exports.g as (size: number) => void,
-    HEAPU8: heapU8,
-    memory,
-    getValue: (ptr: number, type: string) => {
-      const buf = memory.buffer;
-      switch (type) {
-        case 'i32': return new Int32Array(buf)[ptr >> 2];
-        case 'float': return new Float32Array(buf)[ptr >> 2];
-        default: return new Int32Array(buf)[ptr >> 2];
-      }
-    },
-  };
-
-  return mod;
+  return new SlamProcessor(exports);
 }
 
 // ── Worker Message Handler ──
 
 let processor: SlamProcessor | null = null;
 
-loadWasm().then((mod) => {
-  processor = new SlamProcessor(mod);
+loadWasm().then((p) => {
+  processor = p;
   console.log('[slam-worker] WASM loaded, processor ready');
   self.postMessage({ type: 'ready' });
+}).catch((err) => {
+  console.error('[slam-worker] WASM load failed:', err);
 });
 
 self.addEventListener('message', (e: MessageEvent) => {
@@ -157,9 +146,6 @@ self.addEventListener('message', (e: MessageEvent) => {
       new Uint8Array(d.data as ArrayBuffer),
     );
 
-    self.postMessage({
-      type: 'newMap',
-      data: result,
-    });
+    self.postMessage({ type: 'newMap', data: result });
   }
 });
