@@ -135,6 +135,10 @@ export class DataChannelHandler {
     const prevHandler = this.onTopicData;
     const handler = (msg: DataChannelMessage) => {
       const m = msg as { type?: string; info?: { req_uuid?: string; req_type?: string; file?: { enable_chunking?: boolean; chunk_index?: number; total_chunk_num?: number; data?: string } } };
+      // Log all RTC_INNER_REQ responses to debug file requests
+      if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ) {
+        console.log('[go2:dc] RTC_INNER_REQ response:', m.info?.req_type, 'uuid:', m.info?.req_uuid, 'file:', !!m.info?.file);
+      }
       if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ &&
           m.info?.req_type === 'request_static_file' &&
           m.info?.req_uuid === uuid) {

@@ -159,8 +159,8 @@ export class MappingPage {
       const loadBtn = this.btn('Load', '', () => {
         const id = mapIdInput.value.trim();
         if (id) {
-          const b64 = btoa(id);
-          this.sendCmd(`common/set_map_id/${b64}`);
+          // Map ID is already base64 — send as-is
+          this.sendCmd(`common/set_map_id/${id}`);
           this.addLog(`Loading map: ${id}`);
         }
       });
@@ -590,14 +590,14 @@ export class MappingPage {
 
   private loadMap(mapId: string): void {
     this.addLog(`Loading map ${mapId}...`);
-    const b64 = btoa(mapId);
-    this.sendCmd(`common/set_map_id/${b64}`);
+    // Map ID is already base64 from the robot — send as-is
+    this.sendCmd(`common/set_map_id/${mapId}`);
     this.currentMapId = mapId;
 
-    // Fetch PCD file for preview
+    // Fetch PCD file for preview (APK uses "map.pcd" with related_bussiness context)
     if (this.requestFile) {
       this.addLog('Requesting PCD file...');
-      this.requestFile(`/lidar/pcdfile/${mapId}.pcd`, (data) => {
+      this.requestFile('map.pcd', (data) => {
         if (data) {
           this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
           // Convert base64 to blob URL and load
