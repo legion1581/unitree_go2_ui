@@ -603,19 +603,28 @@ export class MappingPage {
         console.log('[slam] PCD callback, data:', data ? `${data.length} chars` : 'null');
         if (data) {
           this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
-          // Convert base64 to blob URL and load
-          const binary = atob(data);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const blob = new Blob([bytes], { type: 'application/octet-stream' });
-          const url = URL.createObjectURL(blob);
-          this.slamScene?.clearLoadedPcd();
-          this.slamScene?.loadPCD(url).then(() => {
-            URL.revokeObjectURL(url);
-            this.addLog('Map loaded in viewer');
-          }).catch(() => {
-            this.addLog('Failed to parse PCD file');
-          });
+          try {
+            // Convert base64 to blob URL and load
+            const binary = atob(data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            console.log('[slam] PCD binary size:', bytes.length, 'first bytes:', Array.from(bytes.slice(0, 20)));
+            const blob = new Blob([bytes], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            this.slamScene?.clearLoadedPcd();
+            this.addLog('Loading PCD in viewer...');
+            this.slamScene?.loadPCD(url).then(() => {
+              URL.revokeObjectURL(url);
+              this.addLog('Map loaded in viewer');
+            }).catch((err) => {
+              URL.revokeObjectURL(url);
+              this.addLog(`Failed to parse PCD: ${err}`);
+              console.error('[slam] PCD load error:', err);
+            });
+          } catch (err) {
+            this.addLog(`Failed to decode PCD: ${err}`);
+            console.error('[slam] PCD decode error:', err);
+          }
         } else {
           this.addLog('Failed to fetch PCD file (timeout or not found)');
         }
