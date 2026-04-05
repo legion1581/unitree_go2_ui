@@ -462,35 +462,40 @@ export class MappingPage {
     });
   }
 
-  private odomLogCount = 0;
+  private lastOdomTime = 0;
+  private lastTraceX = 0;
+  private lastTraceY = 0;
 
   private handleOdom(data: unknown): void {
     if (!this.slamScene) return;
 
-    if (this.odomLogCount < 3) {
-      console.log('[slam] Odom data:', JSON.stringify(data).slice(0, 300));
-      this.odomLogCount++;
-    }
+    // Throttle to 200ms (matching APK)
+    const now = performance.now();
+    if (now - this.lastOdomTime < 200) return;
+    this.lastOdomTime = now;
 
     const d = data as {
-      pose?: { position?: { x: number; y: number; z: number }; orientation?: { x: number; y: number; z: number; w: number } };
-      position?: { x: number; y: number; z: number };
-      orientation?: { x: number; y: number; z: number; w: number };
+      pose?: { pose?: { position?: { x: number; y: number; z: number }; orientation?: { x: number; y: number; z: number; w: number } } };
     };
 
-    const pos = d.pose?.position ?? d.position;
-    const ori = d.pose?.orientation ?? d.orientation;
-    if (!pos) return;
+    const pos = d.pose?.pose?.position;
+    const ori = d.pose?.pose?.orientation;
+    if (!pos || !ori) return;
 
     // Extract yaw from quaternion
-    let yaw = 0;
-    if (ori) {
-      // yaw from quaternion: atan2(2(wz + xy), 1 - 2(yy + zz))
-      yaw = Math.atan2(2 * (ori.w * ori.z + ori.x * ori.y), 1 - 2 * (ori.y * ori.y + ori.z * ori.z));
-    }
+    const yaw = Math.atan2(2 * (ori.w * ori.z + ori.x * ori.y), 1 - 2 * (ori.y * ori.y + ori.z * ori.z));
 
-    this.slamScene.updateRobotPose(pos, yaw);
-    this.slamScene.addTracePoint(pos.x, pos.y, pos.z);
+    // Update robot marker (z forced to 0 for flat display, matching APK)
+    this.slamScene.updateRobotPose({ x: pos.x, y: pos.y, z: 0 }, yaw);
+
+    // Only add trace point if moved > 0.1m (matching APK)
+    const dx = pos.x - this.lastTraceX;
+    const dy = pos.y - this.lastTraceY;
+    if (dx * dx + dy * dy > 0.01) { // 0.1^2
+      this.slamScene.addTracePoint(pos.x, pos.y, 0);
+      this.lastTraceX = pos.x;
+      this.lastTraceY = pos.y;
+    }
   }
 
   private handleNavPath(data: unknown): void {
@@ -564,24 +569,23 @@ export class MappingPage {
 
   private saveCurrentMap(): void {
     if (!this.currentMapId) {
-      this.addLog('No map ID available. Use "Get Current Map ID" first.');
+      this.addLog('No map ID available yet — waiting...');
       return;
     }
-    const name = prompt('Enter map name:', `Map ${new Date().toLocaleDateString()}`);
-    if (!name) return;
-
-    const maps = this.getSavedMaps();
-    // Update if exists, otherwise add
-    const existing = maps.findIndex((m) => m.id === this.currentMapId);
-    const entry = { id: this.currentMapId, name, date: new Date().toISOString() };
-    if (existing >= 0) {
-      maps[existing] = entry;
-    } else {
-      maps.push(entry);
-    }
-    this.saveMapsToStorage(maps);
-    this.renderSavedMaps();
-    this.addLog(`Map saved: "${name}" (${this.currentMapId})`);
+    this.showInputModal('Save Map', 'Enter map name:', `Map ${new Date().toLocaleDateString()}`, (name) => {
+      if (!name) return;
+      const maps = this.getSavedMaps();
+      const existing = maps.findIndex((m) => m.id === this.currentMapId);
+      const entry = { id: this.currentMapId, name, date: new Date().toISOString() };
+      if (existing >= 0) {
+        maps[existing] = entry;
+      } else {
+        maps.push(entry);
+      }
+      this.saveMapsToStorage(maps);
+      this.renderSavedMaps();
+      this.addLog(`Map saved: "${name}" (${this.currentMapId})`);
+    });
   }
 
   private loadMap(mapId: string): void {
@@ -620,20 +624,23 @@ export class MappingPage {
     const maps = this.getSavedMaps();
     const map = maps.find((m) => m.id === mapId);
     if (!map) return;
-    const newName = prompt('Rename map:', map.name);
-    if (!newName || newName === map.name) return;
-    map.name = newName;
-    this.saveMapsToStorage(maps);
-    this.renderSavedMaps();
+    this.showInputModal('Rename Map', 'New name:', map.name, (newName) => {
+      if (!newName || newName === map.name) return;
+      map.name = newName;
+      this.saveMapsToStorage(maps);
+      this.renderSavedMaps();
+    });
   }
 
   private deleteMap(mapId: string): void {
     const maps = this.getSavedMaps();
     const map = maps.find((m) => m.id === mapId);
-    if (!map || !confirm(`Delete "${map.name}"?`)) return;
-    this.saveMapsToStorage(maps.filter((m) => m.id !== mapId));
-    this.renderSavedMaps();
-    this.addLog(`Map "${map.name}" removed`);
+    if (!map) return;
+    this.showConfirmModal(`Delete "${map.name}"?`, () => {
+      this.saveMapsToStorage(maps.filter((m) => m.id !== mapId));
+      this.renderSavedMaps();
+      this.addLog(`Map "${map.name}" removed`);
+    });
   }
 
   private renderSavedMaps(): void {
@@ -690,6 +697,55 @@ export class MappingPage {
       row.appendChild(actions);
       this.savedMapsEl.appendChild(row);
     }
+  }
+
+  // ── Non-blocking Modals (won't freeze heartbeat) ──
+
+  private showInputModal(title: string, label: string, defaultVal: string, onOk: (val: string) => void): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'mapping-modal-overlay';
+    overlay.innerHTML = `
+      <div class="mapping-modal">
+        <div class="mapping-modal-title">${title}</div>
+        <label class="mapping-modal-label">${label}</label>
+        <input class="mapping-input mapping-modal-input" value="${defaultVal}" />
+        <div class="mapping-modal-btns">
+          <button class="mapping-btn mapping-modal-cancel">Cancel</button>
+          <button class="mapping-btn mapping-btn-start mapping-modal-ok">Save</button>
+        </div>
+      </div>
+    `;
+    this.container.appendChild(overlay);
+    const input = overlay.querySelector('.mapping-modal-input') as HTMLInputElement;
+    input.focus();
+    input.select();
+    overlay.querySelector('.mapping-modal-cancel')!.addEventListener('click', () => overlay.remove());
+    overlay.querySelector('.mapping-modal-ok')!.addEventListener('click', () => {
+      const val = input.value.trim();
+      overlay.remove();
+      if (val) onOk(val);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { overlay.querySelector<HTMLButtonElement>('.mapping-modal-ok')!.click(); }
+      if (e.key === 'Escape') { overlay.remove(); }
+    });
+  }
+
+  private showConfirmModal(message: string, onOk: () => void): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'mapping-modal-overlay';
+    overlay.innerHTML = `
+      <div class="mapping-modal">
+        <div class="mapping-modal-title">${message}</div>
+        <div class="mapping-modal-btns">
+          <button class="mapping-btn mapping-modal-cancel">Cancel</button>
+          <button class="mapping-btn mapping-btn-stop mapping-modal-ok">Delete</button>
+        </div>
+      </div>
+    `;
+    this.container.appendChild(overlay);
+    overlay.querySelector('.mapping-modal-cancel')!.addEventListener('click', () => overlay.remove());
+    overlay.querySelector('.mapping-modal-ok')!.addEventListener('click', () => { overlay.remove(); onOk(); });
   }
 
   // ── Cleanup ──

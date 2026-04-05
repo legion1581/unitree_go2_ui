@@ -1591,3 +1591,54 @@ body {
   font-size: 11px !important;
   width: auto !important;
 }
+
+/* Non-blocking modal overlay */
+.mapping-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.mapping-modal {
+  background: #1a1d23;
+  border: 1px solid #2a2d35;
+  border-radius: 12px;
+  padding: 20px;
+  width: 300px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.mapping-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 12px;
+}
+
+.mapping-modal-label {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 6px;
+  display: block;
+}
+
+.mapping-modal-input {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+}
+
+.mapping-modal-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.mapping-modal-btns .mapping-btn {
+  width: auto;
+  padding: 6px 16px;
+}
