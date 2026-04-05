@@ -4,17 +4,12 @@ import SlamWorker from '../../workers/slam-worker?worker';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
 
-// Subscribed on page entry (mapping)
-const MAPPING_TOPICS = [
+const ALL_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_SERVER_LOG,
   RTC_TOPIC.USLAM_CLOUD_WORLD,
   RTC_TOPIC.USLAM_ODOM,
   RTC_TOPIC.USLAM_CLOUD_MAP,
   RTC_TOPIC.USLAM_GRID_MAP,
-];
-
-// Subscribed only after localization succeeds (matching APK)
-const LOCALIZATION_TOPICS = [
   RTC_TOPIC.USLAM_LOC_CLOUD,
   RTC_TOPIC.USLAM_LOC_ODOM,
   RTC_TOPIC.USLAM_NAV_PATH,
@@ -126,8 +121,9 @@ export class MappingPage {
       }
     };
 
-    // Subscribe to mapping topics on entry (localization topics deferred)
-    for (const topic of MAPPING_TOPICS) {
+    // Subscribe to all USLAM topics on entry
+    // (localization data only processed after localization succeeds)
+    for (const topic of ALL_USLAM_TOPICS) {
       this.subscribe(topic);
     }
   }
@@ -424,13 +420,19 @@ export class MappingPage {
         this.handleOdom(data);
         break;
       case RTC_TOPIC.USLAM_LOC_ODOM:
-        this.handleOdom(data);
+        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
+          this.handleOdom(data);
+        }
         break;
       case RTC_TOPIC.USLAM_LOC_CLOUD:
-        this.handleLocalizationCloud(data);
+        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
+          this.handleLocalizationCloud(data);
+        }
         break;
       case RTC_TOPIC.USLAM_NAV_PATH:
-        this.handleLocalizationCloud(data, 'navigation-path');
+        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
+          this.handleLocalizationCloud(data, 'navigation-path');
+        }
         break;
       case RTC_TOPIC.USLAM_CLOUD_MAP:
         this.handleCloudMap(data);
@@ -449,8 +451,6 @@ export class MappingPage {
     if (msg.includes('localization') && msg.includes('succeed')) {
       this.setState('localized');
       this.slamScene?.showRobot(true);
-      // Subscribe to real-time localization topics (matching APK)
-      for (const topic of LOCALIZATION_TOPICS) this.subscribe(topic);
       this.addLog('Localization successful — robot visible on map');
     }
     if (msg.includes('localization') && msg.includes('failed')) {
@@ -465,8 +465,6 @@ export class MappingPage {
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
     if (msg.includes('localization/stop/success')) {
       this.slamScene?.showRobot(false);
-      // Unsubscribe localization topics
-      for (const topic of LOCALIZATION_TOPICS) this.unsubscribe(topic);
     }
 
     // Map ID response: "common/get_map_id/map_id/{mapId}"
@@ -820,8 +818,7 @@ export class MappingPage {
   // ── Cleanup ──
 
   private cleanup(): void {
-    for (const topic of MAPPING_TOPICS) this.unsubscribe(topic);
-    for (const topic of LOCALIZATION_TOPICS) this.unsubscribe(topic);
+    for (const topic of ALL_USLAM_TOPICS) this.unsubscribe(topic);
   }
 
   destroy(): void {
