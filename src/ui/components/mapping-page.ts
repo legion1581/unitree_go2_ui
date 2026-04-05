@@ -4,15 +4,20 @@ import SlamWorker from '../../workers/slam-worker?worker';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
 
-const USLAM_TOPICS = [
+// Subscribed on page entry (mapping)
+const MAPPING_TOPICS = [
   RTC_TOPIC.USLAM_SERVER_LOG,
   RTC_TOPIC.USLAM_CLOUD_WORLD,
   RTC_TOPIC.USLAM_ODOM,
   RTC_TOPIC.USLAM_CLOUD_MAP,
-  RTC_TOPIC.USLAM_LOC_ODOM,
-  RTC_TOPIC.USLAM_LOC_CLOUD,
-  RTC_TOPIC.USLAM_NAV_PATH,
   RTC_TOPIC.USLAM_GRID_MAP,
+];
+
+// Subscribed only after localization succeeds (matching APK)
+const LOCALIZATION_TOPICS = [
+  RTC_TOPIC.USLAM_LOC_CLOUD,
+  RTC_TOPIC.USLAM_LOC_ODOM,
+  RTC_TOPIC.USLAM_NAV_PATH,
 ];
 
 export class MappingPage {
@@ -121,8 +126,8 @@ export class MappingPage {
       }
     };
 
-    // Subscribe to USLAM topics
-    for (const topic of USLAM_TOPICS) {
+    // Subscribe to mapping topics on entry (localization topics deferred)
+    for (const topic of MAPPING_TOPICS) {
       this.subscribe(topic);
     }
   }
@@ -438,7 +443,13 @@ export class MappingPage {
     if (msg.includes('localization') && msg.includes('succeed')) {
       this.setState('localized');
       this.slamScene?.showRobot(true);
+      // Subscribe to real-time localization topics (matching APK)
+      for (const topic of LOCALIZATION_TOPICS) this.subscribe(topic);
       this.addLog('Localization successful — robot visible on map');
+    }
+    if (msg.includes('localization') && msg.includes('failed')) {
+      this.setState('idle');
+      this.addLog('Localization failed');
     }
     if (msg.includes('REACHED')) {
       this.setState('localized');
@@ -448,6 +459,8 @@ export class MappingPage {
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
     if (msg.includes('localization/stop/success')) {
       this.slamScene?.showRobot(false);
+      // Unsubscribe localization topics
+      for (const topic of LOCALIZATION_TOPICS) this.unsubscribe(topic);
     }
 
     // Map ID response: "common/get_map_id/map_id/{mapId}"
@@ -801,9 +814,8 @@ export class MappingPage {
   // ── Cleanup ──
 
   private cleanup(): void {
-    for (const topic of USLAM_TOPICS) {
-      this.unsubscribe(topic);
-    }
+    for (const topic of MAPPING_TOPICS) this.unsubscribe(topic);
+    for (const topic of LOCALIZATION_TOPICS) this.unsubscribe(topic);
   }
 
   destroy(): void {
