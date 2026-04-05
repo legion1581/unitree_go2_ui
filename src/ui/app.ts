@@ -470,10 +470,9 @@ export class App {
   private topicLogCount = 0;
 
   private handleTopicMessage(msg: DataChannelMessage): void {
-    // Log first few messages per topic to help debug data flow
-    if (this.topicLogCount < 20) {
-      console.log('[go2:ui] Topic msg:', msg.type, msg.topic);
-      this.topicLogCount++;
+    // Log localization-related topics
+    if (msg.topic && (msg.topic.includes('localization') || msg.topic.includes('navigation'))) {
+      console.log('[go2:ui] LOC topic:', msg.type, msg.topic);
     }
 
     if (msg.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ) {
