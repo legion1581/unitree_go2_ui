@@ -126,6 +126,65 @@ export class DataChannelHandler {
     });
   }
 
+  /** Request a static file from the robot. Returns base64 data via callback. */
+  requestFile(filePath: string, onComplete: (data: string | null) => void): void {
+    const uuid = `req_${Date.now() % 2 ** 31 + Math.floor(Math.random() * 1000)}`;
+    const chunks: string[] = [];
+
+    // Set up a one-time listener for the response
+    const prevHandler = this.onTopicData;
+    const handler = (msg: DataChannelMessage) => {
+      const m = msg as { type?: string; info?: { req_uuid?: string; req_type?: string; file?: { enable_chunking?: boolean; chunk_index?: number; total_chunk_num?: number; data?: string } } };
+      if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ &&
+          m.info?.req_type === 'request_static_file' &&
+          m.info?.req_uuid === uuid) {
+        const file = m.info.file;
+        if (file?.enable_chunking) {
+          const chunk = file.data || '';
+          chunks.push(chunk);
+          if (file.chunk_index !== undefined && file.total_chunk_num !== undefined &&
+              file.chunk_index >= file.total_chunk_num) {
+            // Last chunk
+            this.onTopicData = prevHandler;
+            onComplete(chunks.join(''));
+          }
+          // Wait for more chunks
+        } else if (file?.data) {
+          this.onTopicData = prevHandler;
+          onComplete(file.data);
+        } else {
+          this.onTopicData = prevHandler;
+          onComplete(null);
+        }
+        return;
+      }
+      // Forward non-matching messages to the original handler
+      if (prevHandler) prevHandler(msg);
+    };
+    this.onTopicData = handler;
+
+    // Send the request
+    this.webrtc.send({
+      type: DATA_CHANNEL_TYPE.RTC_INNER_REQ,
+      topic: '',
+      data: {
+        req_type: 'request_static_file',
+        req_uuid: uuid,
+        related_bussiness: 'uslam_final_pcd',
+        file_md5: 'null',
+        file_path: filePath,
+      },
+    });
+
+    // Timeout after 30s
+    setTimeout(() => {
+      if (this.onTopicData === handler) {
+        this.onTopicData = prevHandler;
+        onComplete(null);
+      }
+    }, 30000);
+  }
+
   isValidated(): boolean {
     return this.validated;
   }

@@ -282,6 +282,7 @@ export class App {
       (topic, data) => this.dataHandler?.publish(topic, data),
       (topic) => this.dataHandler?.subscribe(topic),
       (topic) => this.dataHandler?.unsubscribe(topic),
+      (path, cb) => this.dataHandler?.requestFile(path, cb),
     );
   }
 

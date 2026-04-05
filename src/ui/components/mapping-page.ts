@@ -30,6 +30,9 @@ export class MappingPage {
   private patrolCount = 0;
   private slamWorker: Worker | null = null;
   private workerReady = false;
+  private requestFile: ((path: string, cb: (data: string | null) => void) => void) | null = null;
+  private savedMapsEl!: HTMLElement;
+  private currentMapId = '';
 
   constructor(
     parent: HTMLElement,
@@ -37,11 +40,13 @@ export class MappingPage {
     onPublish: (topic: string, data: unknown) => void,
     onSubscribe: (topic: string) => void,
     onUnsubscribe: (topic: string) => void,
+    onRequestFile?: (path: string, cb: (data: string | null) => void) => void,
   ) {
     this.onBack = onBack;
     this.publish = onPublish;
     this.subscribe = onSubscribe;
     this.unsubscribe = onUnsubscribe;
+    this.requestFile = onRequestFile ?? null;
 
     this.container = document.createElement('div');
     this.container.className = 'mapping-page';
@@ -217,6 +222,14 @@ export class MappingPage {
         this.setState('idle');
       }));
       body.appendChild(row);
+    }));
+
+    // Saved Maps section
+    sidebar.appendChild(this.buildSection('Saved Maps', (body) => {
+      this.savedMapsEl = document.createElement('div');
+      this.savedMapsEl.className = 'mapping-saved-list';
+      body.appendChild(this.savedMapsEl);
+      this.renderSavedMaps();
     }));
 
     // Server Log section
@@ -400,18 +413,22 @@ export class MappingPage {
     if (msg.includes('REACHED')) this.setState('localized');
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
 
-    // Map ID response — populate the input field
-    if (msg.includes('get_map_id') || msg.includes('map_id')) {
-      const input = this.container.querySelector('#map-id-input') as HTMLInputElement;
-      if (input) {
-        // Try to extract map ID from the message
-        try {
-          const decoded = atob(msg.split('/').pop() || '');
-          if (decoded) input.value = decoded;
-        } catch {
-          // Not base64, show raw
-        }
+    // Map ID response: "common/get_map_id/map_id/{mapId}"
+    if (msg.includes('common/get_map_id/map_id')) {
+      const mapId = msg.slice(msg.lastIndexOf('/') + 1);
+      if (mapId && mapId !== 'map_id') {
+        this.currentMapId = mapId;
+        const input = this.container.querySelector('#map-id-input') as HTMLInputElement;
+        if (input) input.value = mapId;
+        this.addLog(`Current map ID: ${mapId}`);
       }
+    }
+
+    // After mapping stops, get the map ID so user can save it
+    if (msg.includes('mapping/stop/success')) {
+      this.sendCmd('common/get_map_id');
+      // Prompt save after a short delay to let map ID arrive
+      setTimeout(() => this.saveCurrentMap(), 1500);
     }
   }
 
@@ -528,6 +545,150 @@ export class MappingPage {
       } catch {
         this.addLog('Map data format not recognized as raw Float32 points');
       }
+    }
+  }
+
+  // ── Saved Maps (localStorage) ──
+
+  private static STORAGE_KEY = 'go2_slam_maps';
+
+  private getSavedMaps(): Array<{ id: string; name: string; date: string }> {
+    try {
+      return JSON.parse(localStorage.getItem(MappingPage.STORAGE_KEY) || '[]');
+    } catch { return []; }
+  }
+
+  private saveMapsToStorage(maps: Array<{ id: string; name: string; date: string }>): void {
+    localStorage.setItem(MappingPage.STORAGE_KEY, JSON.stringify(maps));
+  }
+
+  private saveCurrentMap(): void {
+    if (!this.currentMapId) {
+      this.addLog('No map ID available. Use "Get Current Map ID" first.');
+      return;
+    }
+    const name = prompt('Enter map name:', `Map ${new Date().toLocaleDateString()}`);
+    if (!name) return;
+
+    const maps = this.getSavedMaps();
+    // Update if exists, otherwise add
+    const existing = maps.findIndex((m) => m.id === this.currentMapId);
+    const entry = { id: this.currentMapId, name, date: new Date().toISOString() };
+    if (existing >= 0) {
+      maps[existing] = entry;
+    } else {
+      maps.push(entry);
+    }
+    this.saveMapsToStorage(maps);
+    this.renderSavedMaps();
+    this.addLog(`Map saved: "${name}" (${this.currentMapId})`);
+  }
+
+  private loadMap(mapId: string): void {
+    this.addLog(`Loading map ${mapId}...`);
+    const b64 = btoa(mapId);
+    this.sendCmd(`common/set_map_id/${b64}`);
+    this.currentMapId = mapId;
+
+    // Fetch PCD file for preview
+    if (this.requestFile) {
+      this.addLog('Requesting PCD file...');
+      this.requestFile(`/lidar/pcdfile/${mapId}.pcd`, (data) => {
+        if (data) {
+          this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
+          // Convert base64 to blob URL and load
+          const binary = atob(data);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          this.slamScene?.clearLoadedPcd();
+          this.slamScene?.loadPCD(url).then(() => {
+            URL.revokeObjectURL(url);
+            this.addLog('Map loaded in viewer');
+          }).catch(() => {
+            this.addLog('Failed to parse PCD file');
+          });
+        } else {
+          this.addLog('Failed to fetch PCD file (timeout or not found)');
+        }
+      });
+    }
+  }
+
+  private renameMap(mapId: string): void {
+    const maps = this.getSavedMaps();
+    const map = maps.find((m) => m.id === mapId);
+    if (!map) return;
+    const newName = prompt('Rename map:', map.name);
+    if (!newName || newName === map.name) return;
+    map.name = newName;
+    this.saveMapsToStorage(maps);
+    this.renderSavedMaps();
+  }
+
+  private deleteMap(mapId: string): void {
+    const maps = this.getSavedMaps();
+    const map = maps.find((m) => m.id === mapId);
+    if (!map || !confirm(`Delete "${map.name}"?`)) return;
+    this.saveMapsToStorage(maps.filter((m) => m.id !== mapId));
+    this.renderSavedMaps();
+    this.addLog(`Map "${map.name}" removed`);
+  }
+
+  private renderSavedMaps(): void {
+    if (!this.savedMapsEl) return;
+    const maps = this.getSavedMaps();
+
+    if (maps.length === 0) {
+      this.savedMapsEl.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'mapping-empty';
+      empty.textContent = 'No saved maps';
+      this.savedMapsEl.appendChild(empty);
+      return;
+    }
+
+    this.savedMapsEl.innerHTML = '';
+    for (const map of maps) {
+      const row = document.createElement('div');
+      row.className = 'mapping-map-row';
+
+      const info = document.createElement('div');
+      info.className = 'mapping-map-info';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'mapping-map-name';
+      nameEl.textContent = map.name;
+      info.appendChild(nameEl);
+      const dateEl = document.createElement('span');
+      dateEl.className = 'mapping-map-date';
+      dateEl.textContent = new Date(map.date).toLocaleString();
+      info.appendChild(dateEl);
+      row.appendChild(info);
+
+      const actions = document.createElement('div');
+      actions.className = 'mapping-map-actions';
+
+      const loadBtn = document.createElement('button');
+      loadBtn.className = 'mapping-btn mapping-btn-sm';
+      loadBtn.textContent = 'Load';
+      loadBtn.addEventListener('click', () => this.loadMap(map.id));
+      actions.appendChild(loadBtn);
+
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'mapping-btn mapping-btn-sm';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', () => this.renameMap(map.id));
+      actions.appendChild(renameBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'mapping-btn mapping-btn-sm mapping-btn-stop';
+      delBtn.textContent = 'Del';
+      delBtn.addEventListener('click', () => this.deleteMap(map.id));
+      actions.appendChild(delBtn);
+
+      row.appendChild(actions);
+      this.savedMapsEl.appendChild(row);
     }
   }
 

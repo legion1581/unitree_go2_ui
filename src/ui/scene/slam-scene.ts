@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 
 export type ClickMode = 'none' | 'initial_pose' | 'goal' | 'patrol';
 
@@ -248,6 +249,43 @@ export class SlamScene {
       this.scene.remove(m);
     }
     this.patrolMarkers = [];
+  }
+
+  // ── PCD Loading ──
+
+  private loadedPcd: THREE.Points | null = null;
+
+  loadPCD(url: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.loadedPcd) {
+        this.scene.remove(this.loadedPcd);
+        this.loadedPcd.geometry.dispose();
+        this.loadedPcd = null;
+      }
+      const loader = new PCDLoader();
+      loader.load(url, (points) => {
+        points.material = new THREE.PointsMaterial({ size: 0.03, color: 0xaaaaaa });
+        this.loadedPcd = points;
+        this.scene.add(points);
+
+        // Center camera on loaded map
+        points.geometry.computeBoundingSphere();
+        const bs = points.geometry.boundingSphere;
+        if (bs) {
+          this.controls.target.copy(bs.center);
+          this.camera.position.set(bs.center.x, bs.center.y - bs.radius, bs.radius * 1.5);
+        }
+        resolve();
+      }, undefined, reject);
+    });
+  }
+
+  clearLoadedPcd(): void {
+    if (this.loadedPcd) {
+      this.scene.remove(this.loadedPcd);
+      this.loadedPcd.geometry.dispose();
+      this.loadedPcd = null;
+    }
   }
 
   // ── Click Interaction ──

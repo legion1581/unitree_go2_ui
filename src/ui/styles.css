@@ -1534,3 +1534,60 @@ body {
   border-bottom: 1px solid rgba(26, 29, 35, 0.5);
   word-break: break-all;
 }
+
+/* Saved maps list */
+.mapping-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mapping-empty {
+  color: #555;
+  font-size: 12px;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.mapping-map-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: rgba(26, 29, 35, 0.6);
+  border-radius: 6px;
+  border: 1px solid #1f2229;
+}
+
+.mapping-map-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.mapping-map-name {
+  font-size: 12px;
+  color: #e0e0e0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mapping-map-date {
+  font-size: 10px;
+  color: #555;
+}
+
+.mapping-map-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mapping-btn-sm {
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  width: auto !important;
+}
