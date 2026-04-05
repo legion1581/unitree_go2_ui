@@ -572,7 +572,9 @@ export class MappingPage {
       this.addLog('No map ID available yet — waiting...');
       return;
     }
-    this.showInputModal('Save Map', 'Enter map name:', `Map ${new Date().toLocaleDateString()}`, (name) => {
+    const now = new Date();
+    const defaultName = `Map ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    this.showInputModal('Save Map', 'Enter map name:', defaultName, (name) => {
       if (!name) return;
       const maps = this.getSavedMaps();
       const existing = maps.findIndex((m) => m.id === this.currentMapId);
@@ -598,6 +600,7 @@ export class MappingPage {
     if (this.requestFile) {
       this.addLog('Requesting PCD file...');
       this.requestFile('map.pcd', (data) => {
+        console.log('[slam] PCD callback, data:', data ? `${data.length} chars` : 'null');
         if (data) {
           this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
           // Convert base64 to blob URL and load
