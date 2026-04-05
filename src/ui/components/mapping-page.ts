@@ -92,6 +92,7 @@ export class MappingPage {
     requestAnimationFrame(() => {
       this.slamScene = new SlamScene(canvas);
       this.slamScene.onMapClick = (x, y) => this.handleMapClick(x, y);
+      this.slamScene.onPoseSet = (x, y, yaw) => this.handlePoseSet(x, y, yaw);
     });
 
     // Init SLAM worker (libvoxel.wasm for point cloud processing)
@@ -188,16 +189,29 @@ export class MappingPage {
       }));
     }));
 
-    // Navigation section
+    // Navigation section (Go + Charge)
     sidebar.appendChild(this.buildSection('Navigation', (body) => {
       body.appendChild(this.clickModeBtn('Set Goal', 'goal'));
-      body.appendChild(this.btn('Start Navigation', '', () => {
+      const navRow = document.createElement('div');
+      navRow.className = 'mapping-btn-row';
+      navRow.appendChild(this.btn('Go', 'mapping-btn-start', () => {
         this.sendCmd('navigation/start');
         this.setState('navigating');
       }));
-      body.appendChild(this.btn('Stop Navigation', '', () => {
+      navRow.appendChild(this.btn('Charge', '', () => {
+        // Navigate to charging dock (odom origin [-0.15, 0])
+        this.sendCmd('navigation/start');
+        setTimeout(() => {
+          this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
+          this.addLog('Navigating to charge dock...');
+        }, 1000);
+        this.setState('navigating');
+      }));
+      body.appendChild(navRow);
+      body.appendChild(this.btn('Stop Navigation', 'mapping-btn-stop', () => {
         this.sendCmd('navigation/stop');
-        this.setState('idle');
+        this.slamScene?.clearNavPath();
+        this.setState('localized');
       }));
     }));
 
@@ -297,12 +311,7 @@ export class MappingPage {
 
     switch (mode) {
       case 'initial_pose':
-        this.sendCmd(`localization/set_initial_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
-        this.addLog(`Initial pose set: (${x.toFixed(2)}, ${y.toFixed(2)})`);
-        // Deactivate click mode after setting
-        this.activeClickBtn?.classList.remove('active');
-        this.activeClickBtn = null;
-        this.slamScene?.setClickMode('none');
+        // Handled by onPoseSet drag callback instead
         break;
 
       case 'goal':
@@ -321,6 +330,19 @@ export class MappingPage {
         // Keep patrol click mode active for adding multiple points
         break;
     }
+  }
+
+  /** Called when user clicks + drags to set initial pose with orientation */
+  private handlePoseSet(x: number, y: number, yaw: number): void {
+    this.sendCmd(`localization/set_initial_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
+    this.addLog(`Initial pose: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${(yaw * 180 / Math.PI).toFixed(1)}°`);
+    // Deactivate click mode button
+    this.activeClickBtn?.classList.remove('active');
+    this.activeClickBtn = null;
+    // Auto-start localization after setting pose
+    setTimeout(() => {
+      this.sendCmd('localization/start');
+    }, 100);
   }
 
   // ── State ──
@@ -409,9 +431,20 @@ export class MappingPage {
     // State transitions from server messages
     if (msg.includes('mapping/stop/success')) this.setState('idle');
     if (msg.includes('mapping/start/success')) this.setState('mapping');
-    if (msg.includes('localization') && msg.includes('succeed')) this.setState('localized');
-    if (msg.includes('REACHED')) this.setState('localized');
+    if (msg.includes('localization') && msg.includes('succeed')) {
+      this.setState('localized');
+      this.slamScene?.showRobot(true);
+      this.addLog('Localization successful — robot visible on map');
+    }
+    if (msg.includes('REACHED')) {
+      this.setState('localized');
+      this.slamScene?.clearNavPath();
+      this.addLog('Navigation goal reached');
+    }
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
+    if (msg.includes('localization/stop/success')) {
+      this.slamScene?.showRobot(false);
+    }
 
     // Map ID response: "common/get_map_id/map_id/{mapId}"
     if (msg.includes('common/get_map_id/map_id')) {

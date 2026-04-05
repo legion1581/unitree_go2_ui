@@ -4,6 +4,33 @@ import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 
 export type ClickMode = 'none' | 'initial_pose' | 'goal' | 'patrol';
 
+/**
+ * Custom shader material that colors points by height (Z coordinate).
+ * Matches APK's PcdMaterial: R = |sin(z)|, G = 0.5 * |cos(z)|
+ */
+function createHeightMaterial(size: number): THREE.PointsMaterial {
+  const mat = new THREE.PointsMaterial({ size });
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = 'varying float heightZ;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <project_vertex>',
+      `vec4 mvPosition = vec4( transformed, 1.0 );
+       mvPosition = modelViewMatrix * mvPosition;
+       gl_Position = projectionMatrix * mvPosition;
+       heightZ = transformed.z;`,
+    );
+    shader.fragmentShader = 'varying float heightZ;\n' + shader.fragmentShader;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      'vec4 diffuseColor = vec4( diffuse, opacity );',
+      `vec4 diffuseColor = vec4( diffuse, opacity );
+       diffuseColor.r = abs(sin(heightZ / 1.0));
+       diffuseColor.g = 0.5 * abs(cos(heightZ / 1.0));
+       diffuseColor.b = 0.3;`,
+    );
+  };
+  return mat;
+}
+
 export class SlamScene {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -17,6 +44,7 @@ export class SlamScene {
 
   // Robot marker
   private robotMarker: THREE.Group;
+  robotVisible = false;
 
   // Movement trace
   private tracePositions: number[] = [];
@@ -28,11 +56,18 @@ export class SlamScene {
   // Patrol waypoints
   private patrolMarkers: THREE.Group[] = [];
 
+  // Pose arrow (for initial pose drag-to-set-yaw)
+  private poseArrow: THREE.Group | null = null;
+  private poseOrigin: { x: number; y: number } | null = null;
+
   // Click interaction
   private groundPlane: THREE.Mesh;
   private raycaster = new THREE.Raycaster();
   private clickMode: ClickMode = 'none';
+  /** Fires (x, y) for simple click modes (goal, patrol) */
   onMapClick: ((x: number, y: number) => void) | null = null;
+  /** Fires (x, y, yaw) for initial_pose after drag release */
+  onPoseSet: ((x: number, y: number, yaw: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -41,7 +76,7 @@ export class SlamScene {
 
     this.scene = new THREE.Scene();
 
-    // Z-up camera — top-down angled view like APK
+    // Z-up camera
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(0, -5, 8);
@@ -61,16 +96,15 @@ export class SlamScene {
 
     // Grid helper (XY plane, Z-up)
     const grid = new THREE.GridHelper(50, 50, 0x333333, 0x222222);
-    grid.rotation.x = Math.PI / 2; // rotate to XY plane
+    grid.rotation.x = Math.PI / 2;
     this.scene.add(grid);
 
     // Origin axes
     this.scene.add(new THREE.AxesHelper(2));
 
-    // Filtered point cloud (accumulated map — green)
+    // Filtered point cloud (accumulated map — height-colored)
     const filteredGeo = new THREE.BufferGeometry();
-    const filteredMat = new THREE.PointsMaterial({ size: 0.03, color: 0x42CF55 });
-    this.filteredPoints = new THREE.Points(filteredGeo, filteredMat);
+    this.filteredPoints = new THREE.Points(filteredGeo, createHeightMaterial(0.03));
     this.scene.add(this.filteredPoints);
 
     // Laser point cloud (current scan — white)
@@ -79,35 +113,38 @@ export class SlamScene {
     this.laserPoints = new THREE.Points(laserGeo, laserMat);
     this.scene.add(this.laserPoints);
 
-    // Robot marker (arrow shape)
+    // Robot marker (green cone arrow — visible after localization)
     this.robotMarker = new THREE.Group();
-    const arrowShape = new THREE.ConeGeometry(0.15, 0.4, 8);
-    arrowShape.rotateX(Math.PI / 2);
-    const arrowMesh = new THREE.Mesh(arrowShape, new THREE.MeshStandardMaterial({ color: 0x6879e4 }));
-    arrowMesh.position.z = 0.3;
-    this.robotMarker.add(arrowMesh);
-    const baseMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x6879e4 }),
+    const cone = new THREE.ConeGeometry(0.15, 0.5, 16);
+    cone.rotateX(Math.PI / 2);
+    const coneMesh = new THREE.Mesh(cone, new THREE.MeshStandardMaterial({ color: 0x42CF55 }));
+    coneMesh.position.z = 0.25;
+    this.robotMarker.add(coneMesh);
+    const base = new THREE.Mesh(
+      new THREE.SphereGeometry(0.1, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
     );
-    baseMesh.position.z = 0.3;
-    this.robotMarker.add(baseMesh);
+    base.position.z = 0.25;
+    this.robotMarker.add(base);
+    this.robotMarker.visible = false;
     this.scene.add(this.robotMarker);
 
-    // Movement trace line
+    // Movement trace line (red like APK)
     const traceGeo = new THREE.BufferGeometry();
-    const traceMat = new THREE.LineBasicMaterial({ color: 0x6879e4, opacity: 0.5, transparent: true });
+    const traceMat = new THREE.LineBasicMaterial({ color: 0xff3d3d });
     this.traceLine = new THREE.Line(traceGeo, traceMat);
     this.scene.add(this.traceLine);
 
-    // Invisible ground plane for raycasting clicks
+    // Invisible ground plane for raycasting
     const planeGeo = new THREE.PlaneGeometry(200, 200);
     const planeMat = new THREE.MeshBasicMaterial({ visible: false });
     this.groundPlane = new THREE.Mesh(planeGeo, planeMat);
     this.scene.add(this.groundPlane);
 
-    // Click handler
-    canvas.addEventListener('pointerdown', (e) => this.handleClick(e));
+    // Interaction handlers
+    canvas.addEventListener('pointerdown', (e) => this.handlePointerDown(e));
+    canvas.addEventListener('pointermove', (e) => this.handlePointerMove(e));
+    canvas.addEventListener('pointerup', (e) => this.handlePointerUp(e));
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -116,12 +153,9 @@ export class SlamScene {
 
   // ── Point Cloud ──
 
-  updatePointCloud(positions: Float32Array, colors?: Float32Array): void {
+  updatePointCloud(positions: Float32Array): void {
     const geo = this.filteredPoints.geometry;
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    if (colors) {
-      geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    }
     geo.computeBoundingSphere();
   }
 
@@ -146,12 +180,16 @@ export class SlamScene {
     this.robotMarker.position.set(position.x, position.y, position.z);
     this.robotMarker.rotation.set(0, 0, yaw);
 
-    // Auto-center camera on robot on first pose
     if (this.firstPose) {
       this.firstPose = false;
       this.controls.target.set(position.x, position.y, 0);
       this.camera.position.set(position.x, position.y - 5, 8);
     }
+  }
+
+  showRobot(visible: boolean): void {
+    this.robotMarker.visible = visible;
+    this.robotVisible = visible;
   }
 
   // ── Movement Trace ──
@@ -170,13 +208,13 @@ export class SlamScene {
     this.traceLine.geometry = new THREE.BufferGeometry();
   }
 
-  // ── Navigation Path ──
+  // ── Navigation Path (red dots like APK) ──
 
   updateNavPath(points: Float32Array): void {
     this.clearNavPath();
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
-    const mat = new THREE.PointsMaterial({ color: 0xff3d3d, size: 0.1 });
+    const mat = new THREE.PointsMaterial({ color: 0xff0000, size: 0.1 });
     this.navPathPoints = new THREE.Points(geo, mat);
     this.scene.add(this.navPathPoints);
   }
@@ -195,7 +233,6 @@ export class SlamScene {
     const group = new THREE.Group();
     group.position.set(x, y, 0);
 
-    // Sphere marker
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 12, 12),
       new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
@@ -203,21 +240,18 @@ export class SlamScene {
     sphere.position.z = 0.15;
     group.add(sphere);
 
-    // Direction indicator
     const arrow = new THREE.Mesh(
       new THREE.ConeGeometry(0.08, 0.25, 6),
       new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
     );
-    arrow.rotation.set(0, 0, yaw);
     arrow.rotation.x = Math.PI / 2;
     arrow.position.set(Math.cos(yaw) * 0.25, Math.sin(yaw) * 0.25, 0.15);
     group.add(arrow);
 
-    // Label sprite
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
-    const ctx = canvas.getContext('2d')!;
+    const labelCanvas = document.createElement('canvas');
+    labelCanvas.width = 64;
+    labelCanvas.height = 64;
+    const ctx = labelCanvas.getContext('2d')!;
     ctx.fillStyle = '#42CF55';
     ctx.beginPath();
     ctx.arc(32, 32, 28, 0, Math.PI * 2);
@@ -227,7 +261,7 @@ export class SlamScene {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(`${index + 1}`, 32, 32);
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = new THREE.CanvasTexture(labelCanvas);
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
     sprite.scale.set(0.4, 0.4, 1);
     sprite.position.z = 0.5;
@@ -238,29 +272,23 @@ export class SlamScene {
   }
 
   clearPatrolMarkers(): void {
-    for (const m of this.patrolMarkers) {
-      this.scene.remove(m);
-    }
+    for (const m of this.patrolMarkers) this.scene.remove(m);
     this.patrolMarkers = [];
   }
 
-  // ── PCD Loading ──
+  // ── PCD Loading (height-colored) ──
 
   private loadedPcd: THREE.Points | null = null;
 
   loadPCD(data: ArrayBuffer): void {
-    if (this.loadedPcd) {
-      this.scene.remove(this.loadedPcd);
-      this.loadedPcd.geometry.dispose();
-      this.loadedPcd = null;
-    }
+    this.clearLoadedPcd();
     const loader = new PCDLoader();
     const points = loader.parse(data);
-    points.material = new THREE.PointsMaterial({ size: 0.03, color: 0xaaaaaa });
+    // Apply height-based coloring like APK
+    points.material = createHeightMaterial(0.03);
     this.loadedPcd = points;
     this.scene.add(points);
 
-    // Center camera on loaded map
     points.geometry.computeBoundingSphere();
     const bs = points.geometry.boundingSphere;
     if (bs) {
@@ -277,28 +305,100 @@ export class SlamScene {
     }
   }
 
-  // ── Click Interaction ──
+  // ── Click/Drag Interaction ──
 
   setClickMode(mode: ClickMode): void {
     this.clickMode = mode;
     this.renderer.domElement.style.cursor = mode === 'none' ? '' : 'crosshair';
   }
 
-  private handleClick(e: PointerEvent): void {
-    if (this.clickMode === 'none' || !this.onMapClick) return;
-
+  private getGroundIntersection(e: PointerEvent): THREE.Vector3 | null {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const mouse = new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     );
-
     this.raycaster.setFromCamera(mouse, this.camera);
     const hits = this.raycaster.intersectObject(this.groundPlane);
-    if (hits.length > 0) {
-      const { x, y } = hits[0].point;
-      this.onMapClick(x, y);
+    return hits.length > 0 ? hits[0].point : null;
+  }
+
+  private handlePointerDown(e: PointerEvent): void {
+    if (this.clickMode === 'none') return;
+    const pt = this.getGroundIntersection(e);
+    if (!pt) return;
+
+    if (this.clickMode === 'initial_pose') {
+      // Start drag — place red sphere + disable orbit controls
+      this.poseOrigin = { x: pt.x, y: pt.y };
+      this.controls.enabled = false;
+      this.createPoseArrow(pt.x, pt.y);
+    } else if (this.clickMode === 'goal' || this.clickMode === 'patrol') {
+      this.onMapClick?.(pt.x, pt.y);
     }
+  }
+
+  private handlePointerMove(e: PointerEvent): void {
+    if (!this.poseOrigin || !this.poseArrow) return;
+    const pt = this.getGroundIntersection(e);
+    if (!pt) return;
+
+    // Update arrow direction
+    const yaw = Math.atan2(pt.y - this.poseOrigin.y, pt.x - this.poseOrigin.x);
+    this.poseArrow.rotation.set(0, 0, yaw);
+  }
+
+  private handlePointerUp(_e: PointerEvent): void {
+    if (!this.poseOrigin || !this.poseArrow) return;
+
+    // Calculate final yaw from arrow rotation
+    const yaw = this.poseArrow.rotation.z;
+    const { x, y } = this.poseOrigin;
+
+    // Clean up
+    this.scene.remove(this.poseArrow);
+    this.poseArrow = null;
+    this.poseOrigin = null;
+    this.controls.enabled = true;
+
+    // Deactivate click mode
+    this.setClickMode('none');
+
+    // Fire callback
+    this.onPoseSet?.(x, y, yaw);
+  }
+
+  private createPoseArrow(x: number, y: number): void {
+    if (this.poseArrow) this.scene.remove(this.poseArrow);
+
+    this.poseArrow = new THREE.Group();
+    this.poseArrow.position.set(x, y, 0.05);
+
+    // Red sphere at origin
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 12, 12),
+      new THREE.MeshStandardMaterial({ color: 0xff3d3d }),
+    );
+    this.poseArrow.add(sphere);
+
+    // Red arrow pointing in drag direction
+    const arrowCone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.15, 0.4, 12),
+      new THREE.MeshStandardMaterial({ color: 0xff3d3d }),
+    );
+    arrowCone.rotation.z = -Math.PI / 2;
+    arrowCone.position.x = 0.6;
+    this.poseArrow.add(arrowCone);
+
+    // Line from sphere to arrow
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0.4, 0, 0),
+    ]);
+    const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xff3d3d, linewidth: 2 }));
+    this.poseArrow.add(line);
+
+    this.scene.add(this.poseArrow);
   }
 
   // ── Camera ──
@@ -330,6 +430,5 @@ export class SlamScene {
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
-    window.removeEventListener('resize', () => this.resize());
   }
 }
