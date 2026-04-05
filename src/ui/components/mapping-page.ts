@@ -420,19 +420,13 @@ export class MappingPage {
         this.handleOdom(data);
         break;
       case RTC_TOPIC.USLAM_LOC_ODOM:
-        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
-          this.handleOdom(data);
-        }
+        this.handleOdom(data);
         break;
       case RTC_TOPIC.USLAM_LOC_CLOUD:
-        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
-          this.handleLocalizationCloud(data);
-        }
+        this.handleLocalizationCloud(data);
         break;
       case RTC_TOPIC.USLAM_NAV_PATH:
-        if (this.state === 'localized' || this.state === 'navigating' || this.state === 'patrolling') {
-          this.handleLocalizationCloud(data, 'navigation-path');
-        }
+        this.handleLocalizationCloud(data, 'navigation-path');
         break;
       case RTC_TOPIC.USLAM_CLOUD_MAP:
         this.handleCloudMap(data);
