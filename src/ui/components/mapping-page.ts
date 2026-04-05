@@ -600,7 +600,6 @@ export class MappingPage {
     if (this.requestFile) {
       this.addLog('Requesting PCD file...');
       this.requestFile('map.pcd', (data) => {
-        console.log('[slam] PCD callback, data:', data ? `${data.length} chars` : 'null');
         if (data) {
           this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
           try {
@@ -608,7 +607,6 @@ export class MappingPage {
             const binary = atob(data);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            console.log('[slam] PCD binary size:', bytes.length, 'header:', new TextDecoder().decode(bytes.slice(0, 30)));
             this.slamScene?.clearLoadedPcd();
             this.slamScene?.loadPCD(bytes.buffer);
             this.addLog('Map loaded in viewer');

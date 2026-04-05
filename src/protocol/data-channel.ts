@@ -139,7 +139,6 @@ export class DataChannelHandler {
           m.info?.req_type === 'request_static_file' &&
           m.info?.req_uuid === uuid) {
         const file = m.info.file;
-        console.log('[go2:dc] File response chunk:', file?.chunk_index, '/', file?.total_chunk_num, 'chunking:', file?.enable_chunking, 'data len:', file?.data?.length);
         if (file?.enable_chunking) {
           const chunk = file.data || '';
           chunks.push(chunk);
@@ -147,16 +146,13 @@ export class DataChannelHandler {
           // Last chunk: chunk_index >= total_chunk_num
           if (file.chunk_index !== undefined && file.total_chunk_num !== undefined &&
               file.chunk_index >= file.total_chunk_num) {
-            console.log('[go2:dc] File complete, total chunks:', chunks.length, 'total size:', chunks.reduce((a, c) => a + c.length, 0));
             this.onTopicData = prevHandler;
             onComplete(chunks.join(''));
           }
         } else if (file?.data) {
-          console.log('[go2:dc] File complete (no chunking), size:', file.data.length);
           this.onTopicData = prevHandler;
           onComplete(file.data);
         } else {
-          console.log('[go2:dc] File response with no data');
           this.onTopicData = prevHandler;
           onComplete(null);
         }
