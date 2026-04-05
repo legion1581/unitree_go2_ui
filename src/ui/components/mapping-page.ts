@@ -604,26 +604,17 @@ export class MappingPage {
         if (data) {
           this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
           try {
-            // Convert base64 to blob URL and load
+            // Convert base64 to ArrayBuffer
             const binary = atob(data);
             const bytes = new Uint8Array(binary.length);
             for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            console.log('[slam] PCD binary size:', bytes.length, 'first bytes:', Array.from(bytes.slice(0, 20)));
-            const blob = new Blob([bytes], { type: 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
+            console.log('[slam] PCD binary size:', bytes.length, 'header:', new TextDecoder().decode(bytes.slice(0, 30)));
             this.slamScene?.clearLoadedPcd();
-            this.addLog('Loading PCD in viewer...');
-            this.slamScene?.loadPCD(url).then(() => {
-              URL.revokeObjectURL(url);
-              this.addLog('Map loaded in viewer');
-            }).catch((err) => {
-              URL.revokeObjectURL(url);
-              this.addLog(`Failed to parse PCD: ${err}`);
-              console.error('[slam] PCD load error:', err);
-            });
+            this.slamScene?.loadPCD(bytes.buffer);
+            this.addLog('Map loaded in viewer');
           } catch (err) {
-            this.addLog(`Failed to decode PCD: ${err}`);
-            console.error('[slam] PCD decode error:', err);
+            this.addLog(`Failed to load PCD: ${err}`);
+            console.error('[slam] PCD error:', err);
           }
         } else {
           this.addLog('Failed to fetch PCD file (timeout or not found)');

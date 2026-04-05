@@ -255,29 +255,26 @@ export class SlamScene {
 
   private loadedPcd: THREE.Points | null = null;
 
-  loadPCD(url: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (this.loadedPcd) {
-        this.scene.remove(this.loadedPcd);
-        this.loadedPcd.geometry.dispose();
-        this.loadedPcd = null;
-      }
-      const loader = new PCDLoader();
-      loader.load(url, (points) => {
-        points.material = new THREE.PointsMaterial({ size: 0.03, color: 0xaaaaaa });
-        this.loadedPcd = points;
-        this.scene.add(points);
+  loadPCD(data: ArrayBuffer): void {
+    if (this.loadedPcd) {
+      this.scene.remove(this.loadedPcd);
+      this.loadedPcd.geometry.dispose();
+      this.loadedPcd = null;
+    }
+    const loader = new PCDLoader();
+    const points = loader.parse(data);
+    points.material = new THREE.PointsMaterial({ size: 0.03, color: 0xaaaaaa });
+    this.loadedPcd = points;
+    this.scene.add(points);
 
-        // Center camera on loaded map
-        points.geometry.computeBoundingSphere();
-        const bs = points.geometry.boundingSphere;
-        if (bs) {
-          this.controls.target.copy(bs.center);
-          this.camera.position.set(bs.center.x, bs.center.y - bs.radius, bs.radius * 1.5);
-        }
-        resolve();
-      }, undefined, reject);
-    });
+    // Center camera on loaded map
+    points.geometry.computeBoundingSphere();
+    const bs = points.geometry.boundingSphere;
+    if (bs) {
+      console.log('[slam-scene] PCD loaded:', points.geometry.getAttribute('position')?.count, 'points, bounds:', bs.center, 'r:', bs.radius);
+      this.controls.target.copy(bs.center);
+      this.camera.position.set(bs.center.x, bs.center.y - bs.radius, bs.radius * 1.5);
+    }
   }
 
   clearLoadedPcd(): void {
