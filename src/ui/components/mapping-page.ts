@@ -156,6 +156,12 @@ export class MappingPage {
 
     // ── Step 1: Map ──
     sidebar.appendChild(this.buildSection('Step 1: Map', (body) => {
+      // ── Create New ──
+      const createLabel = document.createElement('div');
+      createLabel.className = 'mapping-subsection-title';
+      createLabel.textContent = 'Create New';
+      body.appendChild(createLabel);
+
       const row = document.createElement('div');
       row.className = 'mapping-btn-row';
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
@@ -171,7 +177,25 @@ export class MappingPage {
       }));
       body.appendChild(row);
 
-      // Map ID input for loading saved maps
+      // ── Saved Maps ──
+      const savedLabel = document.createElement('div');
+      savedLabel.className = 'mapping-subsection-title';
+      savedLabel.textContent = 'Saved Maps';
+      savedLabel.style.marginTop = '10px';
+      body.appendChild(savedLabel);
+
+      this.savedMapsEl = document.createElement('div');
+      this.savedMapsEl.className = 'mapping-saved-list';
+      body.appendChild(this.savedMapsEl);
+      this.renderSavedMaps();
+
+      // ── Robot Map Management ──
+      const mgmtLabel = document.createElement('div');
+      mgmtLabel.className = 'mapping-subsection-title';
+      mgmtLabel.textContent = 'Robot Map Management';
+      mgmtLabel.style.marginTop = '10px';
+      body.appendChild(mgmtLabel);
+
       const mapIdRow = document.createElement('div');
       mapIdRow.className = 'mapping-map-id-row';
       const mapIdInput = document.createElement('input');
@@ -179,16 +203,25 @@ export class MappingPage {
       mapIdInput.placeholder = 'Map ID';
       mapIdInput.id = 'map-id-input';
       mapIdRow.appendChild(mapIdInput);
-      const loadBtn = this.btn('Load', '', () => {
+      const loadSaveBtn = this.btn('Load & Save', '', () => {
         const id = mapIdInput.value.trim();
-        if (id) {
-          this.sendCmd(`common/set_map_id/${id}`);
-          this.addLog(`Loading map: ${id}`);
+        if (!id) return;
+        this.sendCmd(`common/set_map_id/${id}`);
+        this.addLog(`Loading map: ${id}`);
+        // Save to Saved Maps with a default name
+        const maps = this.getSavedMaps();
+        if (!maps.find((m) => m.id === id)) {
+          const now = new Date();
+          const name = `Map ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+          maps.push({ id, name, date: now.toISOString() });
+          this.saveMapsToStorage(maps);
+          this.renderSavedMaps();
+          this.addLog(`Map saved: "${name}"`);
         }
       });
-      loadBtn.style.width = 'auto';
-      loadBtn.style.minWidth = '60px';
-      mapIdRow.appendChild(loadBtn);
+      loadSaveBtn.style.width = 'auto';
+      loadSaveBtn.style.minWidth = '80px';
+      mapIdRow.appendChild(loadSaveBtn);
       body.appendChild(mapIdRow);
 
       const getIdBtn = this.btn('Get Current Map ID', '', () => {
@@ -308,14 +341,6 @@ export class MappingPage {
       body.appendChild(patrolCtrlRow2);
     });
     sidebar.appendChild(this.navSection);
-
-    // ── Saved Maps ──
-    sidebar.appendChild(this.buildSection('Saved Maps', (body) => {
-      this.savedMapsEl = document.createElement('div');
-      this.savedMapsEl.className = 'mapping-saved-list';
-      body.appendChild(this.savedMapsEl);
-      this.renderSavedMaps();
-    }));
 
     // ── Server Log ──
     sidebar.appendChild(this.buildSection('Server Log', (body) => {
@@ -913,6 +938,13 @@ export class MappingPage {
       dateEl.className = 'mapping-map-date';
       dateEl.textContent = new Date(map.date).toLocaleString();
       info.appendChild(dateEl);
+
+      // Map ID shown on hover
+      const idEl = document.createElement('span');
+      idEl.className = 'mapping-map-id';
+      idEl.textContent = `ID: ${map.id}`;
+      info.appendChild(idEl);
+
       row.appendChild(info);
 
       const actions = document.createElement('div');

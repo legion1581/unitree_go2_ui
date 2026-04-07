@@ -1580,6 +1580,23 @@ body {
   color: #555;
 }
 
+.mapping-map-id {
+  font-size: 10px;
+  color: #6879e4;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height 0.2s, opacity 0.2s;
+}
+
+.mapping-map-row:hover .mapping-map-id {
+  max-height: 20px;
+  opacity: 1;
+}
+
 .mapping-map-actions {
   display: flex;
   gap: 4px;
