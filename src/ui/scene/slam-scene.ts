@@ -65,10 +65,8 @@ export class SlamScene {
   private groundPlane: THREE.Mesh;
   private raycaster = new THREE.Raycaster();
   private clickMode: ClickMode = 'none';
-  /** Fires (x, y) for simple click modes (goal, patrol) */
-  onMapClick: ((x: number, y: number) => void) | null = null;
-  /** Fires (x, y, yaw) for initial_pose after drag release */
-  onPoseSet: ((x: number, y: number, yaw: number) => void) | null = null;
+  /** Fires (x, y, yaw) after click+drag release for any pose mode */
+  onPoseSet: ((mode: ClickMode, x: number, y: number, yaw: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -365,14 +363,13 @@ export class SlamScene {
     const pt = this.getGroundIntersection(e);
     if (!pt) return;
 
-    if (this.clickMode === 'initial_pose') {
-      // Start drag — place red sphere + disable orbit controls
-      this.poseOrigin = { x: pt.x, y: pt.y };
-      this.controls.enabled = false;
-      this.createPoseArrow(pt.x, pt.y);
-    } else if (this.clickMode === 'goal' || this.clickMode === 'patrol') {
-      this.onMapClick?.(pt.x, pt.y);
-    }
+    // All modes use click+drag to set position + orientation
+    this.poseOrigin = { x: pt.x, y: pt.y };
+    this.controls.enabled = false;
+    const color = this.clickMode === 'initial_pose' ? 0xff3d3d
+      : this.clickMode === 'goal' ? 0xFCD335
+      : 0x42CF55; // patrol
+    this.createPoseArrow(pt.x, pt.y, color);
   }
 
   private handlePointerMove(e: PointerEvent): void {
@@ -388,9 +385,9 @@ export class SlamScene {
   private handlePointerUp(_e: PointerEvent): void {
     if (!this.poseOrigin || !this.poseArrow) return;
 
-    // Calculate final yaw from arrow rotation
     const yaw = this.poseArrow.rotation.z;
     const { x, y } = this.poseOrigin;
+    const mode = this.clickMode;
 
     // Clean up
     this.scene.remove(this.poseArrow);
@@ -398,41 +395,40 @@ export class SlamScene {
     this.poseOrigin = null;
     this.controls.enabled = true;
 
-    // Deactivate click mode
-    this.setClickMode('none');
+    // For patrol, keep click mode active for adding multiple points
+    if (mode !== 'patrol') {
+      this.setClickMode('none');
+    }
 
-    // Fire callback
-    this.onPoseSet?.(x, y, yaw);
+    // Fire callback with mode
+    this.onPoseSet?.(mode, x, y, yaw);
   }
 
-  private createPoseArrow(x: number, y: number): void {
+  private createPoseArrow(x: number, y: number, color = 0xff3d3d): void {
     if (this.poseArrow) this.scene.remove(this.poseArrow);
 
     this.poseArrow = new THREE.Group();
     this.poseArrow.position.set(x, y, 0.05);
 
-    // Red sphere at origin
     const sphere = new THREE.Mesh(
       new THREE.SphereGeometry(0.2, 12, 12),
-      new THREE.MeshStandardMaterial({ color: 0xff3d3d }),
+      new THREE.MeshStandardMaterial({ color }),
     );
     this.poseArrow.add(sphere);
 
-    // Red arrow pointing in drag direction
     const arrowCone = new THREE.Mesh(
       new THREE.ConeGeometry(0.15, 0.4, 12),
-      new THREE.MeshStandardMaterial({ color: 0xff3d3d }),
+      new THREE.MeshStandardMaterial({ color }),
     );
     arrowCone.rotation.z = -Math.PI / 2;
     arrowCone.position.x = 0.6;
     this.poseArrow.add(arrowCone);
 
-    // Line from sphere to arrow
     const lineGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 0, 0),
       new THREE.Vector3(0.4, 0, 0),
     ]);
-    const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color: 0xff3d3d, linewidth: 2 }));
+    const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({ color, linewidth: 2 }));
     this.poseArrow.add(line);
 
     this.scene.add(this.poseArrow);

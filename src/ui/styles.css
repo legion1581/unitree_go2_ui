@@ -1642,3 +1642,67 @@ body {
   width: auto;
   padding: 6px 16px;
 }
+
+/* Disabled section (greyed out when prerequisites not met) */
+.mapping-section-disabled {
+  opacity: 0.35;
+  pointer-events: none;
+  position: relative;
+}
+
+/* Hint text shown when section is disabled */
+.mapping-hint {
+  font-size: 11px;
+  color: #FCD335;
+  padding: 4px 8px;
+  margin-bottom: 4px;
+  border-left: 2px solid #FCD335;
+  background: rgba(252, 211, 53, 0.05);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Localization status inline */
+.mapping-loc-status {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 0;
+}
+
+/* Sub-section label inside a section */
+.mapping-subsection-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-top: 6px;
+  margin-bottom: 2px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid #1f2229;
+}
+
+/* Toast notification */
+.mapping-notification {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: #1a1d23;
+  color: #e0e0e0;
+  border: 1px solid #2a2d35;
+  border-left: 3px solid #42CF55;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 200;
+  max-width: 400px;
+  text-align: center;
+}
+
+.mapping-notification-show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

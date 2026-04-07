@@ -28,11 +28,29 @@ export class MappingPage {
   private logEl!: HTMLElement;
   private activeClickBtn: HTMLButtonElement | null = null;
   private patrolCount = 0;
+  private patrolPoints: Array<{ x: number; y: number; yaw: number }> = [];
   private slamWorker: Worker | null = null;
   private workerReady = false;
   private requestFile: ((path: string, cb: (data: string | null) => void) => void) | null = null;
   private savedMapsEl!: HTMLElement;
   private currentMapId = '';
+
+  // Flow gating state
+  private mapLoaded = false;
+  private localized = false;
+  private localizingInProgress = false;
+
+  // Section references for enabling/disabling
+  private locSection!: HTMLElement;
+  private navSection!: HTMLElement;
+  private locHint!: HTMLElement;
+  private navHint!: HTMLElement;
+
+  // Localization button references
+  private locStartBtn!: HTMLButtonElement;
+  private locSetPoseBtn!: HTMLButtonElement;
+  private locAbortBtn!: HTMLButtonElement;
+  private locStatusEl!: HTMLElement;
 
   constructor(
     parent: HTMLElement,
@@ -91,8 +109,7 @@ export class MappingPage {
     // Init scene after DOM is attached
     requestAnimationFrame(() => {
       this.slamScene = new SlamScene(canvas);
-      this.slamScene.onMapClick = (x, y) => this.handleMapClick(x, y);
-      this.slamScene.onPoseSet = (x, y, yaw) => this.handlePoseSet(x, y, yaw);
+      this.slamScene.onPoseSet = (mode, x, y, yaw) => this.handlePoseSet(mode, x, y, yaw);
     });
 
     // Init SLAM worker (libvoxel.wasm for point cloud processing)
@@ -111,25 +128,25 @@ export class MappingPage {
         this.slamScene?.updatePointCloud(output);
         this.slamScene?.updateLaserCloud(directOutput);
       } else if (msg.type === 'preview') {
-        // Localization real-time point cloud (white, not accumulated)
         const { points } = msg.data as { points: Float32Array };
         this.slamScene?.updateLaserCloud(points);
       } else if (msg.type === 'navigation-path') {
-        // Red navigation path
         const { points } = msg.data as { points: Float32Array };
         this.slamScene?.updateNavPath(points);
       }
     };
 
     // Subscribe to all USLAM topics on entry
-    // (localization data only processed after localization succeeds)
     for (const topic of ALL_USLAM_TOPICS) {
       this.subscribe(topic);
     }
+
+    // Apply initial flow gating
+    this.updateFlowGating();
   }
 
   private buildSidebar(sidebar: HTMLElement): void {
-    // Status section
+    // ── Status ──
     sidebar.appendChild(this.buildSection('Status', (body) => {
       this.stateEl = document.createElement('div');
       this.stateEl.className = 'mapping-state';
@@ -137,8 +154,8 @@ export class MappingPage {
       body.appendChild(this.stateEl);
     }));
 
-    // Map Management section
-    sidebar.appendChild(this.buildSection('Map', (body) => {
+    // ── Step 1: Map ──
+    sidebar.appendChild(this.buildSection('Step 1: Map', (body) => {
       const row = document.createElement('div');
       row.className = 'mapping-btn-row';
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
@@ -165,7 +182,6 @@ export class MappingPage {
       const loadBtn = this.btn('Load', '', () => {
         const id = mapIdInput.value.trim();
         if (id) {
-          // Map ID is already base64 — send as-is
           this.sendCmd(`common/set_map_id/${id}`);
           this.addLog(`Loading map: ${id}`);
         }
@@ -181,69 +197,119 @@ export class MappingPage {
       body.appendChild(getIdBtn);
     }));
 
-    // Localization section
-    sidebar.appendChild(this.buildSection('Localization', (body) => {
-      body.appendChild(this.clickModeBtn('Set Initial Pose', 'initial_pose'));
-      body.appendChild(this.btn('Start Localization', '', () => {
-        this.sendCmd('localization/start');
-        this.setState('localized');
-      }));
-      body.appendChild(this.btn('Stop Localization', '', () => {
-        this.sendCmd('localization/stop');
-        this.setState('idle');
-      }));
-    }));
+    // ── Step 2: Localization ──
+    this.locSection = this.buildSection('Step 2: Localization', (body) => {
+      this.locHint = document.createElement('div');
+      this.locHint.className = 'mapping-hint';
+      this.locHint.textContent = 'Create or load a map first';
+      body.appendChild(this.locHint);
 
-    // Navigation section (Go + Charge)
-    sidebar.appendChild(this.buildSection('Navigation', (body) => {
-      body.appendChild(this.clickModeBtn('Set Goal', 'goal'));
-      const navRow = document.createElement('div');
-      navRow.className = 'mapping-btn-row';
-      navRow.appendChild(this.btn('Go', 'mapping-btn-start', () => {
+      // Status feedback
+      this.locStatusEl = document.createElement('div');
+      this.locStatusEl.className = 'mapping-loc-status';
+      this.locStatusEl.style.display = 'none';
+      body.appendChild(this.locStatusEl);
+
+      // Start Localization (green)
+      this.locStartBtn = this.btn('Start Localization', 'mapping-btn-start', () => {
+        this.localizingInProgress = true;
+        this.locStartBtn.style.display = 'none';
+        this.locAbortBtn.style.display = '';
+        this.setLocStatus('Localizing...', '#6879e4');
+        this.sendCmd('localization/start');
+      });
+      body.appendChild(this.locStartBtn);
+
+      // Set Initial Pose (shown after localization fails or as alternative)
+      this.locSetPoseBtn = this.clickModeBtn('Set Initial Pose (click + drag on map)', 'initial_pose');
+      body.appendChild(this.locSetPoseBtn);
+
+      // Abort / Stop (red)
+      this.locAbortBtn = this.btn('Abort Localization', 'mapping-btn-stop', () => {
+        this.sendCmd('localization/stop');
+        this.localizingInProgress = false;
+        this.localized = false;
+        this.locAbortBtn.style.display = 'none';
+        this.locStartBtn.style.display = '';
+        this.setLocStatus('', '');
+        this.setState('idle');
+        this.updateFlowGating();
+      });
+      this.locAbortBtn.style.display = 'none';
+      body.appendChild(this.locAbortBtn);
+    });
+    sidebar.appendChild(this.locSection);
+
+    // ── Step 3: Navigation & Patrol ──
+    this.navSection = this.buildSection('Step 3: Navigation', (body) => {
+      this.navHint = document.createElement('div');
+      this.navHint.className = 'mapping-hint';
+      this.navHint.textContent = 'Localize the robot first';
+      body.appendChild(this.navHint);
+
+      // ── Go to Goal sub-section ──
+      const goalLabel = document.createElement('div');
+      goalLabel.className = 'mapping-subsection-title';
+      goalLabel.textContent = 'Go to Goal';
+      body.appendChild(goalLabel);
+
+      body.appendChild(this.clickModeBtn('Set Goal (click + drag on map)', 'goal'));
+      const goalRow = document.createElement('div');
+      goalRow.className = 'mapping-btn-row';
+      goalRow.appendChild(this.btn('Navigate to Goal', 'mapping-btn-start', () => {
         this.sendCmd('navigation/start');
         this.setState('navigating');
       }));
-      navRow.appendChild(this.btn('Charge', '', () => {
-        // Navigate to charging dock (odom origin [-0.15, 0])
+      goalRow.appendChild(this.btn('Go to Charging Station', '', () => {
         this.sendCmd('navigation/start');
         setTimeout(() => {
           this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
-          this.addLog('Navigating to charge dock...');
+          this.addLog('Navigating to charging station...');
         }, 1000);
         this.setState('navigating');
       }));
-      body.appendChild(navRow);
+      body.appendChild(goalRow);
       body.appendChild(this.btn('Stop Navigation', 'mapping-btn-stop', () => {
         this.sendCmd('navigation/stop');
         this.slamScene?.clearNavPath();
         this.setState('localized');
       }));
-    }));
 
-    // Patrol section
-    sidebar.appendChild(this.buildSection('Patrol', (body) => {
-      body.appendChild(this.clickModeBtn('Add Waypoint', 'patrol'));
-      body.appendChild(this.btn('Clear All', 'mapping-btn-warn', () => {
+      // ── Patrol sub-section ──
+      const patrolLabel = document.createElement('div');
+      patrolLabel.className = 'mapping-subsection-title';
+      patrolLabel.textContent = 'Patrol';
+      patrolLabel.style.marginTop = '10px';
+      body.appendChild(patrolLabel);
+
+      body.appendChild(this.clickModeBtn('Add Waypoint (click + drag on map)', 'patrol'));
+      body.appendChild(this.btn('Clear All Waypoints', 'mapping-btn-warn', () => {
         this.sendCmd('patrol/clear_all_patrol_points');
         this.slamScene?.clearPatrolMarkers();
+        this.patrolPoints = [];
         this.patrolCount = 0;
+        this.addLog('All patrol waypoints cleared');
       }));
-      const row = document.createElement('div');
-      row.className = 'mapping-btn-row';
-      row.appendChild(this.btn('Start', '', () => {
-        this.sendCmd('patrol/start');
-        this.setState('patrolling');
-      }));
-      row.appendChild(this.btn('Pause', '', () => this.sendCmd('patrol/pause')));
-      row.appendChild(this.btn('Go', '', () => this.sendCmd('patrol/go')));
-      row.appendChild(this.btn('Stop', 'mapping-btn-stop', () => {
-        this.sendCmd('patrol/stop');
-        this.setState('idle');
-      }));
-      body.appendChild(row);
-    }));
 
-    // Saved Maps section
+      const patrolCtrlRow = document.createElement('div');
+      patrolCtrlRow.className = 'mapping-btn-row';
+      patrolCtrlRow.appendChild(this.btn('Execute Patrol', 'mapping-btn-start', () => {
+        this.executePatrol();
+      }));
+      patrolCtrlRow.appendChild(this.btn('Pause', '', () => this.sendCmd('patrol/pause')));
+      body.appendChild(patrolCtrlRow);
+      const patrolCtrlRow2 = document.createElement('div');
+      patrolCtrlRow2.className = 'mapping-btn-row';
+      patrolCtrlRow2.appendChild(this.btn('Resume', '', () => this.sendCmd('patrol/go')));
+      patrolCtrlRow2.appendChild(this.btn('Stop Patrol', 'mapping-btn-stop', () => {
+        this.sendCmd('patrol/stop');
+        this.setState('localized');
+      }));
+      body.appendChild(patrolCtrlRow2);
+    });
+    sidebar.appendChild(this.navSection);
+
+    // ── Saved Maps ──
     sidebar.appendChild(this.buildSection('Saved Maps', (body) => {
       this.savedMapsEl = document.createElement('div');
       this.savedMapsEl.className = 'mapping-saved-list';
@@ -251,7 +317,7 @@ export class MappingPage {
       this.renderSavedMaps();
     }));
 
-    // Server Log section
+    // ── Server Log ──
     sidebar.appendChild(this.buildSection('Server Log', (body) => {
       this.logEl = document.createElement('div');
       this.logEl.className = 'mapping-log';
@@ -310,44 +376,120 @@ export class MappingPage {
     this.publish(RTC_TOPIC.USLAM_CMD, cmd);
   }
 
-  private handleMapClick(x: number, y: number): void {
-    const mode = this.activeClickBtn ? this.slamScene?.['clickMode'] as ClickMode : 'none';
-    const yaw = 0; // default yaw for v1
+  /** Unified handler for all click+drag pose sets (initial_pose, goal, patrol) */
+  private handlePoseSet(mode: ClickMode, x: number, y: number, yaw: number): void {
+    const yawDeg = (yaw * 180 / Math.PI).toFixed(1);
 
     switch (mode) {
       case 'initial_pose':
-        // Handled by onPoseSet drag callback instead
+        this.sendCmd(`localization/set_initial_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
+        this.addLog(`Initial pose: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
+        // Deactivate click mode button
+        this.activeClickBtn?.classList.remove('active');
+        this.activeClickBtn = null;
+        // Auto-start localization after setting pose
+        this.localizingInProgress = true;
+        this.locStartBtn.style.display = 'none';
+        this.locAbortBtn.style.display = '';
+        this.setLocStatus('Localizing...', '#6879e4');
+        setTimeout(() => {
+          this.sendCmd('localization/start');
+        }, 100);
         break;
 
       case 'goal':
         this.sendCmd(`navigation/set_goal_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
-        this.addLog(`Goal set: (${x.toFixed(2)}, ${y.toFixed(2)})`);
+        this.addLog(`Goal set: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
         this.activeClickBtn?.classList.remove('active');
         this.activeClickBtn = null;
-        this.slamScene?.setClickMode('none');
         break;
 
       case 'patrol':
-        this.sendCmd(`patrol/add_patrol_point/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
+        this.patrolPoints.push({ x, y, yaw });
         this.slamScene?.addPatrolMarker(x, y, yaw, this.patrolCount);
         this.patrolCount++;
-        this.addLog(`Waypoint ${this.patrolCount} added: (${x.toFixed(2)}, ${y.toFixed(2)})`);
+        this.addLog(`Waypoint ${this.patrolCount}: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
         // Keep patrol click mode active for adding multiple points
         break;
     }
   }
 
-  /** Called when user clicks + drags to set initial pose with orientation */
-  private handlePoseSet(x: number, y: number, yaw: number): void {
-    this.sendCmd(`localization/set_initial_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
-    this.addLog(`Initial pose: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${(yaw * 180 / Math.PI).toFixed(1)}°`);
-    // Deactivate click mode button
-    this.activeClickBtn?.classList.remove('active');
-    this.activeClickBtn = null;
-    // Auto-start localization after setting pose
+  // ── Patrol Execution (matches APK flow) ──
+
+  private async executePatrol(): Promise<void> {
+    if (this.patrolPoints.length < 2) {
+      this.addLog('Need at least 2 waypoints to start patrol');
+      this.showNotification('Add at least 2 waypoints before executing patrol', '#FCD335');
+      return;
+    }
+
+    this.addLog(`Executing patrol with ${this.patrolPoints.length} waypoints...`);
+
+    // Step 1: Clear all existing points on robot
+    this.sendCmd('patrol/clear_all_patrol_points');
+    await this.delay(200);
+
+    // Step 2: Re-add all points with yaw - PI adjustment (matches APK)
+    for (const pt of this.patrolPoints) {
+      const adjustedYaw = pt.yaw - Math.PI;
+      this.sendCmd(`patrol/add_patrol_point/${pt.x.toFixed(3)}/${pt.y.toFixed(3)}/${adjustedYaw.toFixed(3)}`);
+      await this.delay(100);
+    }
+
+    // Step 3: Set time limits (default: unlimited total, 30s per point, 0 charge)
+    this.sendCmd('patrol/set_total_time_limit/-1');
+    this.sendCmd('patrol/set_patrol_time_limit/30');
+    this.sendCmd('patrol/set_charge_time_limit/0');
+    await this.delay(100);
+
+    // Step 4: Start patrol
+    this.sendCmd('patrol/start');
+    await this.delay(200);
+
+    // Step 5: Go
+    this.sendCmd('patrol/go');
+    this.setState('patrolling');
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // ── Flow Gating ──
+
+  private updateFlowGating(): void {
+    // Localization: requires map
+    const canLocalize = this.mapLoaded;
+    this.locSection.classList.toggle('mapping-section-disabled', !canLocalize);
+    this.locHint.style.display = canLocalize ? 'none' : '';
+
+    // Navigation & Patrol: requires localized
+    const canNavigate = this.mapLoaded && this.localized;
+    this.navSection.classList.toggle('mapping-section-disabled', !canNavigate);
+    this.navHint.style.display = canNavigate ? 'none' : '';
+  }
+
+  private setLocStatus(msg: string, color: string): void {
+    if (!msg) {
+      this.locStatusEl.style.display = 'none';
+      return;
+    }
+    this.locStatusEl.style.display = '';
+    this.locStatusEl.textContent = msg;
+    this.locStatusEl.style.color = color;
+  }
+
+  private showNotification(msg: string, color: string): void {
+    const el = document.createElement('div');
+    el.className = 'mapping-notification';
+    el.textContent = msg;
+    el.style.borderLeftColor = color;
+    this.container.appendChild(el);
+    setTimeout(() => el.classList.add('mapping-notification-show'), 10);
     setTimeout(() => {
-      this.sendCmd('localization/start');
-    }, 100);
+      el.classList.remove('mapping-notification-show');
+      setTimeout(() => el.remove(), 300);
+    }, 4000);
   }
 
   // ── State ──
@@ -439,33 +581,73 @@ export class MappingPage {
     this.addLog(msg);
     console.log('[slam] Server log:', msg);
 
-    // State transitions from server messages
-    if (msg.includes('mapping/stop/success')) this.setState('idle');
+    // ── Map state transitions ──
+    if (msg.includes('mapping/stop/success')) {
+      this.setState('idle');
+      this.mapLoaded = true;
+      this.updateFlowGating();
+    }
     if (msg.includes('mapping/start/success')) this.setState('mapping');
+
+    // Map loaded via set_map_id
+    if (msg.includes('common/set_map_id') && msg.includes('success')) {
+      this.mapLoaded = true;
+      this.updateFlowGating();
+      this.showNotification('Map loaded successfully', '#42CF55');
+    }
+
+    // ── Localization state transitions ──
     if (msg.includes('localization') && msg.includes('succeed')) {
+      this.localizingInProgress = false;
+      this.localized = true;
       this.setState('localized');
       this.slamScene?.showRobot(true);
-      this.addLog('Localization successful — robot visible on map');
+
+      // Update localization UI
+      this.locStartBtn.style.display = 'none';
+      this.locAbortBtn.style.display = '';
+      this.locAbortBtn.textContent = 'Stop Localization';
+      this.setLocStatus('Localized', '#42CF55');
+      this.showNotification('Localization successful - robot visible on map', '#42CF55');
+      this.updateFlowGating();
     }
     if (msg.includes('localization') && msg.includes('failed')) {
+      this.localizingInProgress = false;
+      this.localized = false;
       this.setState('idle');
-      this.addLog('Localization failed');
+
+      // Update localization UI — prompt user to set initial pose
+      this.locStartBtn.style.display = '';
+      this.locAbortBtn.style.display = 'none';
+      this.setLocStatus('Localization failed — please set initial pose and try again', '#FF3D3D');
+      this.showNotification('Localization failed. Try setting the initial pose manually.', '#FF3D3D');
+      this.updateFlowGating();
     }
+
+    // ── Navigation state transitions ──
     if (msg.includes('REACHED')) {
       this.setState('localized');
       this.slamScene?.clearNavPath();
-      this.addLog('Navigation goal reached');
+      this.showNotification('Navigation goal reached', '#42CF55');
     }
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
     if (msg.includes('localization/stop/success')) {
+      this.localized = false;
+      this.localizingInProgress = false;
       this.slamScene?.showRobot(false);
+      this.locStartBtn.style.display = '';
+      this.locAbortBtn.style.display = 'none';
+      this.setLocStatus('', '');
+      this.updateFlowGating();
     }
 
-    // Map ID response: "common/get_map_id/map_id/{mapId}"
+    // ── Map ID response ──
     if (msg.includes('common/get_map_id/map_id')) {
       const mapId = msg.slice(msg.lastIndexOf('/') + 1);
       if (mapId && mapId !== 'map_id') {
         this.currentMapId = mapId;
+        this.mapLoaded = true;
+        this.updateFlowGating();
         const input = this.container.querySelector('#map-id-input') as HTMLInputElement;
         if (input) input.value = mapId;
         this.addLog(`Current map ID: ${mapId}`);
@@ -475,7 +657,6 @@ export class MappingPage {
     // After mapping stops, get the map ID so user can save it
     if (msg.includes('mapping/stop/success')) {
       this.sendCmd('common/get_map_id');
-      // Prompt save after a short delay to let map ID arrive
       setTimeout(() => this.saveCurrentMap(), 1500);
     }
   }
