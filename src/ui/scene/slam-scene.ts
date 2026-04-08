@@ -165,26 +165,45 @@ export class SlamScene {
     this.laserPoints.geometry = new THREE.BufferGeometry();
   }
 
+  /** Clear all visualization: point clouds, trace, markers, PCD */
+  clearAll(): void {
+    this.clearPointCloud();
+    this.clearLoadedPcd();
+    this.clearTrace();
+    this.clearNavPath();
+    this.clearGoalMarker();
+    this.clearPatrolMarkers();
+  }
+
   // ── Robot Position ──
 
   private firstPose = true;
   private lastQuaternion = new THREE.Quaternion();
+  private smoothPos = new THREE.Vector3();
+  private static readonly POS_LERP = 0.3;   // Position smoothing factor
+  private static readonly ROT_LERP = 0.3;   // Rotation smoothing factor (matching APK)
 
   updateRobotPose(position: { x: number; y: number; z: number }, yaw: number): void {
-    this.robotMarker.position.set(position.x, position.y, position.z);
-
-    // SLERP rotation smoothing (0.3 factor, matching APK's lerpQuaternion)
     const target = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, yaw));
-    this.lastQuaternion.slerpQuaternions(this.lastQuaternion, target, 0.3);
-    this.robotMarker.quaternion.copy(this.lastQuaternion);
 
     if (this.firstPose) {
       this.firstPose = false;
-      this.lastQuaternion.copy(target); // snap on first pose
+      this.smoothPos.set(position.x, position.y, position.z);
+      this.lastQuaternion.copy(target);
+      this.robotMarker.position.copy(this.smoothPos);
       this.robotMarker.quaternion.copy(target);
       this.controls.target.set(position.x, position.y, 0);
       this.camera.position.set(position.x, position.y - 5, 8);
+      return;
     }
+
+    // EMA position smoothing to reduce odom jitter
+    this.smoothPos.lerp(new THREE.Vector3(position.x, position.y, position.z), SlamScene.POS_LERP);
+    this.robotMarker.position.copy(this.smoothPos);
+
+    // SLERP rotation smoothing (matching APK's lerpQuaternion)
+    this.lastQuaternion.slerpQuaternions(this.lastQuaternion, target, SlamScene.ROT_LERP);
+    this.robotMarker.quaternion.copy(this.lastQuaternion);
   }
 
   showRobot(visible: boolean): void {

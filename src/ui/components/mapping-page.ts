@@ -177,8 +177,7 @@ export class MappingPage {
       const row = document.createElement('div');
       row.className = 'mapping-btn-row';
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
-        this.slamScene?.clearPointCloud();
-        this.slamScene?.clearTrace();
+        this.slamScene?.clearAll();
         this.slamWorker?.postMessage('clear');
         this.sendCmd('mapping/start');
         this.setState('mapping');
@@ -934,6 +933,11 @@ export class MappingPage {
 
   private loadMap(mapId: string): void {
     this.addLog(`Loading map ${mapId}...`);
+    // Clear all existing visualization before loading new map
+    this.slamScene?.clearAll();
+    this.slamWorker?.postMessage('clear');
+    this.patrolPoints = [];
+    this.patrolCount = 0;
     // Map ID is already base64 from the robot — send as-is
     this.sendCmd(`common/set_map_id/${mapId}`);
     this.currentMapId = mapId;
