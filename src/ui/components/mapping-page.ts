@@ -434,6 +434,7 @@ export class MappingPage {
         break;
 
       case 'goal':
+        console.log(`[slam] Goal pose: x=${x.toFixed(3)} y=${y.toFixed(3)} yaw=${yaw.toFixed(3)} (${yawDeg}°)`);
         this.sendCmd(`navigation/set_goal_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
         this.slamScene?.setGoalMarker(x, y, yaw);
         this.addLog(`Goal set: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
@@ -442,11 +443,14 @@ export class MappingPage {
         break;
 
       case 'patrol':
+        console.log(`[slam] Patrol waypoint ${this.patrolCount + 1}: x=${x.toFixed(3)} y=${y.toFixed(3)} yaw=${yaw.toFixed(3)} (${yawDeg}°)`);
         this.patrolPoints.push({ x, y, yaw });
         this.slamScene?.addPatrolMarker(x, y, yaw, this.patrolCount);
         this.patrolCount++;
         this.addLog(`Waypoint ${this.patrolCount}: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
-        // Keep patrol click mode active for adding multiple points
+        // Auto-deactivate after placing (same as Set Goal)
+        this.activeClickBtn?.classList.remove('active');
+        this.activeClickBtn = null;
         break;
     }
   }
@@ -519,13 +523,32 @@ export class MappingPage {
   }
 
   private setNavMode(mode: 'goal' | 'patrol'): void {
+    const prev = this.navMode;
     this.navMode = mode;
+
     // Deactivate any active click mode when switching
     if (this.activeClickBtn) {
       this.activeClickBtn.classList.remove('active');
       this.activeClickBtn = null;
       this.slamScene?.setClickMode('none');
     }
+
+    // Cleanup when leaving patrol (matching APK: pause + stop + clear visuals)
+    if (prev === 'patrol' && mode === 'goal') {
+      this.sendCmd('patrol/pause');
+      this.sendCmd('patrol/stop');
+      this.slamScene?.clearPatrolMarkers();
+      this.slamScene?.clearTrace();
+      this.patrolPaused = false;
+      this.addLog('Patrol stopped — switched to Go to Goal');
+    }
+
+    // Cleanup when leaving goal
+    if (prev === 'goal' && mode === 'patrol') {
+      this.slamScene?.clearGoalMarker();
+      this.slamScene?.clearNavPath();
+    }
+
     // Toggle panels
     this.goalPanel.style.display = mode === 'goal' ? '' : 'none';
     this.patrolPanel.style.display = mode === 'patrol' ? '' : 'none';

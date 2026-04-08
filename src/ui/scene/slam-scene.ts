@@ -225,10 +225,17 @@ export class SlamScene {
     this.go2Model?.updateMotorState(motors);
   }
 
-  // ── Movement Trace ──
+  // ── Movement Trace (comet tail — keeps last MAX_TRACE points) ──
+
+  private static readonly MAX_TRACE_POINTS = 200;
 
   addTracePoint(x: number, y: number, z: number): void {
     this.tracePositions.push(x, y, z);
+    // Comet tail: trim oldest points beyond limit
+    const max3 = SlamScene.MAX_TRACE_POINTS * 3;
+    if (this.tracePositions.length > max3) {
+      this.tracePositions.splice(0, this.tracePositions.length - max3);
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(this.tracePositions, 3));
     this.traceLine.geometry.dispose();
@@ -471,10 +478,8 @@ export class SlamScene {
     this.holdPlaced = false;
     this.controls.enabled = true;
 
-    // For patrol, keep click mode active for adding multiple points
-    if (mode !== 'patrol') {
-      this.setClickMode('none');
-    }
+    // Deactivate click mode after placing (user re-activates for next point)
+    this.setClickMode('none');
 
     // Fire callback with mode
     this.onPoseSet?.(mode, x, y, yaw);
