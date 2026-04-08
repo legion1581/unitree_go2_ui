@@ -1472,6 +1472,17 @@ body {
   color: #fff;
 }
 
+.mapping-btn-highlight {
+  border-color: #FCD335 !important;
+  color: #FCD335 !important;
+  animation: mapping-pulse 1.5s ease-in-out 3;
+}
+
+@keyframes mapping-pulse {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 8px rgba(252, 211, 53, 0.4); }
+}
+
 .mapping-btn-row {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

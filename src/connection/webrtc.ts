@@ -126,7 +126,6 @@ export class WebRTCConnection {
     }
   }
 
-  private binLogCount = 0;
 
   private handleChannelMessage(data: ArrayBuffer | string): void {
     if (typeof data === 'string') {
@@ -134,14 +133,6 @@ export class WebRTCConnection {
       return;
     }
 
-    // Log binary messages that contain localization topics
-    if (this.binLogCount < 10 && data.byteLength > 20) {
-      const preview = new TextDecoder().decode(new Uint8Array(data, 0, Math.min(200, data.byteLength)));
-      if (preview.includes('localization') || preview.includes('navigation/global')) {
-        console.log('[go2:rtc] Binary msg with loc topic, size:', data.byteLength, preview.slice(0, 100));
-        this.binLogCount++;
-      }
-    }
 
     if (data.byteLength < 4) return;
 

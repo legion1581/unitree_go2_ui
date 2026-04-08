@@ -189,45 +189,11 @@ export class MappingPage {
       body.appendChild(this.savedMapsEl);
       this.renderSavedMaps();
 
-      // ── Robot Map Management ──
-      const mgmtLabel = document.createElement('div');
-      mgmtLabel.className = 'mapping-subsection-title';
-      mgmtLabel.textContent = 'Robot Map Management';
-      mgmtLabel.style.marginTop = '10px';
-      body.appendChild(mgmtLabel);
-
-      const mapIdRow = document.createElement('div');
-      mapIdRow.className = 'mapping-map-id-row';
+      // Hidden map ID input (used internally by Get Current Map ID)
       const mapIdInput = document.createElement('input');
-      mapIdInput.className = 'mapping-input';
-      mapIdInput.placeholder = 'Map ID';
+      mapIdInput.type = 'hidden';
       mapIdInput.id = 'map-id-input';
-      mapIdRow.appendChild(mapIdInput);
-      const loadSaveBtn = this.btn('Load & Save', '', () => {
-        const id = mapIdInput.value.trim();
-        if (!id) return;
-        this.sendCmd(`common/set_map_id/${id}`);
-        this.addLog(`Loading map: ${id}`);
-        // Save to Saved Maps with a default name
-        const maps = this.getSavedMaps();
-        if (!maps.find((m) => m.id === id)) {
-          const now = new Date();
-          const name = `Map ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-          maps.push({ id, name, date: now.toISOString() });
-          this.saveMapsToStorage(maps);
-          this.renderSavedMaps();
-          this.addLog(`Map saved: "${name}"`);
-        }
-      });
-      loadSaveBtn.style.width = 'auto';
-      loadSaveBtn.style.minWidth = '80px';
-      mapIdRow.appendChild(loadSaveBtn);
-      body.appendChild(mapIdRow);
-
-      const getIdBtn = this.btn('Get Current Map ID', '', () => {
-        this.sendCmd('common/get_map_id');
-      });
-      body.appendChild(getIdBtn);
+      body.appendChild(mapIdInput);
     }));
 
     // ── Step 2: Localization ──
@@ -243,17 +209,18 @@ export class MappingPage {
       this.locStatusEl.style.display = 'none';
       body.appendChild(this.locStatusEl);
 
-      // Start Localization (green)
+      // Start Localization (green) — tries auto-localization first
       this.locStartBtn = this.btn('Start Localization', 'mapping-btn-start', () => {
         this.localizingInProgress = true;
         this.locStartBtn.style.display = 'none';
         this.locAbortBtn.style.display = '';
-        this.setLocStatus('Localizing...', '#6879e4');
+        this.locSetPoseBtn.classList.remove('mapping-btn-highlight');
+        this.setLocStatus('Attempting auto-localization...', '#6879e4');
         this.sendCmd('localization/start');
       });
       body.appendChild(this.locStartBtn);
 
-      // Set Initial Pose (shown after localization fails or as alternative)
+      // Set Initial Pose — subtle by default, highlighted after auto-localization fails
       this.locSetPoseBtn = this.clickModeBtn('Set Initial Pose (click + drag on map)', 'initial_pose');
       body.appendChild(this.locSetPoseBtn);
 
@@ -640,12 +607,15 @@ export class MappingPage {
       this.localizingInProgress = false;
       this.localized = false;
       this.setState('idle');
+      // Clear real-time white point cloud
+      this.slamScene?.updateLaserCloud(new Float32Array(0));
 
-      // Update localization UI — prompt user to set initial pose
+      // Update localization UI — highlight Set Initial Pose as next step
       this.locStartBtn.style.display = '';
       this.locAbortBtn.style.display = 'none';
-      this.setLocStatus('Localization failed — please set initial pose and try again', '#FF3D3D');
-      this.showNotification('Localization failed. Try setting the initial pose manually.', '#FF3D3D');
+      this.locSetPoseBtn.classList.add('mapping-btn-highlight');
+      this.setLocStatus('Auto-localization failed — set initial pose to help the algorithm', '#FF3D3D');
+      this.showNotification('Auto-localization failed. Please set the initial pose manually to help the localization algorithm.', '#FF3D3D');
       this.updateFlowGating();
     }
 
@@ -660,6 +630,8 @@ export class MappingPage {
       this.localized = false;
       this.localizingInProgress = false;
       this.slamScene?.showRobot(false);
+      // Clear real-time white point cloud (keep accumulated map)
+      this.slamScene?.updateLaserCloud(new Float32Array(0));
       this.locStartBtn.style.display = '';
       this.locAbortBtn.style.display = 'none';
       this.setLocStatus('', '');
