@@ -226,46 +226,81 @@ export class SlamScene {
     }
   }
 
-  // ── Patrol Waypoints ──
+  // ── Waypoint / Goal Markers ──
 
-  addPatrolMarker(x: number, y: number, yaw: number, index: number): void {
+  /**
+   * Create a pole marker: vertical line from ground, arrow on top pointing yaw direction.
+   * Optionally shows a numbered label (for patrol waypoints).
+   */
+  private createPoleMarker(x: number, y: number, yaw: number, color: number, label?: string): THREE.Group {
+    const POLE_HEIGHT = 0.8;
     const group = new THREE.Group();
     group.position.set(x, y, 0);
 
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.15, 12, 12),
-      new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
+    // Vertical pole (thin cylinder)
+    const poleGeo = new THREE.CylinderGeometry(0.02, 0.02, POLE_HEIGHT, 8);
+    poleGeo.rotateX(Math.PI / 2); // Y-up to Z-up
+    const pole = new THREE.Mesh(poleGeo, new THREE.MeshStandardMaterial({ color }));
+    pole.position.z = POLE_HEIGHT / 2;
+    group.add(pole);
+
+    // Small base ring on ground
+    const ringGeo = new THREE.TorusGeometry(0.12, 0.025, 8, 24);
+    const ring = new THREE.Mesh(ringGeo, new THREE.MeshStandardMaterial({ color }));
+    ring.position.z = 0.025;
+    group.add(ring);
+
+    // Arrow on top of pole pointing in yaw direction
+    const arrowGroup = new THREE.Group();
+    arrowGroup.position.z = POLE_HEIGHT;
+    arrowGroup.rotation.z = yaw;
+
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(0.1, 0.3, 8),
+      new THREE.MeshStandardMaterial({ color }),
     );
-    sphere.position.z = 0.15;
-    group.add(sphere);
+    cone.rotation.z = -Math.PI / 2; // Point along +X
+    cone.position.x = 0.2;
+    arrowGroup.add(cone);
 
-    const arrow = new THREE.Mesh(
-      new THREE.ConeGeometry(0.08, 0.25, 6),
-      new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
+    // Short shaft behind arrow
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.03, 0.15, 6),
+      new THREE.MeshStandardMaterial({ color }),
     );
-    arrow.rotation.x = Math.PI / 2;
-    arrow.position.set(Math.cos(yaw) * 0.25, Math.sin(yaw) * 0.25, 0.15);
-    group.add(arrow);
+    shaft.rotation.z = Math.PI / 2;
+    shaft.position.x = 0.02;
+    arrowGroup.add(shaft);
 
-    const labelCanvas = document.createElement('canvas');
-    labelCanvas.width = 64;
-    labelCanvas.height = 64;
-    const ctx = labelCanvas.getContext('2d')!;
-    ctx.fillStyle = '#42CF55';
-    ctx.beginPath();
-    ctx.arc(32, 32, 28, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 32px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(`${index + 1}`, 32, 32);
-    const texture = new THREE.CanvasTexture(labelCanvas);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
-    sprite.scale.set(0.4, 0.4, 1);
-    sprite.position.z = 0.5;
-    group.add(sprite);
+    group.add(arrowGroup);
 
+    // Label sprite (number or text) above arrow
+    if (label) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+      ctx.beginPath();
+      ctx.arc(32, 32, 28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 30px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, 32, 32);
+      const texture = new THREE.CanvasTexture(canvas);
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
+      sprite.scale.set(0.35, 0.35, 1);
+      sprite.position.z = POLE_HEIGHT + 0.35;
+      group.add(sprite);
+    }
+
+    return group;
+  }
+
+  addPatrolMarker(x: number, y: number, yaw: number, index: number): void {
+    const group = this.createPoleMarker(x, y, yaw, 0x42CF55, `${index + 1}`);
     this.patrolMarkers.push(group);
     this.scene.add(group);
   }

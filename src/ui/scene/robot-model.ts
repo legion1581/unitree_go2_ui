@@ -18,8 +18,9 @@ interface MotorState {
 const LEG_ORDER = ['FR', 'FL', 'RR', 'RL'] as const;
 const JOINT_ORDER = ['hip', 'thigh', 'calf'] as const;
 
-// APK body height: 0.32 — model origin is at body center, offset down to ground
-const BODY_HEIGHT_OFFSET = 0.32;
+// APK: robotModelBodyHeightOffset = -0.3
+// Model placed at odom.z + offset, so body sits near ground when odom.z ~ 0.3
+const BODY_HEIGHT_OFFSET = -0.3;
 
 export class RobotModel {
   private model: THREE.Group | null = null;

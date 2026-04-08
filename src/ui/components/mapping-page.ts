@@ -45,6 +45,7 @@ export class MappingPage {
   private localized = false;
   private localizingInProgress = false;
   private navigationActive = false;
+  private autoChargeOnReach = false;
 
   // Section references for enabling/disabling
   private locSection!: HTMLElement;
@@ -290,18 +291,12 @@ export class MappingPage {
       this.navControlsEl.appendChild(goalLabel);
 
       this.navControlsEl.appendChild(this.clickModeBtn('Set Goal (click + drag on map)', 'goal'));
-      const goalRow = document.createElement('div');
-      goalRow.className = 'mapping-btn-row';
-      goalRow.appendChild(this.btn('Navigate to Goal', 'mapping-btn-start', () => {
-        this.setState('navigating');
-        this.addLog('Navigating to goal...');
-      }));
-      goalRow.appendChild(this.btn('Go to Charging Station', '', () => {
+      this.navControlsEl.appendChild(this.btn('Go to Charging Station', '', () => {
         this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
         this.addLog('Navigating to charging station...');
+        this.autoChargeOnReach = true;
         this.setState('navigating');
       }));
-      this.navControlsEl.appendChild(goalRow);
 
       // ── Patrol sub-section ──
       const patrolLabel = document.createElement('div');
@@ -677,9 +672,28 @@ export class MappingPage {
 
     // ── Navigation state transitions ──
     if (msg.includes('REACHED')) {
-      this.setState('localized');
       this.slamScene?.clearNavPath();
-      this.showNotification('Navigation goal reached', '#42CF55');
+      if (this.autoChargeOnReach) {
+        // APK flow: after reaching dock, send autocharge/start (firmware handles crouching)
+        this.autoChargeOnReach = false;
+        this.sendCmd('autocharge/start');
+        this.addLog('Reached charging dock — starting auto-charge...');
+        this.showNotification('Reached dock — auto-charging...', '#42CF55');
+      } else {
+        this.setState('localized');
+        this.showNotification('Navigation goal reached', '#42CF55');
+      }
+    }
+    // Auto-charge success/failure
+    if (msg.includes('autocharge/state_transition/SUCCESS')) {
+      this.showNotification('Auto-charge complete', '#42CF55');
+      this.setState('localized');
+    }
+    if (msg.includes('autocharge/state_transition/FAILURE')) {
+      this.showNotification('Auto-charge failed — retrying navigation...', '#FF3D3D');
+      // Retry: navigate to dock again (APK retries up to 5 times)
+      this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
+      this.autoChargeOnReach = true;
     }
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
     if (msg.includes('localization/stop/success')) {
@@ -771,8 +785,8 @@ export class MappingPage {
     // Extract yaw from quaternion
     const yaw = Math.atan2(2 * (ori.w * ori.z + ori.x * ori.y), 1 - 2 * (ori.y * ori.y + ori.z * ori.z));
 
-    // Update robot marker (z forced to 0 for flat display, matching APK)
-    this.slamScene.updateRobotPose({ x: pos.x, y: pos.y, z: 0 }, yaw);
+    // Pass actual odom z — RobotModel applies -0.3 offset (matching APK)
+    this.slamScene.updateRobotPose({ x: pos.x, y: pos.y, z: pos.z }, yaw);
 
     // Only add trace point if moved > 0.1m (matching APK)
     const dx = pos.x - this.lastTraceX;
