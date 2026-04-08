@@ -30,6 +30,7 @@ export class MappingPage {
 
   private state: SlamState = 'idle';
   private stateEl!: HTMLElement;
+  private subStateEl!: HTMLElement;
   private logEl!: HTMLElement;
   private activeClickBtn: HTMLButtonElement | null = null;
   private patrolCount = 0;
@@ -169,6 +170,9 @@ export class MappingPage {
       this.stateEl.className = 'mapping-state';
       this.updateStateDisplay();
       body.appendChild(this.stateEl);
+      this.subStateEl = document.createElement('div');
+      this.subStateEl.className = 'mapping-substate';
+      body.appendChild(this.subStateEl);
     }));
 
     // ── Step 1: Map ──
@@ -582,9 +586,52 @@ export class MappingPage {
 
   // ── State ──
 
+  // Human-readable labels for state machine transitions
+  private static readonly STATE_LABELS: Record<string, string> = {
+    // Navigation
+    'IDLE': 'Idle',
+    'NAVIGATE_TO_GOAL_POINT': 'Navigating to goal...',
+    'GOAL_POINT_REACHED': 'Goal reached',
+    'GOAL_POINT_UNREACHABLE': 'Goal unreachable',
+    'GOAL_OCCUPIED': 'Goal occupied',
+    'GOAL_CANCELLED': 'Goal cancelled',
+    'GOAL_CHANGED': 'Goal changed',
+    'TRACKING': 'Tracking path...',
+    'WAITING': 'Waiting...',
+    'FAILURE': 'Navigation failed',
+    // Patrol
+    'SELECT_GOAL_POINT': 'Selecting next waypoint...',
+    'NAVIGATE_TO_CHARGE_BOARD': 'Going to charger...',
+    'NAVIGATE_TO_CHARGE_BOARD_FAILED': 'Failed to reach charger',
+    'IS_CHARGING': 'Charging...',
+    'NO_GOAL_POINT_TO_SELECT': 'No waypoints available',
+    'REACH_PATROL_NUMBER_LIMIT': 'Patrol cycle limit reached',
+    'REACH_PATROL_TIME_LIMIT': 'Patrol time limit reached',
+    'REACH_TOTAL_TIME_LIMIT': 'Total time limit reached',
+    'FINISHED': 'Patrol complete',
+    'STAND_UP': 'Standing up...',
+    // AutoCharge
+    'SUCCESS': 'Auto-charge complete',
+    // Timeouts
+    'TIMEOUT_LOCALIZATION': 'Localization timeout',
+    'TIMEOUT_NAVIGATION': 'Navigation timeout',
+    'TIMEOUT_ODOMETRY': 'Odometry timeout',
+    'TIMEOUT_POINTCLOUD': 'Point cloud timeout',
+    'TIMEOUT_CONNECT_POWER': 'Power connection timeout',
+    'TIMEOUT_DETECT': 'Detection timeout',
+    'TIMEOUT_RUNNING': 'Running timeout',
+    'TIMEOUT_TRY_CHARGE': 'Charge attempt timeout',
+    // Control
+    'STAND_DOWN': 'Crouching down...',
+  };
+
   private setState(s: SlamState): void {
     this.state = s;
     this.updateStateDisplay();
+    // Clear sub-state when changing main state
+    if (s === 'idle' || s === 'localized') {
+      this.setSubState('');
+    }
   }
 
   private updateStateDisplay(): void {
@@ -613,6 +660,77 @@ export class MappingPage {
     lbl.textContent = labels[this.state];
     lbl.style.color = colors[this.state];
     this.stateEl.appendChild(lbl);
+  }
+
+  private setSubState(detail: string, color?: string): void {
+    if (!this.subStateEl) return;
+    if (!detail) {
+      this.subStateEl.style.display = 'none';
+      return;
+    }
+    this.subStateEl.style.display = '';
+    this.subStateEl.textContent = detail;
+    this.subStateEl.style.color = color ?? '#888';
+  }
+
+  // ── State Transition Parsing ──
+
+  private parseStateTransitions(msg: string): void {
+    // navigation/state_transition/{STATE}
+    const navMatch = msg.match(/navigation\/state_transition\/(\w+)/);
+    if (navMatch) {
+      const raw = navMatch[1];
+      const label = MappingPage.STATE_LABELS[raw] ?? raw.replace(/_/g, ' ').toLowerCase();
+      const isError = raw.includes('UNREACHABLE') || raw.includes('FAILURE') || raw.includes('TIMEOUT');
+      this.setSubState(`Nav: ${label}`, isError ? '#FF3D3D' : '#FCD335');
+    }
+
+    // patrol/state_transition/{STATE}
+    const patrolMatch = msg.match(/patrol\/state_transition\/(\w+)/);
+    if (patrolMatch) {
+      const raw = patrolMatch[1];
+      const label = MappingPage.STATE_LABELS[raw] ?? raw.replace(/_/g, ' ').toLowerCase();
+      const isError = raw.includes('FAILED') || raw.includes('UNREACHABLE') || raw.includes('TIMEOUT') || raw.includes('NO_GOAL');
+      const isLimit = raw.includes('LIMIT') || raw === 'FINISHED';
+      this.setSubState(`Patrol: ${label}`, isError ? '#FF3D3D' : isLimit ? '#6879e4' : '#66E7BE');
+    }
+
+    // patrol/new_goal_point/{x}/{y}/{yaw}
+    const goalPtMatch = msg.match(/patrol\/new_goal_point\/([\d.-]+)\/([\d.-]+)\/([\d.-]+)/);
+    if (goalPtMatch) {
+      this.setSubState(`Patrol target: (${parseFloat(goalPtMatch[1]).toFixed(2)}, ${parseFloat(goalPtMatch[2]).toFixed(2)})`, '#66E7BE');
+    }
+
+    // autocharge/state_transition/{STATE}
+    const chargeMatch = msg.match(/autocharge\/state_transition\/(\w+)/);
+    if (chargeMatch) {
+      const raw = chargeMatch[1];
+      const label = MappingPage.STATE_LABELS[raw] ?? raw.replace(/_/g, ' ').toLowerCase();
+      this.setSubState(`Charge: ${label}`, raw === 'SUCCESS' ? '#42CF55' : '#FF3D3D');
+    }
+
+    // control/recv_cmd/{CMD}
+    const ctrlMatch = msg.match(/control\/recv_cmd\/(\w+)/);
+    if (ctrlMatch) {
+      const raw = ctrlMatch[1];
+      const label = MappingPage.STATE_LABELS[raw] ?? raw.replace(/_/g, ' ').toLowerCase();
+      this.setSubState(`Control: ${label}`, '#888');
+    }
+  }
+
+  // ── Status Queries ──
+
+  queryNavigationStatus(): void {
+    this.sendCmd('navigation/get_status');
+  }
+
+  queryPatrolStatus(): void {
+    this.sendCmd('patrol/get_status');
+  }
+
+  /** Request patrol points from robot. Response arrives as server log messages. */
+  requestPatrolPoints(): void {
+    this.sendCmd('patrol/get_patrol_points');
   }
 
   // ── Log ──
@@ -777,6 +895,9 @@ export class MappingPage {
       this.patrolPauseBtn.classList.add('mapping-btn-warn');
       this.setState('localized');
     }
+    // ── Live state detail from state_transition messages ──
+    this.parseStateTransitions(msg);
+
     if (msg.includes('localization/stop/success')) {
       this.localized = false;
       this.localizingInProgress = false;
@@ -791,6 +912,37 @@ export class MappingPage {
       this.locAbortBtn.style.display = 'none';
       this.setLocStatus('', '');
       this.updateFlowGating();
+    }
+
+    // ── Patrol points retrieval (patrol/get_patrol_points response) ──
+    // Format: patrol/get_patrol_points/point/x/y/yaw/num/N
+    const ptMatch = msg.match(/patrol\/get_patrol_points\/point\/([\d.-]+)\/([\d.-]+)\/([\d.-]+)\/num\/(\d+)/);
+    if (ptMatch) {
+      const x = parseFloat(ptMatch[1]);
+      const y = parseFloat(ptMatch[2]);
+      const yaw = parseFloat(ptMatch[3]);
+      const idx = parseInt(ptMatch[4]);
+      // Only add if we don't already have this index
+      if (idx >= this.patrolPoints.length) {
+        this.patrolPoints.push({ x, y, yaw });
+        this.slamScene?.addPatrolMarker(x, y, yaw, this.patrolCount);
+        this.patrolCount++;
+        this.addLog(`Restored waypoint ${idx + 1}: (${x.toFixed(2)}, ${y.toFixed(2)})`);
+      }
+    }
+    if (msg.includes('patrol/get_patrol_points/sending_end')) {
+      this.addLog(`Patrol points restored: ${this.patrolPoints.length} waypoints`);
+    }
+
+    // ── Status query responses ──
+    const navStatusMatch = msg.match(/navigation\/get_status\/status\/(\w+)/);
+    if (navStatusMatch) {
+      this.addLog(`Navigation status: ${navStatusMatch[1]}`);
+    }
+    const patrolStatusMatch = msg.match(/patrol\/get_status\/status\/(\w+)/);
+    if (patrolStatusMatch) {
+      const status = patrolStatusMatch[1];
+      this.addLog(`Patrol status: ${status === '1' ? 'active' : 'inactive'}`);
     }
 
     // ── Map ID response ──

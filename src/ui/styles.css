@@ -1529,6 +1529,15 @@ body {
   flex-shrink: 0;
 }
 
+.mapping-substate {
+  font-size: 11px;
+  color: #888;
+  padding-left: 16px;
+  margin-top: 2px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  transition: color 0.2s;
+}
+
 /* Server log */
 .mapping-log {
   max-height: 160px;
