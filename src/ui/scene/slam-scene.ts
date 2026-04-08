@@ -62,9 +62,14 @@ export class SlamScene {
   // Goal marker
   private goalMarker: THREE.Group | null = null;
 
-  // Pose arrow (for initial pose drag-to-set-yaw)
+  // Pose arrow (for hold-to-place then drag-to-set-yaw)
   private poseArrow: THREE.Group | null = null;
   private poseOrigin: { x: number; y: number } | null = null;
+  private holdTimer: ReturnType<typeof setTimeout> | null = null;
+  private holdStartPos: { cx: number; cy: number } | null = null;
+  private holdPlaced = false;
+  private static readonly HOLD_TIME = 600; // ms, matching APK
+  private static readonly HOLD_MOVE_THRESHOLD = 4; // px — cancel hold if moved
 
   // Click interaction
   private groundPlane: THREE.Mesh;
@@ -401,30 +406,59 @@ export class SlamScene {
 
   private handlePointerDown(e: PointerEvent): void {
     if (this.clickMode === 'none') return;
+
+    // Store screen position for move-threshold check
+    this.holdStartPos = { cx: e.clientX, cy: e.clientY };
+    this.holdPlaced = false;
+
     const pt = this.getGroundIntersection(e);
     if (!pt) return;
 
-    // All modes use click+drag to set position + orientation
-    this.poseOrigin = { x: pt.x, y: pt.y };
-    this.controls.enabled = false;
-    const color = this.clickMode === 'initial_pose' ? 0xff3d3d
-      : this.clickMode === 'goal' ? 0xFCD335
-      : 0x42CF55; // patrol
-    this.createPoseArrow(pt.x, pt.y, color);
+    const heldX = pt.x;
+    const heldY = pt.y;
+
+    // Start 600ms hold timer (matching APK)
+    this.cancelHold();
+    this.holdTimer = setTimeout(() => {
+      this.holdTimer = null;
+      this.holdPlaced = true;
+      this.poseOrigin = { x: heldX, y: heldY };
+      this.controls.enabled = false;
+      const color = this.clickMode === 'initial_pose' ? 0xff3d3d
+        : this.clickMode === 'goal' ? 0xFCD335
+        : 0x42CF55; // patrol
+      this.createPoseArrow(heldX, heldY, color);
+    }, SlamScene.HOLD_TIME);
   }
 
   private handlePointerMove(e: PointerEvent): void {
+    // If hold timer is still running, check if moved too far (cancel = camera pan)
+    if (this.holdTimer && this.holdStartPos) {
+      const dx = e.clientX - this.holdStartPos.cx;
+      const dy = e.clientY - this.holdStartPos.cy;
+      if (dx * dx + dy * dy > SlamScene.HOLD_MOVE_THRESHOLD * SlamScene.HOLD_MOVE_THRESHOLD) {
+        this.cancelHold();
+        return;
+      }
+    }
+
+    // If point is placed, update arrow direction
     if (!this.poseOrigin || !this.poseArrow) return;
     const pt = this.getGroundIntersection(e);
     if (!pt) return;
-
-    // Update arrow direction
     const yaw = Math.atan2(pt.y - this.poseOrigin.y, pt.x - this.poseOrigin.x);
     this.poseArrow.rotation.set(0, 0, yaw);
   }
 
   private handlePointerUp(_e: PointerEvent): void {
-    if (!this.poseOrigin || !this.poseArrow) return;
+    // Cancel hold timer if still pending
+    if (this.holdTimer) {
+      this.cancelHold();
+      return; // Was a short click, not a hold — do nothing
+    }
+    this.holdStartPos = null;
+
+    if (!this.holdPlaced || !this.poseOrigin || !this.poseArrow) return;
 
     const yaw = this.poseArrow.rotation.z;
     const { x, y } = this.poseOrigin;
@@ -434,6 +468,7 @@ export class SlamScene {
     this.scene.remove(this.poseArrow);
     this.poseArrow = null;
     this.poseOrigin = null;
+    this.holdPlaced = false;
     this.controls.enabled = true;
 
     // For patrol, keep click mode active for adding multiple points
@@ -443,6 +478,14 @@ export class SlamScene {
 
     // Fire callback with mode
     this.onPoseSet?.(mode, x, y, yaw);
+  }
+
+  private cancelHold(): void {
+    if (this.holdTimer) {
+      clearTimeout(this.holdTimer);
+      this.holdTimer = null;
+    }
+    this.holdStartPos = null;
   }
 
   private createPoseArrow(x: number, y: number, color = 0xff3d3d): void {

@@ -48,6 +48,11 @@ export class MappingPage {
   private autoChargeOnReach = false;
   private patrolPaused = false;
   private patrolPauseBtn!: HTMLButtonElement;
+  private navMode: 'goal' | 'patrol' = 'goal';
+  private goalPanel!: HTMLElement;
+  private patrolPanel!: HTMLElement;
+  private goalModeBtn!: HTMLButtonElement;
+  private patrolModeBtn!: HTMLButtonElement;
 
   // Section references for enabling/disabling
   private locSection!: HTMLElement;
@@ -232,7 +237,7 @@ export class MappingPage {
       body.appendChild(this.locStartBtn);
 
       // Set Initial Pose — subtle by default, highlighted after auto-localization fails
-      this.locSetPoseBtn = this.clickModeBtn('Set Initial Pose (click + drag on map)', 'initial_pose');
+      this.locSetPoseBtn = this.clickModeBtn('Set Initial Pose (hold on map, drag to aim)', 'initial_pose');
       body.appendChild(this.locSetPoseBtn);
 
       // Abort / Stop (red)
@@ -286,36 +291,43 @@ export class MappingPage {
       this.navControlsEl = document.createElement('div');
       this.navControlsEl.className = 'mapping-nav-controls mapping-section-disabled';
 
-      // ── Go to Goal sub-section ──
-      const goalLabel = document.createElement('div');
-      goalLabel.className = 'mapping-subsection-title';
-      goalLabel.textContent = 'Go to Goal';
-      this.navControlsEl.appendChild(goalLabel);
+      // ── Mode tabs ──
+      const tabRow = document.createElement('div');
+      tabRow.className = 'mapping-btn-row';
+      this.goalModeBtn = this.btn('Go to Goal', 'mapping-btn-mode active', () => {
+        this.setNavMode('goal');
+      });
+      this.patrolModeBtn = this.btn('Patrol', 'mapping-btn-mode', () => {
+        this.setNavMode('patrol');
+      });
+      tabRow.appendChild(this.goalModeBtn);
+      tabRow.appendChild(this.patrolModeBtn);
+      this.navControlsEl.appendChild(tabRow);
 
-      this.navControlsEl.appendChild(this.clickModeBtn('Set Goal (click + drag on map)', 'goal'));
-      this.navControlsEl.appendChild(this.btn('Go to Charging Station', '', () => {
+      // ── Go to Goal panel ──
+      this.goalPanel = document.createElement('div');
+      this.goalPanel.className = 'mapping-nav-panel';
+      this.goalPanel.appendChild(this.clickModeBtn('Set Goal (hold on map, drag to aim)', 'goal'));
+      this.goalPanel.appendChild(this.btn('Go to Charging Station', '', () => {
         this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
         this.addLog('Navigating to charging station...');
         this.autoChargeOnReach = true;
         this.setState('navigating');
       }));
+      this.navControlsEl.appendChild(this.goalPanel);
 
-      // ── Patrol sub-section ──
-      const patrolLabel = document.createElement('div');
-      patrolLabel.className = 'mapping-subsection-title';
-      patrolLabel.textContent = 'Patrol';
-      patrolLabel.style.marginTop = '10px';
-      this.navControlsEl.appendChild(patrolLabel);
-
-      this.navControlsEl.appendChild(this.clickModeBtn('Add Waypoint (click + drag on map)', 'patrol'));
-      this.navControlsEl.appendChild(this.btn('Clear All Waypoints', 'mapping-btn-warn', () => {
+      // ── Patrol panel ──
+      this.patrolPanel = document.createElement('div');
+      this.patrolPanel.className = 'mapping-nav-panel';
+      this.patrolPanel.style.display = 'none';
+      this.patrolPanel.appendChild(this.clickModeBtn('Add Waypoint (hold on map, drag to aim)', 'patrol'));
+      this.patrolPanel.appendChild(this.btn('Clear All Waypoints', 'mapping-btn-warn', () => {
         this.sendCmd('patrol/clear_all_patrol_points');
         this.slamScene?.clearPatrolMarkers();
         this.patrolPoints = [];
         this.patrolCount = 0;
         this.addLog('All patrol waypoints cleared');
       }));
-
       const patrolCtrlRow = document.createElement('div');
       patrolCtrlRow.className = 'mapping-btn-row';
       patrolCtrlRow.appendChild(this.btn('Execute Patrol', 'mapping-btn-start', () => {
@@ -329,12 +341,13 @@ export class MappingPage {
         }
       });
       patrolCtrlRow.appendChild(this.patrolPauseBtn);
-      this.navControlsEl.appendChild(patrolCtrlRow);
-      this.navControlsEl.appendChild(this.btn('Stop Patrol', 'mapping-btn-stop', () => {
+      this.patrolPanel.appendChild(patrolCtrlRow);
+      this.patrolPanel.appendChild(this.btn('Stop Patrol', 'mapping-btn-stop', () => {
         this.sendCmd('patrol/stop');
         this.patrolPaused = false;
         this.setState('localized');
       }));
+      this.navControlsEl.appendChild(this.patrolPanel);
 
       body.appendChild(this.navControlsEl);
     });
@@ -503,6 +516,22 @@ export class MappingPage {
     this.navStartBtn.style.display = this.navigationActive ? 'none' : '';
     this.navStopBtn.style.display = this.navigationActive ? '' : 'none';
     this.navControlsEl.classList.toggle('mapping-section-disabled', !this.navigationActive);
+  }
+
+  private setNavMode(mode: 'goal' | 'patrol'): void {
+    this.navMode = mode;
+    // Deactivate any active click mode when switching
+    if (this.activeClickBtn) {
+      this.activeClickBtn.classList.remove('active');
+      this.activeClickBtn = null;
+      this.slamScene?.setClickMode('none');
+    }
+    // Toggle panels
+    this.goalPanel.style.display = mode === 'goal' ? '' : 'none';
+    this.patrolPanel.style.display = mode === 'patrol' ? '' : 'none';
+    // Toggle tab styling
+    this.goalModeBtn.classList.toggle('active', mode === 'goal');
+    this.patrolModeBtn.classList.toggle('active', mode === 'patrol');
   }
 
   private setLocStatus(msg: string, color: string): void {

@@ -1686,6 +1686,27 @@ body {
   transition: opacity 0.2s;
 }
 
+/* Mode tab buttons (Go to Goal / Patrol) */
+.mapping-btn-mode {
+  border-color: #2a2d35;
+  color: #666;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.mapping-btn-mode.active {
+  border-color: #6879e4;
+  color: #6879e4;
+  background: rgba(104, 121, 228, 0.1);
+}
+
+/* Navigation sub-panels */
+.mapping-nav-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* Hint text shown when section is disabled */
 .mapping-hint {
   font-size: 11px;
