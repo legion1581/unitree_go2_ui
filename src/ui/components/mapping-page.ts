@@ -46,6 +46,8 @@ export class MappingPage {
   private localizingInProgress = false;
   private navigationActive = false;
   private autoChargeOnReach = false;
+  private patrolPaused = false;
+  private patrolPauseBtn!: HTMLButtonElement;
 
   // Section references for enabling/disabling
   private locSection!: HTMLElement;
@@ -271,6 +273,7 @@ export class MappingPage {
       this.navStopBtn = this.btn('Stop Navigation', 'mapping-btn-stop', () => {
         this.sendCmd('navigation/stop');
         this.slamScene?.clearNavPath();
+        this.slamScene?.clearGoalMarker();
         this.navigationActive = false;
         this.setState('localized');
         this.updateNavControls();
@@ -319,16 +322,20 @@ export class MappingPage {
       patrolCtrlRow.appendChild(this.btn('Execute Patrol', 'mapping-btn-start', () => {
         this.executePatrol();
       }));
-      patrolCtrlRow.appendChild(this.btn('Pause', '', () => this.sendCmd('patrol/pause')));
+      this.patrolPauseBtn = this.btn('Pause', 'mapping-btn-warn', () => {
+        if (this.patrolPaused) {
+          this.sendCmd('patrol/go');
+        } else {
+          this.sendCmd('patrol/pause');
+        }
+      });
+      patrolCtrlRow.appendChild(this.patrolPauseBtn);
       this.navControlsEl.appendChild(patrolCtrlRow);
-      const patrolCtrlRow2 = document.createElement('div');
-      patrolCtrlRow2.className = 'mapping-btn-row';
-      patrolCtrlRow2.appendChild(this.btn('Resume', '', () => this.sendCmd('patrol/go')));
-      patrolCtrlRow2.appendChild(this.btn('Stop Patrol', 'mapping-btn-stop', () => {
+      this.navControlsEl.appendChild(this.btn('Stop Patrol', 'mapping-btn-stop', () => {
         this.sendCmd('patrol/stop');
+        this.patrolPaused = false;
         this.setState('localized');
       }));
-      this.navControlsEl.appendChild(patrolCtrlRow2);
 
       body.appendChild(this.navControlsEl);
     });
@@ -416,6 +423,7 @@ export class MappingPage {
 
       case 'goal':
         this.sendCmd(`navigation/set_goal_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
+        this.slamScene?.setGoalMarker(x, y, yaw);
         this.addLog(`Goal set: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
         this.activeClickBtn?.classList.remove('active');
         this.activeClickBtn = null;
@@ -673,6 +681,7 @@ export class MappingPage {
     // ── Navigation state transitions ──
     if (msg.includes('REACHED')) {
       this.slamScene?.clearNavPath();
+      this.slamScene?.clearGoalMarker();
       if (this.autoChargeOnReach) {
         // APK flow: after reaching dock, send autocharge/start (firmware handles crouching)
         this.autoChargeOnReach = false;
@@ -696,6 +705,27 @@ export class MappingPage {
       this.autoChargeOnReach = true;
     }
     if (msg.includes('Joystick') && msg.includes('stopped')) this.setState('idle');
+
+    // ── Patrol state transitions (driven by server log) ──
+    if (msg.includes('patrol/pause/success')) {
+      this.patrolPaused = true;
+      this.patrolPauseBtn.textContent = 'Resume';
+      this.patrolPauseBtn.classList.remove('mapping-btn-warn');
+      this.patrolPauseBtn.classList.add('mapping-btn-start');
+    }
+    if (msg.includes('patrol/go/success')) {
+      this.patrolPaused = false;
+      this.patrolPauseBtn.textContent = 'Pause';
+      this.patrolPauseBtn.classList.remove('mapping-btn-start');
+      this.patrolPauseBtn.classList.add('mapping-btn-warn');
+    }
+    if (msg.includes('patrol/stop/success') || msg.includes('patrol/state_transition/FINISHED')) {
+      this.patrolPaused = false;
+      this.patrolPauseBtn.textContent = 'Pause';
+      this.patrolPauseBtn.classList.remove('mapping-btn-start');
+      this.patrolPauseBtn.classList.add('mapping-btn-warn');
+      this.setState('localized');
+    }
     if (msg.includes('localization/stop/success')) {
       this.localized = false;
       this.localizingInProgress = false;

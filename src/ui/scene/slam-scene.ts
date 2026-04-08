@@ -59,6 +59,9 @@ export class SlamScene {
   // Patrol waypoints
   private patrolMarkers: THREE.Group[] = [];
 
+  // Goal marker
+  private goalMarker: THREE.Group | null = null;
+
   // Pose arrow (for initial pose drag-to-set-yaw)
   private poseArrow: THREE.Group | null = null;
   private poseOrigin: { x: number; y: number } | null = null;
@@ -165,13 +168,20 @@ export class SlamScene {
   // ── Robot Position ──
 
   private firstPose = true;
+  private lastQuaternion = new THREE.Quaternion();
 
   updateRobotPose(position: { x: number; y: number; z: number }, yaw: number): void {
     this.robotMarker.position.set(position.x, position.y, position.z);
-    this.robotMarker.rotation.set(0, 0, yaw);
+
+    // SLERP rotation smoothing (0.3 factor, matching APK's lerpQuaternion)
+    const target = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, yaw));
+    this.lastQuaternion.slerpQuaternions(this.lastQuaternion, target, 0.3);
+    this.robotMarker.quaternion.copy(this.lastQuaternion);
 
     if (this.firstPose) {
       this.firstPose = false;
+      this.lastQuaternion.copy(target); // snap on first pose
+      this.robotMarker.quaternion.copy(target);
       this.controls.target.set(position.x, position.y, 0);
       this.camera.position.set(position.x, position.y - 5, 8);
     }
@@ -303,6 +313,19 @@ export class SlamScene {
     const group = this.createPoleMarker(x, y, yaw, 0x42CF55, `${index + 1}`);
     this.patrolMarkers.push(group);
     this.scene.add(group);
+  }
+
+  setGoalMarker(x: number, y: number, yaw: number): void {
+    this.clearGoalMarker();
+    this.goalMarker = this.createPoleMarker(x, y, yaw, 0xFCD335);
+    this.scene.add(this.goalMarker);
+  }
+
+  clearGoalMarker(): void {
+    if (this.goalMarker) {
+      this.scene.remove(this.goalMarker);
+      this.goalMarker = null;
+    }
   }
 
   clearPatrolMarkers(): void {
@@ -438,11 +461,48 @@ export class SlamScene {
   private loadChargeStation(): void {
     const loader = new GLTFLoader();
     loader.load('/models/charge.glb', (gltf) => {
+      const group = new THREE.Group();
+
+      // Charging station model (half size of previous: 1.25x)
       const model = gltf.scene;
-      // Match APK: rotate X by PI/2 (Y-up to Z-up), scale 2.5x, at origin
       model.rotateOnAxis(new THREE.Vector3(1, 0, 0), Math.PI / 2);
-      model.scale.set(2.5, 2.5, 2.5);
-      this.scene.add(model);
+      model.scale.set(1.25, 1.25, 1.25);
+      group.add(model);
+
+      // Vertical pole with "Charging Station" label
+      const POLE_H = 1.2;
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.02, 0.02, POLE_H, 8),
+        new THREE.MeshStandardMaterial({ color: 0x6879e4 }),
+      );
+      pole.rotation.x = Math.PI / 2; // Y-up to Z-up
+      pole.position.z = POLE_H / 2;
+      group.add(pole);
+
+      // Label sprite
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = 'rgba(26, 29, 35, 0.85)';
+      ctx.roundRect(0, 0, 256, 64, 8);
+      ctx.fill();
+      ctx.strokeStyle = '#6879e4';
+      ctx.lineWidth = 2;
+      ctx.roundRect(0, 0, 256, 64, 8);
+      ctx.stroke();
+      ctx.fillStyle = '#6879e4';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Charging Station', 128, 32);
+      const texture = new THREE.CanvasTexture(canvas);
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }));
+      sprite.scale.set(1.2, 0.3, 1);
+      sprite.position.z = POLE_H + 0.25;
+      group.add(sprite);
+
+      this.scene.add(group);
     });
   }
 
