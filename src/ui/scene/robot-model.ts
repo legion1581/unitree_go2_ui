@@ -18,18 +18,18 @@ interface MotorState {
 const LEG_ORDER = ['FR', 'FL', 'RR', 'RL'] as const;
 const JOINT_ORDER = ['hip', 'thigh', 'calf'] as const;
 
-// APK applies this Z offset to place the model on the ground plane
-const BODY_HEIGHT_OFFSET = -0.3;
+// APK body height: 0.32 — model origin is at body center, offset down to ground
+const BODY_HEIGHT_OFFSET = 0.32;
 
 export class RobotModel {
   private model: THREE.Group | null = null;
-  private scene: THREE.Scene;
+  private parent: THREE.Object3D;
   private joints: Map<string, Joint> = new Map();
   private radarAngle = 0;
   private radarAnimId = 0;
 
-  constructor(scene: THREE.Scene) {
-    this.scene = scene;
+  constructor(parent: THREE.Object3D) {
+    this.parent = parent;
     this.load();
   }
 
@@ -64,7 +64,7 @@ export class RobotModel {
       // Set initial position with body height offset (places model on ground)
       this.model.position.set(0, 0, BODY_HEIGHT_OFFSET);
 
-      this.scene.add(this.model);
+      this.parent.add(this.model);
       this.buildJointMap(gltf);
       this.startRadarSpin();
       console.log('[go2:3d] Model loaded, joints:', Array.from(this.joints.keys()));

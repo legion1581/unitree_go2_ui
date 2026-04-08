@@ -546,6 +546,7 @@ export class App {
 
     if (d.motor_state) {
       if (this.scene3d) this.scene3d.robotModel.updateMotorState(d.motor_state);
+      if (this.mappingPage) this.mappingPage.updateMotorState(d.motor_state);
       // Only first 12 motors are real (FR/FL/RR/RL hip/thigh/calf), rest are zeros
       this.robotState.motorStates = d.motor_state.slice(0, 12).map((m) => ({
         q: m.q ?? 0, dq: m.dq ?? 0, tau: m.tau_est ?? 0, temp: m.temperature ?? 0, lost: m.lost ?? 0,

@@ -44,12 +44,16 @@ export class MappingPage {
   private mapLoaded = false;
   private localized = false;
   private localizingInProgress = false;
+  private navigationActive = false;
 
   // Section references for enabling/disabling
   private locSection!: HTMLElement;
   private navSection!: HTMLElement;
   private locHint!: HTMLElement;
   private navHint!: HTMLElement;
+  private navControlsEl!: HTMLElement;
+  private navStartBtn!: HTMLButtonElement;
+  private navStopBtn!: HTMLButtonElement;
 
   // Localization button references
   private locStartBtn!: HTMLButtonElement;
@@ -252,43 +256,62 @@ export class MappingPage {
       this.navHint.textContent = 'Localize the robot first';
       body.appendChild(this.navHint);
 
+      // Start/Stop Navigation toggle
+      const navToggleRow = document.createElement('div');
+      navToggleRow.className = 'mapping-btn-row';
+      this.navStartBtn = this.btn('Start Navigation', 'mapping-btn-start', () => {
+        this.sendCmd('navigation/start');
+        this.navigationActive = true;
+        this.setState('navigating');
+        this.updateNavControls();
+        this.addLog('Navigation activated');
+      });
+      navToggleRow.appendChild(this.navStartBtn);
+      this.navStopBtn = this.btn('Stop Navigation', 'mapping-btn-stop', () => {
+        this.sendCmd('navigation/stop');
+        this.slamScene?.clearNavPath();
+        this.navigationActive = false;
+        this.setState('localized');
+        this.updateNavControls();
+        this.addLog('Navigation stopped');
+      });
+      this.navStopBtn.style.display = 'none';
+      navToggleRow.appendChild(this.navStopBtn);
+      body.appendChild(navToggleRow);
+
+      // Controls container (greyed out until navigation started)
+      this.navControlsEl = document.createElement('div');
+      this.navControlsEl.className = 'mapping-nav-controls mapping-section-disabled';
+
       // ── Go to Goal sub-section ──
       const goalLabel = document.createElement('div');
       goalLabel.className = 'mapping-subsection-title';
       goalLabel.textContent = 'Go to Goal';
-      body.appendChild(goalLabel);
+      this.navControlsEl.appendChild(goalLabel);
 
-      body.appendChild(this.clickModeBtn('Set Goal (click + drag on map)', 'goal'));
+      this.navControlsEl.appendChild(this.clickModeBtn('Set Goal (click + drag on map)', 'goal'));
       const goalRow = document.createElement('div');
       goalRow.className = 'mapping-btn-row';
       goalRow.appendChild(this.btn('Navigate to Goal', 'mapping-btn-start', () => {
-        this.sendCmd('navigation/start');
         this.setState('navigating');
+        this.addLog('Navigating to goal...');
       }));
       goalRow.appendChild(this.btn('Go to Charging Station', '', () => {
-        this.sendCmd('navigation/start');
-        setTimeout(() => {
-          this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
-          this.addLog('Navigating to charging station...');
-        }, 1000);
+        this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
+        this.addLog('Navigating to charging station...');
         this.setState('navigating');
       }));
-      body.appendChild(goalRow);
-      body.appendChild(this.btn('Stop Navigation', 'mapping-btn-stop', () => {
-        this.sendCmd('navigation/stop');
-        this.slamScene?.clearNavPath();
-        this.setState('localized');
-      }));
+      this.navControlsEl.appendChild(goalRow);
 
       // ── Patrol sub-section ──
       const patrolLabel = document.createElement('div');
       patrolLabel.className = 'mapping-subsection-title';
       patrolLabel.textContent = 'Patrol';
       patrolLabel.style.marginTop = '10px';
-      body.appendChild(patrolLabel);
+      this.navControlsEl.appendChild(patrolLabel);
 
-      body.appendChild(this.clickModeBtn('Add Waypoint (click + drag on map)', 'patrol'));
-      body.appendChild(this.btn('Clear All Waypoints', 'mapping-btn-warn', () => {
+      this.navControlsEl.appendChild(this.clickModeBtn('Add Waypoint (click + drag on map)', 'patrol'));
+      this.navControlsEl.appendChild(this.btn('Clear All Waypoints', 'mapping-btn-warn', () => {
         this.sendCmd('patrol/clear_all_patrol_points');
         this.slamScene?.clearPatrolMarkers();
         this.patrolPoints = [];
@@ -302,7 +325,7 @@ export class MappingPage {
         this.executePatrol();
       }));
       patrolCtrlRow.appendChild(this.btn('Pause', '', () => this.sendCmd('patrol/pause')));
-      body.appendChild(patrolCtrlRow);
+      this.navControlsEl.appendChild(patrolCtrlRow);
       const patrolCtrlRow2 = document.createElement('div');
       patrolCtrlRow2.className = 'mapping-btn-row';
       patrolCtrlRow2.appendChild(this.btn('Resume', '', () => this.sendCmd('patrol/go')));
@@ -310,7 +333,9 @@ export class MappingPage {
         this.sendCmd('patrol/stop');
         this.setState('localized');
       }));
-      body.appendChild(patrolCtrlRow2);
+      this.navControlsEl.appendChild(patrolCtrlRow2);
+
+      body.appendChild(this.navControlsEl);
     });
     sidebar.appendChild(this.navSection);
 
@@ -464,6 +489,18 @@ export class MappingPage {
     const canNavigate = this.mapLoaded && this.localized;
     this.navSection.classList.toggle('mapping-section-disabled', !canNavigate);
     this.navHint.style.display = canNavigate ? 'none' : '';
+
+    // Reset nav controls when losing localization
+    if (!canNavigate) {
+      this.navigationActive = false;
+      this.updateNavControls();
+    }
+  }
+
+  private updateNavControls(): void {
+    this.navStartBtn.style.display = this.navigationActive ? 'none' : '';
+    this.navStopBtn.style.display = this.navigationActive ? '' : 'none';
+    this.navControlsEl.classList.toggle('mapping-section-disabled', !this.navigationActive);
   }
 
   private setLocStatus(msg: string, color: string): void {
@@ -540,6 +577,11 @@ export class MappingPage {
   }
 
   // ── Topic Message Handling ──
+
+  /** Forward motor state to Go2 model for joint sync */
+  updateMotorState(motors: Array<{ q: number }>): void {
+    this.slamScene?.updateMotorState(motors);
+  }
 
   private topicLogCount = 0;
 

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { RobotModel } from './robot-model';
 
 export type ClickMode = 'none' | 'initial_pose' | 'goal' | 'patrol';
 
@@ -43,9 +44,10 @@ export class SlamScene {
   private filteredPoints: THREE.Points;
   private laserPoints: THREE.Points;
 
-  // Robot marker
+  // Robot marker (Go2 model group)
   private robotMarker: THREE.Group;
   robotVisible = false;
+  private go2Model: RobotModel | null = null;
 
   // Movement trace
   private tracePositions: number[] = [];
@@ -98,9 +100,6 @@ export class SlamScene {
     grid.rotation.x = Math.PI / 2;
     this.scene.add(grid);
 
-    // Origin axes
-    this.scene.add(new THREE.AxesHelper(2));
-
     // Filtered point cloud (accumulated map — height-colored)
     const filteredGeo = new THREE.BufferGeometry();
     this.filteredPoints = new THREE.Points(filteredGeo, createHeightMaterial(0.03));
@@ -112,19 +111,8 @@ export class SlamScene {
     this.laserPoints = new THREE.Points(laserGeo, laserMat);
     this.scene.add(this.laserPoints);
 
-    // Robot marker (green cone arrow — visible after localization)
+    // Robot marker group (holds the Go2 model — visible after localization)
     this.robotMarker = new THREE.Group();
-    const cone = new THREE.ConeGeometry(0.15, 0.5, 16);
-    cone.rotateX(Math.PI / 2);
-    const coneMesh = new THREE.Mesh(cone, new THREE.MeshStandardMaterial({ color: 0x42CF55 }));
-    coneMesh.position.z = 0.25;
-    this.robotMarker.add(coneMesh);
-    const base = new THREE.Mesh(
-      new THREE.SphereGeometry(0.1, 8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x42CF55 }),
-    );
-    base.position.z = 0.25;
-    this.robotMarker.add(base);
     this.robotMarker.visible = false;
     this.scene.add(this.robotMarker);
 
@@ -189,42 +177,18 @@ export class SlamScene {
     }
   }
 
-  private robotModel: THREE.Group | null = null;
-
   showRobot(visible: boolean): void {
     this.robotMarker.visible = visible;
     this.robotVisible = visible;
     // Load Go2 model on first show
-    if (visible && !this.robotModel) {
-      this.loadRobotModel();
+    if (visible && !this.go2Model) {
+      this.go2Model = new RobotModel(this.robotMarker);
     }
-    if (this.robotModel) this.robotModel.visible = visible;
   }
 
-  private loadRobotModel(): void {
-    const loader = new GLTFLoader();
-    loader.load('/models/Go2.glb', (gltf) => {
-      this.robotModel = gltf.scene;
-      this.robotModel.scale.set(1, 1, 1);
-      this.robotModel.traverse((child) => {
-        if (child instanceof THREE.Mesh && child.material) {
-          const mat = child.material as THREE.MeshStandardMaterial;
-          mat.transparent = true;
-          mat.opacity = 0.85;
-        }
-      });
-      // Hide ExtendRail and Rod parts like control view
-      const rail = this.robotModel.getObjectByName('ExtendRail');
-      if (rail) rail.visible = false;
-      for (const leg of ['FL', 'FR', 'RL', 'RR']) {
-        const rod = this.robotModel.getObjectByName(`Rod${leg}`);
-        if (rod) rod.visible = false;
-      }
-      this.robotMarker.add(this.robotModel);
-      // Position model relative to marker (offset down to ground)
-      this.robotModel.position.set(0, 0, -0.25);
-      console.log('[slam-scene] Go2 model loaded');
-    });
+  /** Forward motor state to the Go2 model for joint sync */
+  updateMotorState(motors: Array<{ q: number }>): void {
+    this.go2Model?.updateMotorState(motors);
   }
 
   // ── Movement Trace ──

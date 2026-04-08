@@ -1678,6 +1678,14 @@ body {
   position: relative;
 }
 
+/* Navigation controls wrapper (inside section, can be independently disabled) */
+.mapping-nav-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: opacity 0.2s;
+}
+
 /* Hint text shown when section is disabled */
 .mapping-hint {
   font-size: 11px;
