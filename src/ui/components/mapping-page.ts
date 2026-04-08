@@ -4,12 +4,17 @@ import SlamWorker from '../../workers/slam-worker?worker';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
 
-const ALL_USLAM_TOPICS = [
+// Topics subscribed on entry (mapping + server log)
+const BASE_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_SERVER_LOG,
   RTC_TOPIC.USLAM_CLOUD_WORLD,
   RTC_TOPIC.USLAM_ODOM,
   RTC_TOPIC.USLAM_CLOUD_MAP,
   RTC_TOPIC.USLAM_GRID_MAP,
+];
+
+// Topics subscribed only after localization succeeds (matching APK)
+const LOC_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_LOC_CLOUD,
   RTC_TOPIC.USLAM_LOC_ODOM,
   RTC_TOPIC.USLAM_NAV_PATH,
@@ -136,8 +141,8 @@ export class MappingPage {
       }
     };
 
-    // Subscribe to all USLAM topics on entry
-    for (const topic of ALL_USLAM_TOPICS) {
+    // Subscribe base topics on entry (localization topics deferred until success)
+    for (const topic of BASE_USLAM_TOPICS) {
       this.subscribe(topic);
     }
 
@@ -588,12 +593,17 @@ export class MappingPage {
       this.showNotification('Map loaded successfully', '#42CF55');
     }
 
-    // ── Localization state transitions ──
-    if (msg.includes('localization') && msg.includes('succeed')) {
+    // ── Localization state transitions (exact message matching) ──
+    if (msg.includes('[Localization] initialization succeed!')) {
       this.localizingInProgress = false;
       this.localized = true;
       this.setState('localized');
       this.slamScene?.showRobot(true);
+
+      // Subscribe to localization topics now (matching APK)
+      for (const topic of LOC_USLAM_TOPICS) {
+        this.subscribe(topic);
+      }
 
       // Update localization UI
       this.locStartBtn.style.display = 'none';
@@ -603,12 +613,16 @@ export class MappingPage {
       this.showNotification('Localization successful - robot visible on map', '#42CF55');
       this.updateFlowGating();
     }
-    if (msg.includes('localization') && msg.includes('failed')) {
+    if (msg.includes('[Localization] initialization failed!')) {
       this.localizingInProgress = false;
       this.localized = false;
       this.setState('idle');
       // Clear real-time white point cloud
       this.slamScene?.updateLaserCloud(new Float32Array(0));
+      // Unsubscribe localization topics
+      for (const topic of LOC_USLAM_TOPICS) {
+        this.unsubscribe(topic);
+      }
 
       // Update localization UI — highlight Set Initial Pose as next step
       this.locStartBtn.style.display = '';
@@ -632,6 +646,10 @@ export class MappingPage {
       this.slamScene?.showRobot(false);
       // Clear real-time white point cloud (keep accumulated map)
       this.slamScene?.updateLaserCloud(new Float32Array(0));
+      // Unsubscribe localization topics (matching APK)
+      for (const topic of LOC_USLAM_TOPICS) {
+        this.unsubscribe(topic);
+      }
       this.locStartBtn.style.display = '';
       this.locAbortBtn.style.display = 'none';
       this.setLocStatus('', '');
@@ -997,7 +1015,8 @@ export class MappingPage {
   // ── Cleanup ──
 
   private cleanup(): void {
-    for (const topic of ALL_USLAM_TOPICS) this.unsubscribe(topic);
+    for (const topic of BASE_USLAM_TOPICS) this.unsubscribe(topic);
+    for (const topic of LOC_USLAM_TOPICS) this.unsubscribe(topic);
   }
 
   destroy(): void {
