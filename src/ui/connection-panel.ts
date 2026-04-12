@@ -153,14 +153,6 @@ export class ConnectionPanel {
       this.loginBtn.style.display = '';
       this.connectBtn.style.display = 'none';
       this.robotPickerGroup.style.display = 'none';
-    } else if (isRemote && this.remoteLoggedIn) {
-      // Show robot picker, hide auth
-      emailGroup.style.display = 'none';
-      passwordGroup.style.display = 'none';
-      tokenGroup.style.display = 'none';
-      this.loginBtn.style.display = 'none';
-      this.connectBtn.style.display = '';
-      this.robotPickerGroup.style.display = '';
     } else {
       // Local mode
       emailGroup.style.display = 'none';
@@ -204,10 +196,9 @@ export class ConnectionPanel {
       this.setStatus('Loading your robots...', 'info');
       const devices = await cloudApi.listDevices();
 
-      // Cache for hub screen to show robot name
+      // Cache for hub screen
       try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
 
-      this.robotSelect.innerHTML = '';
       if (devices.length === 0) {
         this.setStatus('No robots bound to your account', 'error');
         this.loginBtn.disabled = false;
@@ -215,34 +206,16 @@ export class ConnectionPanel {
         return;
       }
 
-      if (devices.length === 1) {
-        // Auto-select single robot
-        const d = devices[0];
-        const opt = document.createElement('option');
-        opt.value = d.sn;
-        opt.textContent = `${d.alias || d.sn} (${d.series})`;
-        this.robotSelect.appendChild(opt);
-        this.robotSelect.value = d.sn;
-        this.selectedSn = d.sn;
-        this.setStatus(`Robot: ${d.alias || d.sn}`, 'success');
-      } else {
-        // Multiple robots — show picker
-        const placeholder = document.createElement('option');
-        placeholder.value = '';
-        placeholder.textContent = '-- Choose robot --';
-        this.robotSelect.appendChild(placeholder);
-        for (const d of devices) {
-          const opt = document.createElement('option');
-          opt.value = d.sn;
-          opt.textContent = `${d.alias || d.sn} — ${d.series}${d.connIp ? ' (' + d.connIp + ')' : ''} [${d.sn}]`;
-          this.robotSelect.appendChild(opt);
-        }
-        this.selectedSn = '';
-        this.setStatus(`${devices.length} robots found — choose one`, 'success');
-      }
-
-      this.remoteLoggedIn = true;
-      this.updateVisibility();
+      // Auto-select first robot and go straight to hub
+      const firstSn = devices[0].sn;
+      this.onConnect({
+        mode: 'STA-T',
+        ip: '',
+        token: cloudApi.accessToken,
+        serialNumber: firstSn,
+        email: '',
+        password: '',
+      });
     } catch (e) {
       this.setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
     } finally {

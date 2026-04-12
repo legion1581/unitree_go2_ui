@@ -139,24 +139,19 @@ export class App {
     info.textContent = infoItems.join(' | ');
     hub.appendChild(info);
 
-    // ── Remote mode: robot picker + WebRTC connect/disconnect ──
+    // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
     if (isRemoteMode) {
       const remoteSection = document.createElement('div');
       remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;background:rgba(26,29,35,0.5);border-radius:10px;border:1px solid #1f2229;';
 
-      // Robot select
+      // Robot select (only if multiple robots)
       let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
       try {
         const c = localStorage.getItem('unitree_devices_cache');
         if (c) cachedDevices = JSON.parse(c);
       } catch { /* ignore */ }
 
-      if (cachedDevices.length > 1 || !sn) {
-        const label = document.createElement('label');
-        label.style.cssText = 'display:block;font-size:11px;color:#888;margin-bottom:4px;';
-        label.textContent = 'Robot';
-        remoteSection.appendChild(label);
-
+      if (cachedDevices.length > 1) {
         const robotSel = document.createElement('select');
         robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
         for (const d of cachedDevices) {
@@ -167,52 +162,50 @@ export class App {
           robotSel.appendChild(opt);
         }
         robotSel.addEventListener('change', () => {
-          if (this.connectionConfig) {
-            this.connectionConfig.serialNumber = robotSel.value;
-          }
+          if (this.connectionConfig) this.connectionConfig.serialNumber = robotSel.value;
         });
         remoteSection.appendChild(robotSel);
       }
 
-      // Status text
-      const statusEl = document.createElement('div');
-      statusEl.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;min-height:18px;';
-      statusEl.textContent = isConnected ? 'WebRTC connected' : '';
-      remoteSection.appendChild(statusEl);
+      // Single row: button + status
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;';
 
-      // Connect / Disconnect buttons
-      const btnRow = document.createElement('div');
-      btnRow.style.cssText = 'display:flex;gap:8px;';
+      const statusEl = document.createElement('span');
+      statusEl.style.cssText = 'font-size:12px;color:#888;flex:1;';
 
       if (!isConnected) {
         const connectBtn = document.createElement('button');
-        connectBtn.className = 'hub-btn hub-btn-primary';
-        connectBtn.style.cssText = 'flex:1;padding:10px;';
-        connectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>WebRTC Connect</span>`;
+        connectBtn.style.cssText = 'padding:8px 20px;background:#4fc3f7;color:#000;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
+        connectBtn.textContent = 'WebRTC Connect';
         connectBtn.addEventListener('click', async () => {
           connectBtn.disabled = true;
-          connectBtn.innerHTML = '<span>Connecting...</span>';
-          statusEl.textContent = 'Initializing...';
+          connectBtn.textContent = 'Connecting...';
+          connectBtn.style.opacity = '0.6';
           statusEl.style.color = '#4fc3f7';
           try {
             await this.connectWebRTCFromHub((msg) => { statusEl.textContent = msg; });
           } catch (e) {
-            statusEl.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+            statusEl.textContent = `${e instanceof Error ? e.message : String(e)}`;
             statusEl.style.color = '#ef5350';
             connectBtn.disabled = false;
-            connectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>WebRTC Connect</span>`;
+            connectBtn.textContent = 'WebRTC Connect';
+            connectBtn.style.opacity = '1';
           }
         });
-        btnRow.appendChild(connectBtn);
+        row.appendChild(connectBtn);
       } else {
         const disconnectBtn = document.createElement('button');
-        disconnectBtn.className = 'hub-btn hub-btn-secondary';
-        disconnectBtn.style.cssText = 'flex:1;padding:10px;';
-        disconnectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span>Disconnect WebRTC</span>`;
-        disconnectBtn.addEventListener('click', () => { this.disconnect(); });
-        btnRow.appendChild(disconnectBtn);
+        disconnectBtn.style.cssText = 'padding:8px 20px;background:transparent;color:#ef5350;border:1px solid #ef5350;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
+        disconnectBtn.textContent = 'Disconnect';
+        disconnectBtn.addEventListener('click', () => this.disconnect());
+        row.appendChild(disconnectBtn);
+        statusEl.textContent = 'WebRTC connected';
+        statusEl.style.color = '#66bb6a';
       }
-      remoteSection.appendChild(btnRow);
+
+      row.appendChild(statusEl);
+      remoteSection.appendChild(row);
       hub.appendChild(remoteSection);
     }
 
