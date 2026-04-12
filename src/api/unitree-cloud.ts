@@ -194,7 +194,7 @@ export class UnitreeCloudAPI {
     return resp.data as T;
   }
 
-  private async post<T>(path: string, params?: Record<string, string>): Promise<T> {
+  async post<T>(path: string, params?: Record<string, string>): Promise<T> {
     const resp = await this.request<T>('POST', path, params);
     if (resp.code !== 100) throw new UnitreeCloudError(resp.code, resp.errorMsg || `Error ${resp.code}`);
     return resp.data as T;
