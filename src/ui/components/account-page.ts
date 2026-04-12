@@ -96,12 +96,12 @@ export class AccountPage {
     }
     this.content.appendChild(profile);
 
-    // Edit nickname
+    // Edit profile
     const edit = this.section('Edit Profile');
     const nickInput = this.input('Nickname', 'text');
     if (cloudApi.user?.nickname) nickInput.input.value = cloudApi.user.nickname;
     edit.appendChild(nickInput.wrapper);
-    edit.appendChild(this.button('Save Profile', async () => {
+    edit.appendChild(this.button('Save Nickname', async () => {
       try {
         await cloudApi.updateUserInfo({ nickname: nickInput.input.value.trim() });
         await cloudApi.getUserInfo();
@@ -109,6 +109,70 @@ export class AccountPage {
       } catch (e) { alert(String(e)); }
     }));
     this.content.appendChild(edit);
+
+    // Avatar
+    const avatarSec = this.section('Update Avatar');
+    if (cloudApi.user?.avatar) {
+      const preview = document.createElement('div');
+      preview.style.cssText = 'margin-bottom:10px;';
+      preview.innerHTML = `<img src="${this.esc(cloudApi.user.avatar)}" style="width:64px;height:64px;border-radius:8px;object-fit:cover;">
+        <div style="font-size:10px;color:#444;margin-top:4px;word-break:break-all;max-width:250px;">${this.esc(cloudApi.user.avatar)}</div>`;
+      avatarSec.appendChild(preview);
+    }
+    const avatarUrlInput = this.input('Avatar URL', 'url');
+    avatarUrlInput.input.placeholder = 'https://...';
+    avatarSec.appendChild(avatarUrlInput.wrapper);
+
+    // File upload
+    const fileLabel = document.createElement('label');
+    fileLabel.style.cssText = 'display:block;font-size:11px;color:#666;margin-bottom:3px;';
+    fileLabel.textContent = 'Or upload image';
+    avatarSec.appendChild(fileLabel);
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.style.cssText = 'width:100%;padding:6px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:12px;margin-bottom:8px;';
+    avatarSec.appendChild(fileInput);
+
+    avatarSec.appendChild(this.button('Update Avatar', async () => {
+      let url = avatarUrlInput.input.value.trim();
+
+      // If file selected, upload first
+      if (!url && fileInput.files?.length) {
+        try {
+          const file = fileInput.files[0];
+          const formData = new FormData();
+          formData.append('file', file);
+
+          const headers = Object.fromEntries(
+            Object.entries(cloudApi['request'] ? {} : {}).filter(([k]) => k !== 'Content-Type')
+          );
+          // Use raw fetch with token
+          const resp = await fetch('/unitree-api/attachment/upload', {
+            method: 'POST',
+            headers: { 'Token': cloudApi.accessToken },
+            body: formData,
+          });
+          const json = await resp.json();
+          if (json.code === 100 && json.data) {
+            url = json.data.url || json.data.path || '';
+          } else {
+            throw new Error(json.errorMsg || 'Upload failed');
+          }
+        } catch (e) {
+          alert(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
+          return;
+        }
+      }
+
+      if (!url) { alert('Provide an avatar URL or select a file'); return; }
+      try {
+        await cloudApi.updateUserInfo({ avatar: url });
+        await cloudApi.getUserInfo();
+        this.switchTab('account');
+      } catch (e) { alert(String(e)); }
+    }));
+    this.content.appendChild(avatarSec);
 
     // Change password
     const pw = this.section('Change Password');
@@ -652,19 +716,100 @@ export class AccountPage {
     this.content.appendChild(s);
 
     // Quick endpoints
+    // Full endpoint catalog (77 endpoints, matching Python project)
     const endpoints: string[][] = [
-      ['GET', 'user/info', ''], ['GET', 'device/bind/list', ''],
-      ['GET', 'device/online/status', 'sn='], ['GET', 'device/location', 'sn='],
-      ['GET', 'device/network', 'sn='], ['POST', 'v1/firmware/package/upgrade/list', 'sn='],
-      ['POST', 'firmware/package/version', 'sn='], ['GET', 'app/version', 'platform=Android'],
-      ['GET', 'tutorial/list', 'appName=Go2'], ['GET', 'v2/tutorial/list', 'appName=Go2'],
-      ['GET', 'app/version/intro/list', 'lastId=0'], ['GET', 'app/notice/list', ''],
-      ['GET', 'system/pubKey', ''], ['GET', 'flow/card/info', 'sn='],
-      ['GET', 'device/flow/usage', 'sn=\nyear=2026\nmonth=4'], ['POST', 'device/wallet', 'sn='],
-      ['POST', 'device/share/list', 'sn='], ['GET', 'advertisements', 'position=1'],
-      ['GET', 'agreement/version/latest', ''], ['GET', 'exercise/data/summary', ''],
+      // Auth
+      ['POST', 'login/email', 'email=\npassword='],
+      ['POST', 'oauth/token', 'grantType=sms\nmobile=\ncaptcha='],
+      ['POST', 'captcha/mobile', 'mobile='],
+      ['POST', 'captcha/email', 'email='],
+      ['GET', 'captcha', ''],
+      ['POST', 'captcha/mobile/check', 'mobile=\ncaptcha='],
+      ['POST', 'user/captcha/email/check', 'email=\ncaptcha='],
+      ['POST', 'captcha/check', 'code=\ncaptcha='],
+      ['GET', 'register/account/check', 'account='],
+      ['POST', 'register/email', 'email=\npassword=\ncaptcha=\nregion=US'],
+      ['POST', 'oauth/email/password/reset', 'email=\ncaptcha=\npassword='],
+      ['POST', 'user/password/update', 'oldPassword=\npassword='],
+      ['POST', 'user/destroy', ''],
+      ['POST', 'token/refresh', 'refreshToken='],
+      // User
+      ['GET', 'user/info', ''],
+      ['POST', 'user/info/update', 'nickname=\navatar='],
+      ['POST', 'user/setRegion', 'region=US'],
+      ['POST', 'user/nickname/check', 'nickname='],
+      ['GET', 'oauth/bind/accounts', ''],
+      ['POST', 'oauth/unbind', 'grantType=wechat'],
+      ['POST', 'user/email/update', 'email=\ntoken='],
+      ['POST', 'user/mobile/update', 'mobile=\ntoken='],
+      ['POST', 'user/search', 'nickname='],
+      ['GET', 'exercise/data/summary', ''],
+      ['GET', 'user/visitors', ''],
+      // Devices
+      ['GET', 'device/bind/list', ''],
+      ['POST', 'device/bind', 'sn=\nmac=\nalias=\nremark=\nextData='],
+      ['POST', 'device/unbind', 'sn='],
+      ['POST', 'device/bind/check', 'sn='],
+      ['POST', 'device/update', 'sn=\nalias=\nremark='],
+      ['GET', 'device/online/status', 'sn='],
+      ['GET', 'device/network', 'sn='],
+      ['POST', 'device/network/update', 'sn=\nconnIp=\nconnMode='],
+      ['POST', 'device/bindExtData', 'extData=\nsn='],
+      ['POST', 'device/notifyUnBind', 'sn='],
+      ['POST', 'device/wallet', 'sn='],
+      // Location
+      ['GET', 'device/location', 'sn='],
+      ['POST', 'device/location/updateStatus', 'sn=\ngpsEnable=1'],
+      ['POST', 'internal/device/location', 'sn='],
+      // Sharing
+      ['POST', 'device/share/add', 'sn=\naccount=\nremark='],
+      ['POST', 'device/share/list', 'sn='],
+      ['POST', 'device/share/del', 'sn=\nshareUid='],
+      // Firmware
+      ['POST', 'v1/firmware/package/upgrade/list', 'sn='],
+      ['POST', 'firmware/package/version', 'sn='],
+      ['POST', 'firmware/package/upgrade', 'sn=\nfirmwareId='],
+      ['POST', 'firmware/package/download', 'sn=\nfirmwareId='],
+      ['POST', 'firmware/package/install', 'sn=\nfirmwareId='],
+      ['GET', 'firmware/upgrade/progress', 'updateId='],
+      ['POST', 'firmware/upgrade/task/current', 'sn='],
+      ['GET', 'app/version', 'platform=Android'],
+      ['GET', 'app/version/notice/latest', ''],
+      ['GET', 'app/version/intro/list', 'lastId=0'],
+      // WebRTC
+      ['POST', 'webrtc/account', 'sn=\nsk='],
+      ['POST', 'webrtc/connect', 'sn=\nsk=\ndata=\ntimeout=5'],
+      // Wallet
+      ['GET', 'flow/card/info', 'sn='],
+      ['GET', 'flow/card/packages', ''],
+      ['GET', 'device/flow/usage', 'sn=\nyear=2026\nmonth=4'],
+      ['GET', 'wallet/order/list', 'sn=\nlastId='],
+      ['GET', 'wallet/package/list', ''],
+      // IoT
+      ['POST', 'internal/device/iot/changePlan', 'sn='],
+      // Logs
+      ['POST', 'device/log/upload/trigger', 'sn='],
+      ['POST', 'app/log/upload', 'date=2026-04-12\ncontent=test'],
+      // Content
+      ['GET', 'tutorial/list', 'appName=Go2\ntype='],
+      ['GET', 'v2/tutorial/list', 'appName=Go2\ntype='],
+      ['POST', 'tutorial/read', 'id='],
+      ['GET', 'app/notice/list', ''],
+      ['GET', 'advertisements', 'position=1'],
+      ['GET', 'agreement/version/latest', ''],
+      ['POST', 'feedback/add', 'content=\ncontact=\npics='],
+      // System
+      ['GET', 'system/pubKey', ''],
+      ['POST', 'nls/token', ''],
+      ['GET', 'api/storage/getOssSts', ''],
+      ['POST', 'eae1537f', 'data=\nuuid='],
+      // Creative Programming
+      ['GET', 'app/creativeProgramming/list', 'sortType=\npage=1'],
+      ['GET', 'app/creativeProgramming/myself', 'page=1'],
+      ['GET', 'app/creativeProgramming/download', 'id='],
+      ['GET', 'app/creativeProgramming/whitelist', 'page=1'],
     ];
-    const qs = this.section('Quick Endpoints');
+    const qs = this.section(`Endpoints (${endpoints.length})`);
     for (const [m, p, par] of endpoints) {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:4px 0;cursor:pointer;border-bottom:1px solid #151820;';
