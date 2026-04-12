@@ -77,13 +77,52 @@ npm run preview
 ### Remote
 
 1. Select **Remote** mode
-2. Enter the robot's serial number
-3. Either enter your Unitree account email/password, or paste an access token
-4. Click **Connect**
+2. Enter your Unitree account email/password (or paste an access token)
+3. Click **Login** — your robots load automatically
+4. On the hub, click **WebRTC Connect** to establish the video/control stream
+5. If your account has multiple robots, use the dropdown to pick one before connecting
 
 | Connection | Hub | Status | Services |
 |:---:|:---:|:---:|:---:|
 | ![Connection](images/connection.png) | ![Hub](images/hub.png) | ![Status](images/status.png) | ![Services](images/services.png) |
+
+## Account Management
+
+Available in **Remote** mode via the **Account Management** button on the hub. Provides full access to the Unitree cloud API without needing the phone app.
+
+### Devices Tab
+- View all robots bound to your account with online/offline status
+- Device tiles with SN, series, model, IP, connection mode, GCM key
+- Copy any value to clipboard with one click
+- **Details** — full device info, edit alias/remark, firmware updates with download links, danger zone (unbind)
+- **Share** — share robot access with other accounts, view/remove existing shares
+- **Add Robot** — bind a new robot by serial number
+
+### Info Tab
+- **App Version** — latest Unitree app version with direct APK download link
+- **Announcements** — server-side notices
+- **Tutorials** — grouped video tutorials (Starter Guide, Core Features, Advanced Tips) with Watch links
+- **Changelog** — version history with links to release notes
+
+### Account Tab
+- User profile with avatar display
+- Edit nickname
+- Upload/change avatar (file upload or URL)
+- Change password
+- Set region
+- Logout with session management (persisted to localStorage)
+
+### Debug Tab
+- Raw API console — send any GET/POST request to the Unitree cloud API
+- 77 endpoints organized in 13 categories: Auth, User, Devices, Location, Sharing, Firmware, WebRTC, Wallet, IoT, Logs, Content, System, Creative Programming
+- Click any endpoint to auto-fill method, path, and parameters
+- Response displayed inline with color-coded success/error
+
+### API Details
+- All requests signed with `MD5(secret + timestamp + nonce)` matching the official app
+- Passwords sent as `MD5(password)`, not plaintext
+- Session tokens auto-refresh on expiry (code 1001)
+- Proxied through Vite dev server to bypass CORS and Tencent EdgeOne WAF
 
 ## Browser Support
 
@@ -97,11 +136,12 @@ npm run preview
 
 ```
 src/
+  api/              # Unitree cloud API client (account, devices, firmware, etc.)
   connection/       # WebRTC, local/remote connectors, network scanner
   crypto/           # AES-ECB, RSA, AES-GCM for auth and SDP exchange
   protocol/         # Data channel handler, topics, sport commands
   ui/
-    components/     # Action bar, PIP camera, status/services pages, nav bar
+    components/     # Action bar, PIP camera, status/services/account pages, nav bar
     scene/          # Three.js scene, robot model, voxel map
   proxy-plugin.ts   # Vite plugin: robot proxy, scanner, cloud API proxy
 public/
