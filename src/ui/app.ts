@@ -238,12 +238,14 @@ export class App {
     else svcBtn.disabled = true;
     btnRow.appendChild(svcBtn);
 
-    // Account — always available
-    const acctBtn = document.createElement('button');
-    acctBtn.className = 'hub-btn hub-btn-secondary';
-    acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Management</span>`;
-    acctBtn.addEventListener('click', () => this.showAccountScreen());
-    btnRow.appendChild(acctBtn);
+    // Account Management — only in Remote mode
+    if (isRemoteMode) {
+      const acctBtn = document.createElement('button');
+      acctBtn.className = 'hub-btn hub-btn-secondary';
+      acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Management</span>`;
+      acctBtn.addEventListener('click', () => this.showAccountScreen());
+      btnRow.appendChild(acctBtn);
+    }
 
     hub.appendChild(btnRow);
 
