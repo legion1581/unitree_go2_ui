@@ -1,6 +1,7 @@
 import type { ConnectionCallbacks, SdpPayload, TurnServerInfo } from '../types';
 import { aesEncrypt, aesDecrypt, generateAesKey } from '../crypto/aes';
 import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
+import { cloudApi } from '../api/unitree-cloud';
 // Proxy through Vite dev server to avoid CORS issues with Unitree cloud API
 const REMOTE_API_BASE = '/unitree-api';
 import { WebRTCConnection } from './webrtc';
@@ -8,26 +9,19 @@ import forge from 'node-forge';
 
 function buildHeaders(token: string): Record<string, string> {
   const timestamp = Date.now().toString();
-  const nonce = forge.md.md5.create().update(timestamp).digest().toHex();
+  const nonce = crypto.randomUUID?.()?.replace(/-/g, '') || forge.md.md5.create().update(timestamp).digest().toHex();
   const signSecret = 'XyvkwK45hp5PHfA8';
   const appSign = forge.md.md5.create().update(`${signSecret}${timestamp}${nonce}`).digest().toHex();
 
-  // Match official APK headers exactly (required by Unitree cloud API)
-  const tzOffset = new Date().getTimezoneOffset();
-  const tzHours = Math.abs(Math.floor(tzOffset / 60));
-  const tzMins = Math.abs(tzOffset % 60);
-  const tzSign = tzOffset <= 0 ? '+' : '-';
-  const appTimezone = `GMT${tzSign}${String(tzHours).padStart(2, '0')}:${String(tzMins).padStart(2, '0')}`;
-
   return {
     'Content-Type': 'application/x-www-form-urlencoded',
-    'DeviceId': 'Samsung/GalaxyS20/SM-G981B/s20/10/29',
-    'AppTimezone': appTimezone,
+    'DeviceId': 'Samsung/Samsung/SM-S931B/s24/14/34',
+    'AppTimezone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     'DevicePlatform': 'Android',
-    'DeviceModel': 'SM-G981B',
-    'SystemVersion': '29',
-    'AppVersion': '1.8.0',
-    'AppLocale': 'en_US',
+    'DeviceModel': 'SM-S931B',
+    'SystemVersion': '34',
+    'AppVersion': '1.11.4',
+    'AppLocale': navigator.language?.replace('-', '_') || 'en_US',
     'AppTimestamp': timestamp,
     'AppNonce': nonce,
     'AppSign': appSign,
@@ -56,30 +50,13 @@ async function fetchAppPublicKey(token: string): Promise<string> {
   return json.data;
 }
 
+/**
+ * Login via cloud API. Uses the shared cloudApi singleton so the Account
+ * Manager page can see the session.  Returns the access token.
+ */
 export async function loginWithEmail(email: string, password: string): Promise<string> {
-  const pwdHash = forge.md.md5.create().update(password).digest().toHex();
-
-  const body = new URLSearchParams({ email, password: pwdHash });
-  let resp: Response;
-  try {
-    resp = await fetch(`${REMOTE_API_BASE}/login/email`, {
-      method: 'POST',
-      headers: buildHeaders(''),
-      body,
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch (err) {
-    if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error('Login timed out — check your internet connection');
-    }
-    throw new Error('Cannot reach Unitree login server');
-  }
-  if (!resp.ok) throw new Error(`Login server returned HTTP ${resp.status}`);
-  const json = await resp.json();
-  if (json.code === 10001) throw new Error('Invalid email or password');
-  if (json.code === 10002) throw new Error('Account not found');
-  if (json.code !== 100) throw new Error(`Login failed: ${json.errorMsg || `code ${json.code}`}`);
-  return json.data.accessToken;
+  await cloudApi.loginEmail(email, password);
+  return cloudApi.accessToken;
 }
 
 async function fetchTurnServerInfo(

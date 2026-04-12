@@ -1364,3 +1364,40 @@ body {
   color: #FCD335;
   animation: toastFade 3s forwards;
 }
+
+/* ── Account Manager ── */
+.acct-tab-bar {
+  display: flex;
+  border-bottom: 1px solid #1a1d23;
+  background: rgba(15, 17, 20, 0.95);
+  flex-shrink: 0;
+}
+.acct-tab-btn {
+  flex: 1;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.acct-tab-btn:hover { color: #aaa; }
+.acct-tab-btn.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+.acct-form { display: flex; flex-direction: column; gap: 0; }
+.acct-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  margin-top: 8px;
+}
+.acct-btn-primary { background: #4fc3f7; color: #000; }
+.acct-btn-primary:hover { background: #29b6f6; }
+.acct-btn-danger { background: #c62828; color: #fff; }
+.acct-btn-danger:hover { background: #e53935; }
