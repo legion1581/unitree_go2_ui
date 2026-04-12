@@ -112,6 +112,10 @@ export class ConnectionPanel {
     });
     this.connectBtn.addEventListener('click', () => this.handleConnect());
     this.loginBtn.addEventListener('click', () => this.handleRemoteLogin());
+
+    // Enter key triggers login/connect
+    const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.loginBtn.style.display !== 'none' ? this.handleRemoteLogin() : this.handleConnect(); } };
+    this.container.addEventListener('keydown', handleEnter);
     this.scanBtn.addEventListener('click', () => this.handleScan());
     this.robotSelect.addEventListener('change', () => {
       this.selectedSn = this.robotSelect.value;
