@@ -104,6 +104,16 @@ export function robotProxyPlugin(): Plugin {
               headers['content-length'] = body.length.toString();
             }
 
+            // Set User-Agent to match Android app (EdgeOne WAF blocks Node defaults)
+            headers['user-agent'] = 'okhttp/4.11.0';
+            // Remove headers that leak browser/proxy origin
+            delete headers['sec-fetch-site'];
+            delete headers['sec-fetch-mode'];
+            delete headers['sec-fetch-dest'];
+            delete headers['sec-ch-ua'];
+            delete headers['sec-ch-ua-mobile'];
+            delete headers['sec-ch-ua-platform'];
+
             const proxyReq = https.request(
               {
                 hostname: 'global-robot-api.unitree.com',

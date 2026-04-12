@@ -302,14 +302,21 @@ export class AccountPage {
       grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;';
 
       // Fetch online statuses in parallel
-      const statuses = await Promise.allSettled(devices.map(d => cloudApi.rawRequest('GET', 'device/online/status', { sn: d.sn })));
+      const statuses = await Promise.allSettled(
+        devices.map(d => cloudApi.rawRequest('GET', 'device/online/status', { sn: d.sn }))
+      );
 
       for (let i = 0; i < devices.length; i++) {
         const dev = devices[i];
         const statusResp = statuses[i];
         let online: boolean | null = null;
-        if (statusResp.status === 'fulfilled' && statusResp.value.code === 100) {
-          online = !!statusResp.value.data;
+        if (statusResp.status === 'fulfilled') {
+          const resp = statusResp.value;
+          if (resp.code === 100) {
+            // data is true/false boolean or 1/0 number
+            online = resp.data === true || resp.data === 1;
+          }
+          // If code is 567 or other WAF error, online stays null (unknown)
         }
         grid.appendChild(this.buildDeviceTile(dev, online));
       }
@@ -441,39 +448,7 @@ export class AccountPage {
         }
       } catch { /* ignore */ }
 
-      // GPS
-      try {
-        const loc = await cloudApi.getDeviceLocation(dev.sn);
-        const gps = this.section('GPS Location');
-        const gpsOn = loc?.gpsEnable === 1;
-        const statusRow = document.createElement('div');
-        statusRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:8px;';
-        statusRow.innerHTML = `<span style="font-size:11px;padding:2px 8px;border-radius:8px;font-weight:700;${gpsOn ? 'background:#1b5e20;color:#a5d6a7;' : 'background:#333;color:#666;'}">${gpsOn ? 'Enabled' : 'Disabled'}</span>`;
-        const toggleBtn = document.createElement('button');
-        toggleBtn.className = 'acct-btn';
-        toggleBtn.style.cssText = `padding:3px 10px;font-size:11px;${gpsOn ? 'background:transparent;border:1px solid #333;color:#888;' : 'background:#4fc3f7;color:#000;border:none;'}`;
-        toggleBtn.textContent = gpsOn ? 'Disable' : 'Enable GPS';
-        toggleBtn.addEventListener('click', async () => {
-          try {
-            await cloudApi.updateDeviceGps(dev.sn, !gpsOn);
-            this.showDeviceDetail(dev);
-          } catch (e) { alert(String(e)); }
-        });
-        statusRow.appendChild(toggleBtn);
-        gps.appendChild(statusRow);
 
-        if (loc?.latitude && loc.longitude && loc.latitude !== '' && loc.longitude !== '') {
-          this.infoRow(gps, 'Latitude', loc.latitude, true);
-          this.infoRow(gps, 'Longitude', loc.longitude, true);
-          if (loc.gpsTimestamp && loc.gpsTimestamp !== '0') this.infoRow(gps, 'Timestamp', loc.gpsTimestamp);
-        } else {
-          const msg = document.createElement('div');
-          msg.style.cssText = 'font-size:12px;color:#555;';
-          msg.textContent = gpsOn ? 'No GPS fix yet.' : 'Enable GPS to track location.';
-          gps.appendChild(msg);
-        }
-        this.content.appendChild(gps);
-      } catch { /* ignore */ }
 
       // Danger zone
       const danger = this.section('Danger Zone');
