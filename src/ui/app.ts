@@ -1092,6 +1092,8 @@ export class App {
   }
 
   private disconnect(): void {
+    const wasRemote = this.connectionConfig?.mode === 'STA-T';
+
     this.stopJoystickLoop();
     this.stopBgNoise();
     this.dataHandler?.destroy();
@@ -1101,7 +1103,6 @@ export class App {
     this.videoStream = null;
     this.videoBg = null;
     this.noiseBgCanvas = null;
-    this.connectionConfig = null;
     this.pipCamera?.destroy();
     this.pipCamera = null;
     this.navBar = null;
@@ -1109,6 +1110,8 @@ export class App {
     this.settingBar = null;
     this.statusPage = null;
     this.servicesPage = null;
+    this.accountPage?.destroy();
+    this.accountPage = null;
     this.serviceEntries = [];
     if (this.serviceReportTimer) {
       clearInterval(this.serviceReportTimer);
@@ -1117,6 +1120,13 @@ export class App {
     this.scene3d?.destroy();
     this.scene3d = null;
     this.viewMode = 'three';
-    this.showConnectionScreen();
+
+    if (wasRemote && this.connectionConfig) {
+      // Stay on hub — keep config, just clear WebRTC
+      this.showHubScreen();
+    } else {
+      this.connectionConfig = null;
+      this.showConnectionScreen();
+    }
   }
 }
