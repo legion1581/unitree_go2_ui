@@ -649,7 +649,8 @@ export class AccountPage {
   // ════════════════════════════════════════════════════════════════════
 
   private renderDebugTab(): void {
-    const s = this.section('Raw API Request');
+    // Request form
+    const s = this.section('Request');
     const form = document.createElement('div');
     form.className = 'acct-form';
 
@@ -672,12 +673,17 @@ export class AccountPage {
     paramsInput.style.cssText = 'width:100%;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-family:monospace;font-size:12px;resize:vertical;';
     form.appendChild(paramsInput);
 
+    // Response area — right below Send button
+    const resultEl = document.createElement('pre');
+    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;margin-top:10px;padding:10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;display:none;';
+
     const sendBtn = this.button('Send Request', async () => {
       const params: Record<string, string> = {};
       for (const line of paramsInput.value.split('\n')) {
         const t = line.trim();
         if (t && t.includes('=')) { const [k, ...v] = t.split('='); params[k.trim()] = v.join('=').trim(); }
       }
+      resultEl.style.display = '';
       resultEl.textContent = 'Loading...';
       resultEl.style.color = '#888';
       try {
@@ -687,119 +693,133 @@ export class AccountPage {
       } catch (e) { resultEl.textContent = String(e); resultEl.style.color = '#ef5350'; }
     });
     form.appendChild(sendBtn);
+    form.appendChild(resultEl);
     s.appendChild(form);
     this.content.appendChild(s);
 
-    // Quick endpoints
-    // Full endpoint catalog (77 endpoints, matching Python project)
-    const endpoints: string[][] = [
-      // Auth
-      ['POST', 'login/email', 'email=\npassword='],
-      ['POST', 'oauth/token', 'grantType=sms\nmobile=\ncaptcha='],
-      ['POST', 'captcha/mobile', 'mobile='],
-      ['POST', 'captcha/email', 'email='],
-      ['GET', 'captcha', ''],
-      ['POST', 'captcha/mobile/check', 'mobile=\ncaptcha='],
-      ['POST', 'user/captcha/email/check', 'email=\ncaptcha='],
-      ['POST', 'captcha/check', 'code=\ncaptcha='],
-      ['GET', 'register/account/check', 'account='],
-      ['POST', 'register/email', 'email=\npassword=\ncaptcha=\nregion=US'],
-      ['POST', 'oauth/email/password/reset', 'email=\ncaptcha=\npassword='],
-      ['POST', 'user/password/update', 'oldPassword=\npassword='],
-      ['POST', 'user/destroy', ''],
-      ['POST', 'token/refresh', 'refreshToken='],
-      // User
-      ['GET', 'user/info', ''],
-      ['POST', 'user/info/update', 'nickname=\navatar='],
-      ['POST', 'user/setRegion', 'region=US'],
-      ['POST', 'user/nickname/check', 'nickname='],
-      ['GET', 'oauth/bind/accounts', ''],
-      ['POST', 'oauth/unbind', 'grantType=wechat'],
-      ['POST', 'user/email/update', 'email=\ntoken='],
-      ['POST', 'user/mobile/update', 'mobile=\ntoken='],
-      ['POST', 'user/search', 'nickname='],
-      ['GET', 'exercise/data/summary', ''],
-      ['GET', 'user/visitors', ''],
-      // Devices
-      ['GET', 'device/bind/list', ''],
-      ['POST', 'device/bind', 'sn=\nmac=\nalias=\nremark=\nextData='],
-      ['POST', 'device/unbind', 'sn='],
-      ['POST', 'device/bind/check', 'sn='],
-      ['POST', 'device/update', 'sn=\nalias=\nremark='],
-      ['GET', 'device/online/status', 'sn='],
-      ['GET', 'device/network', 'sn='],
-      ['POST', 'device/network/update', 'sn=\nconnIp=\nconnMode='],
-      ['POST', 'device/bindExtData', 'extData=\nsn='],
-      ['POST', 'device/notifyUnBind', 'sn='],
-      ['POST', 'device/wallet', 'sn='],
-      // Location
-      ['GET', 'device/location', 'sn='],
-      ['POST', 'device/location/updateStatus', 'sn=\ngpsEnable=1'],
-      ['POST', 'internal/device/location', 'sn='],
-      // Sharing
-      ['POST', 'device/share/add', 'sn=\naccount=\nremark='],
-      ['POST', 'device/share/list', 'sn='],
-      ['POST', 'device/share/del', 'sn=\nshareUid='],
-      // Firmware
-      ['POST', 'v1/firmware/package/upgrade/list', 'sn='],
-      ['POST', 'firmware/package/version', 'sn='],
-      ['POST', 'firmware/package/upgrade', 'sn=\nfirmwareId='],
-      ['POST', 'firmware/package/download', 'sn=\nfirmwareId='],
-      ['POST', 'firmware/package/install', 'sn=\nfirmwareId='],
-      ['GET', 'firmware/upgrade/progress', 'updateId='],
-      ['POST', 'firmware/upgrade/task/current', 'sn='],
-      ['GET', 'app/version', 'platform=Android'],
-      ['GET', 'app/version/notice/latest', ''],
-      ['GET', 'app/version/intro/list', 'lastId=0'],
-      // WebRTC
-      ['POST', 'webrtc/account', 'sn=\nsk='],
-      ['POST', 'webrtc/connect', 'sn=\nsk=\ndata=\ntimeout=5'],
-      // Wallet
-      ['GET', 'flow/card/info', 'sn='],
-      ['GET', 'flow/card/packages', ''],
-      ['GET', 'device/flow/usage', 'sn=\nyear=2026\nmonth=4'],
-      ['GET', 'wallet/order/list', 'sn=\nlastId='],
-      ['GET', 'wallet/package/list', ''],
-      // IoT
-      ['POST', 'internal/device/iot/changePlan', 'sn='],
-      // Logs
-      ['POST', 'device/log/upload/trigger', 'sn='],
-      ['POST', 'app/log/upload', 'date=2026-04-12\ncontent=test'],
-      // Content
-      ['GET', 'tutorial/list', 'appName=Go2\ntype='],
-      ['GET', 'v2/tutorial/list', 'appName=Go2\ntype='],
-      ['POST', 'tutorial/read', 'id='],
-      ['GET', 'app/notice/list', ''],
-      ['GET', 'advertisements', 'position=1'],
-      ['GET', 'agreement/version/latest', ''],
-      ['POST', 'feedback/add', 'content=\ncontact=\npics='],
-      // System
-      ['GET', 'system/pubKey', ''],
-      ['POST', 'nls/token', ''],
-      ['GET', 'api/storage/getOssSts', ''],
-      ['POST', 'eae1537f', 'data=\nuuid='],
-      // Creative Programming
-      ['GET', 'app/creativeProgramming/list', 'sortType=\npage=1'],
-      ['GET', 'app/creativeProgramming/myself', 'page=1'],
-      ['GET', 'app/creativeProgramming/download', 'id='],
-      ['GET', 'app/creativeProgramming/whitelist', 'page=1'],
+    // Grouped endpoint catalog
+    const groups: [string, string[][]][] = [
+      ['Auth', [
+        ['POST', 'login/email', 'email=\npassword='],
+        ['POST', 'oauth/token', 'grantType=sms\nmobile=\ncaptcha='],
+        ['POST', 'captcha/mobile', 'mobile='],
+        ['POST', 'captcha/email', 'email='],
+        ['GET', 'captcha', ''],
+        ['POST', 'captcha/mobile/check', 'mobile=\ncaptcha='],
+        ['POST', 'user/captcha/email/check', 'email=\ncaptcha='],
+        ['POST', 'captcha/check', 'code=\ncaptcha='],
+        ['GET', 'register/account/check', 'account='],
+        ['POST', 'register/email', 'email=\npassword=\ncaptcha=\nregion=US'],
+        ['POST', 'oauth/email/password/reset', 'email=\ncaptcha=\npassword='],
+        ['POST', 'user/password/update', 'oldPassword=\npassword='],
+        ['POST', 'user/destroy', ''],
+        ['POST', 'token/refresh', 'refreshToken='],
+      ]],
+      ['User', [
+        ['GET', 'user/info', ''],
+        ['POST', 'user/info/update', 'nickname=\navatar='],
+        ['POST', 'user/setRegion', 'region=US'],
+        ['POST', 'user/nickname/check', 'nickname='],
+        ['GET', 'oauth/bind/accounts', ''],
+        ['POST', 'oauth/unbind', 'grantType=wechat'],
+        ['POST', 'user/email/update', 'email=\ntoken='],
+        ['POST', 'user/mobile/update', 'mobile=\ntoken='],
+        ['POST', 'user/search', 'nickname='],
+        ['GET', 'exercise/data/summary', ''],
+        ['GET', 'user/visitors', ''],
+      ]],
+      ['Devices', [
+        ['GET', 'device/bind/list', ''],
+        ['POST', 'device/bind', 'sn=\nmac=\nalias=\nremark=\nextData='],
+        ['POST', 'device/unbind', 'sn='],
+        ['POST', 'device/bind/check', 'sn='],
+        ['POST', 'device/update', 'sn=\nalias=\nremark='],
+        ['GET', 'device/online/status', 'sn='],
+        ['GET', 'device/network', 'sn='],
+        ['POST', 'device/network/update', 'sn=\nconnIp=\nconnMode='],
+        ['POST', 'device/bindExtData', 'extData=\nsn='],
+        ['POST', 'device/notifyUnBind', 'sn='],
+        ['POST', 'device/wallet', 'sn='],
+      ]],
+      ['Location', [
+        ['GET', 'device/location', 'sn='],
+        ['POST', 'device/location/updateStatus', 'sn=\ngpsEnable=1'],
+        ['POST', 'internal/device/location', 'sn='],
+      ]],
+      ['Sharing', [
+        ['POST', 'device/share/add', 'sn=\naccount=\nremark='],
+        ['POST', 'device/share/list', 'sn='],
+        ['POST', 'device/share/del', 'sn=\nshareUid='],
+      ]],
+      ['Firmware', [
+        ['POST', 'v1/firmware/package/upgrade/list', 'sn='],
+        ['POST', 'firmware/package/version', 'sn='],
+        ['POST', 'firmware/package/upgrade', 'sn=\nfirmwareId='],
+        ['POST', 'firmware/package/download', 'sn=\nfirmwareId='],
+        ['POST', 'firmware/package/install', 'sn=\nfirmwareId='],
+        ['GET', 'firmware/upgrade/progress', 'updateId='],
+        ['POST', 'firmware/upgrade/task/current', 'sn='],
+        ['GET', 'app/version', 'platform=Android'],
+        ['GET', 'app/version/notice/latest', ''],
+        ['GET', 'app/version/intro/list', 'lastId=0'],
+      ]],
+      ['WebRTC', [
+        ['POST', 'webrtc/account', 'sn=\nsk='],
+        ['POST', 'webrtc/connect', 'sn=\nsk=\ndata=\ntimeout=5'],
+      ]],
+      ['Wallet', [
+        ['GET', 'flow/card/info', 'sn='],
+        ['GET', 'flow/card/packages', ''],
+        ['GET', 'device/flow/usage', 'sn=\nyear=2026\nmonth=4'],
+        ['GET', 'wallet/order/list', 'sn=\nlastId='],
+        ['GET', 'wallet/package/list', ''],
+      ]],
+      ['IoT', [
+        ['POST', 'internal/device/iot/changePlan', 'sn='],
+      ]],
+      ['Logs', [
+        ['POST', 'device/log/upload/trigger', 'sn='],
+        ['POST', 'app/log/upload', 'date=2026-04-12\ncontent=test'],
+      ]],
+      ['Content', [
+        ['GET', 'tutorial/list', 'appName=Go2\ntype='],
+        ['GET', 'v2/tutorial/list', 'appName=Go2\ntype='],
+        ['POST', 'tutorial/read', 'id='],
+        ['GET', 'app/notice/list', ''],
+        ['GET', 'advertisements', 'position=1'],
+        ['GET', 'agreement/version/latest', ''],
+        ['POST', 'feedback/add', 'content=\ncontact=\npics='],
+      ]],
+      ['System', [
+        ['GET', 'system/pubKey', ''],
+        ['POST', 'nls/token', ''],
+        ['GET', 'api/storage/getOssSts', ''],
+        ['POST', 'eae1537f', 'data=\nuuid='],
+      ]],
+      ['Creative', [
+        ['GET', 'app/creativeProgramming/list', 'sortType=\npage=1'],
+        ['GET', 'app/creativeProgramming/myself', 'page=1'],
+        ['GET', 'app/creativeProgramming/download', 'id='],
+        ['GET', 'app/creativeProgramming/whitelist', 'page=1'],
+      ]],
     ];
-    const qs = this.section(`Endpoints (${endpoints.length})`);
-    for (const [m, p, par] of endpoints) {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:4px 0;cursor:pointer;border-bottom:1px solid #151820;';
-      row.innerHTML = `<span style="font-size:10px;font-weight:700;padding:1px 4px;border-radius:3px;${m === 'GET' ? 'background:#1b5e20;color:#a5d6a7;' : 'background:#e65100;color:#ffcc80;'}">${m}</span><span style="font-size:12px;color:#4fc3f7;font-family:monospace;">${p}</span>`;
-      row.addEventListener('click', () => { methodSel.value = m; pathInput.value = p; paramsInput.value = par; this.content.scrollTop = 0; });
-      qs.appendChild(row);
-    }
-    this.content.appendChild(qs);
 
-    const resultSection = this.section('Response');
-    const resultEl = document.createElement('pre');
-    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;';
-    resultEl.textContent = '(no request sent yet)';
-    resultSection.appendChild(resultEl);
-    this.content.appendChild(resultSection);
+    const total = groups.reduce((n, [, eps]) => n + eps.length, 0);
+
+    for (const [groupName, endpoints] of groups) {
+      const gs = this.section(`${groupName} (${endpoints.length})`);
+      for (const [m, p, par] of endpoints) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:4px 0;cursor:pointer;border-bottom:1px solid #151820;';
+        row.innerHTML = `<span style="font-size:10px;font-weight:700;padding:1px 4px;border-radius:3px;${m === 'GET' ? 'background:#1b5e20;color:#a5d6a7;' : 'background:#e65100;color:#ffcc80;'}">${m}</span><span style="font-size:12px;color:#4fc3f7;font-family:monospace;">${p}</span>`;
+        row.addEventListener('click', () => {
+          methodSel.value = m; pathInput.value = p; paramsInput.value = par;
+          this.content.scrollTop = 0;
+        });
+        gs.appendChild(row);
+      }
+      this.content.appendChild(gs);
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -818,8 +838,34 @@ export class AccountPage {
 
   private infoRow(parent: HTMLElement, label: string, value: string, mono = false, color = ''): void {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;padding:3px 0;font-size:13px;';
-    row.innerHTML = `<span style="color:#888;min-width:80px;">${this.esc(label)}</span><span style="color:${color || '#e0e0e0'};${mono ? 'font-family:monospace;font-size:12px;' : ''}word-break:break-all;">${this.esc(value || '-')}</span>`;
+    row.style.cssText = 'display:flex;gap:8px;padding:3px 0;font-size:13px;align-items:center;';
+    const labelSpan = document.createElement('span');
+    labelSpan.style.cssText = 'color:#888;min-width:80px;flex-shrink:0;';
+    labelSpan.textContent = label;
+    row.appendChild(labelSpan);
+
+    const valueSpan = document.createElement('span');
+    valueSpan.style.cssText = `color:${color || '#e0e0e0'};${mono ? 'font-family:monospace;font-size:12px;' : ''}word-break:break-all;user-select:text;cursor:text;flex:1;`;
+    valueSpan.textContent = value || '-';
+    row.appendChild(valueSpan);
+
+    // Copy button for mono values (SN, IP, keys, etc.)
+    if (mono && value && value !== '-') {
+      const copyBtn = document.createElement('button');
+      copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px 4px;color:#555;font-size:11px;flex-shrink:0;';
+      copyBtn.textContent = '📋';
+      copyBtn.title = 'Copy to clipboard';
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigator.clipboard.writeText(value).then(() => {
+          copyBtn.textContent = '✓';
+          copyBtn.style.color = '#66bb6a';
+          setTimeout(() => { copyBtn.textContent = '📋'; copyBtn.style.color = '#555'; }, 1500);
+        });
+      });
+      row.appendChild(copyBtn);
+    }
+
     parent.appendChild(row);
   }
 
