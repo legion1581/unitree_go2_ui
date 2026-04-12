@@ -103,26 +103,26 @@ export class App {
     const hub = document.createElement('div');
     hub.className = 'hub-container';
 
-    // Title — show robot name if available from cloud API
+    const isConnected = !!this.webrtc;
+    const isRemoteMode = this.connectionConfig?.mode === 'STA-T';
+
+    // Title — show robot name
     const title = document.createElement('h2');
     title.className = 'hub-title';
     const sn = this.connectionConfig?.serialNumber || '';
-    let robotName = 'Go2 Connected';
+    let robotName = isConnected ? 'Go2 Connected' : 'Go2 Dashboard';
     if (sn) {
-      // Try to find robot alias from cached cloud API session
       try {
-        const session = localStorage.getItem('unitree_devices_cache');
-        if (session) {
-          const devices = JSON.parse(session) as Array<{ sn: string; alias: string }>;
+        const cache = localStorage.getItem('unitree_devices_cache');
+        if (cache) {
+          const devices = JSON.parse(cache) as Array<{ sn: string; alias: string }>;
           const dev = devices.find(d => d.sn === sn);
           if (dev?.alias) robotName = dev.alias;
           else robotName = sn;
         } else {
           robotName = sn;
         }
-      } catch {
-        robotName = sn;
-      }
+      } catch { robotName = sn; }
     }
     title.textContent = robotName;
     hub.appendChild(title);
@@ -134,35 +134,118 @@ export class App {
     if (sn) infoItems.push(`SN: ${sn}`);
     if (this.connectionConfig?.ip) infoItems.push(`IP: ${this.connectionConfig.ip}`);
     infoItems.push(`Mode: ${this.connectionConfig?.mode || 'N/A'}`);
+    if (isConnected) infoItems.push('WebRTC: Connected');
+    else if (isRemoteMode) infoItems.push('WebRTC: Not connected');
     info.textContent = infoItems.join(' | ');
     hub.appendChild(info);
 
-    // Buttons
+    // ── Remote mode: robot picker + WebRTC connect/disconnect ──
+    if (isRemoteMode) {
+      const remoteSection = document.createElement('div');
+      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;background:rgba(26,29,35,0.5);border-radius:10px;border:1px solid #1f2229;';
+
+      // Robot select
+      let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
+      try {
+        const c = localStorage.getItem('unitree_devices_cache');
+        if (c) cachedDevices = JSON.parse(c);
+      } catch { /* ignore */ }
+
+      if (cachedDevices.length > 1 || !sn) {
+        const label = document.createElement('label');
+        label.style.cssText = 'display:block;font-size:11px;color:#888;margin-bottom:4px;';
+        label.textContent = 'Robot';
+        remoteSection.appendChild(label);
+
+        const robotSel = document.createElement('select');
+        robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
+        for (const d of cachedDevices) {
+          const opt = document.createElement('option');
+          opt.value = d.sn;
+          opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
+          if (d.sn === sn) opt.selected = true;
+          robotSel.appendChild(opt);
+        }
+        robotSel.addEventListener('change', () => {
+          if (this.connectionConfig) {
+            this.connectionConfig.serialNumber = robotSel.value;
+          }
+        });
+        remoteSection.appendChild(robotSel);
+      }
+
+      // Status text
+      const statusEl = document.createElement('div');
+      statusEl.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;min-height:18px;';
+      statusEl.textContent = isConnected ? 'WebRTC connected' : '';
+      remoteSection.appendChild(statusEl);
+
+      // Connect / Disconnect buttons
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:8px;';
+
+      if (!isConnected) {
+        const connectBtn = document.createElement('button');
+        connectBtn.className = 'hub-btn hub-btn-primary';
+        connectBtn.style.cssText = 'flex:1;padding:10px;';
+        connectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>WebRTC Connect</span>`;
+        connectBtn.addEventListener('click', async () => {
+          connectBtn.disabled = true;
+          connectBtn.innerHTML = '<span>Connecting...</span>';
+          statusEl.textContent = 'Initializing...';
+          statusEl.style.color = '#4fc3f7';
+          try {
+            await this.connectWebRTCFromHub((msg) => { statusEl.textContent = msg; });
+          } catch (e) {
+            statusEl.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+            statusEl.style.color = '#ef5350';
+            connectBtn.disabled = false;
+            connectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>WebRTC Connect</span>`;
+          }
+        });
+        btnRow.appendChild(connectBtn);
+      } else {
+        const disconnectBtn = document.createElement('button');
+        disconnectBtn.className = 'hub-btn hub-btn-secondary';
+        disconnectBtn.style.cssText = 'flex:1;padding:10px;';
+        disconnectBtn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg><span>Disconnect WebRTC</span>`;
+        disconnectBtn.addEventListener('click', () => { this.disconnect(); });
+        btnRow.appendChild(disconnectBtn);
+      }
+      remoteSection.appendChild(btnRow);
+      hub.appendChild(remoteSection);
+    }
+
+    // ── Feature buttons ──
     const btnRow = document.createElement('div');
     btnRow.className = 'hub-buttons';
+    const needsWebRTC = isRemoteMode && !isConnected;
 
-    // WebView (Control UI) button
+    // WebView
     const controlBtn = document.createElement('button');
-    controlBtn.className = 'hub-btn hub-btn-primary';
+    controlBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-primary'}`;
     controlBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><span>WebView</span>`;
-    controlBtn.addEventListener('click', () => this.showControlUi());
+    if (!needsWebRTC) controlBtn.addEventListener('click', () => this.showControlUi());
+    else controlBtn.disabled = true;
     btnRow.appendChild(controlBtn);
 
-    // Status button
+    // Status
     const statusBtn = document.createElement('button');
-    statusBtn.className = 'hub-btn hub-btn-secondary';
+    statusBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
     statusBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg><span>Status</span>`;
-    statusBtn.addEventListener('click', () => this.showStatusScreen());
+    if (!needsWebRTC) statusBtn.addEventListener('click', () => this.showStatusScreen());
+    else statusBtn.disabled = true;
     btnRow.appendChild(statusBtn);
 
-    // Services button
+    // Services
     const svcBtn = document.createElement('button');
-    svcBtn.className = 'hub-btn hub-btn-secondary';
+    svcBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
     svcBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg><span>Services</span>`;
-    svcBtn.addEventListener('click', () => this.showServicesScreen());
+    if (!needsWebRTC) svcBtn.addEventListener('click', () => this.showServicesScreen());
+    else svcBtn.disabled = true;
     btnRow.appendChild(svcBtn);
 
-    // Account button
+    // Account — always available
     const acctBtn = document.createElement('button');
     acctBtn.className = 'hub-btn hub-btn-secondary';
     acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account</span>`;
@@ -171,12 +254,35 @@ export class App {
 
     hub.appendChild(btnRow);
 
-    // Disconnect button
-    const disconnectBtn = document.createElement('button');
-    disconnectBtn.className = 'hub-btn-disconnect';
-    disconnectBtn.textContent = 'Disconnect';
-    disconnectBtn.addEventListener('click', () => this.disconnect());
-    hub.appendChild(disconnectBtn);
+    // Disconnect / Back button
+    if (!isRemoteMode) {
+      // Local mode: always show disconnect
+      const disconnectBtn = document.createElement('button');
+      disconnectBtn.className = 'hub-btn-disconnect';
+      disconnectBtn.textContent = 'Disconnect';
+      disconnectBtn.addEventListener('click', () => this.disconnect());
+      hub.appendChild(disconnectBtn);
+    } else if (!isConnected) {
+      // Remote mode, not connected: show "Back to login"
+      const backBtn = document.createElement('button');
+      backBtn.className = 'hub-btn-disconnect';
+      backBtn.style.background = 'transparent';
+      backBtn.style.border = '1px solid #333';
+      backBtn.style.color = '#888';
+      backBtn.textContent = 'Back to Login';
+      backBtn.addEventListener('click', () => {
+        this.disconnect();
+        this.showConnectionScreen();
+      });
+      hub.appendChild(backBtn);
+    } else {
+      // Remote mode, connected: disconnect both WebRTC and session
+      const disconnectBtn = document.createElement('button');
+      disconnectBtn.className = 'hub-btn-disconnect';
+      disconnectBtn.textContent = 'Disconnect';
+      disconnectBtn.addEventListener('click', () => this.disconnect());
+      hub.appendChild(disconnectBtn);
+    }
 
     this.root.appendChild(hub);
   }
@@ -291,6 +397,39 @@ export class App {
 
     // Request a service list report (API 1002: SetReportFreq)
     this.requestServiceReport();
+  }
+
+  /** Connect WebRTC from the hub screen (Remote mode only). */
+  private async connectWebRTCFromHub(onStep: (msg: string) => void): Promise<void> {
+    const config = this.connectionConfig;
+    if (!config || config.mode !== 'STA-T') throw new Error('Not in Remote mode');
+    if (!config.token) throw new Error('Not logged in');
+    if (!config.serialNumber) throw new Error('No robot selected');
+
+    const callbacks: ConnectionCallbacks = {
+      onStateChange: (state: ConnectionState) => this.onStateChange(state),
+      onValidated: () => {
+        this.enableVideoAndSubscribe();
+        this.showHubScreen(); // Re-render hub with connected state
+      },
+      onMessage: (msg: DataChannelMessage) => {
+        if (this.dataHandler) this.dataHandler.handleMessage(msg);
+      },
+      onVideoTrack: (stream: MediaStream) => {
+        this.videoStream = stream;
+        this.pipCamera?.setStream(stream);
+        if (this.viewMode === 'video' && this.videoBg) {
+          this.videoBg.srcObject = stream;
+          this.videoBg.style.display = 'block';
+          if (this.noiseBgCanvas) this.noiseBgCanvas.style.display = 'none';
+          this.stopBgNoise();
+        }
+      },
+      onAudioTrack: () => {},
+    };
+
+    this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
+    this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
   }
 
   private showAccountScreen(): void {
@@ -885,10 +1024,9 @@ export class App {
 
     try {
       if (config.mode === 'STA-T') {
-        const token = config.token;
-        if (!token) throw new Error('Not logged in — use the Login button first');
-        if (!config.serialNumber) throw new Error('No robot selected');
-        this.webrtc = await connectRemote(config.serialNumber, token, callbacks, onStep);
+        // Remote mode: go straight to hub — WebRTC connect happens from there
+        this.showHubScreen();
+        return;
       } else {
         if (!config.ip) throw new Error('IP address required');
         this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep);

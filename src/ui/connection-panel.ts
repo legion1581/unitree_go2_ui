@@ -255,11 +255,13 @@ export class ConnectionPanel {
     const mode = this.modeSelect.value as ConnectionMode;
 
     if (mode === 'STA-T') {
+      // For Remote mode, go to hub (WebRTC connect happens there)
       const sn = this.selectedSn || this.robotSelect.value;
       if (!sn) {
         this.setStatus('Please select a robot', 'error');
         return;
       }
+      // Pass config WITHOUT triggering WebRTC — hub handles that
       this.onConnect({
         mode,
         ip: '',

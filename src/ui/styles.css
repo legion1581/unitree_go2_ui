@@ -1048,6 +1048,12 @@ body {
   color: #fff;
 }
 
+.hub-btn-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .hub-btn-disconnect {
   width: 100%;
   padding: 12px;
