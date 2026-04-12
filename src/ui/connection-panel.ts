@@ -5,13 +5,16 @@ import { cloudApi, type RobotDevice } from '../api/unitree-cloud';
 
 export type ConnectHandler = (config: ConnectionConfig) => void;
 
+/**
+ * Remote mode flow:
+ *   1. Show email/password (or token) → Login button
+ *   2. On login success → fetch device list → show robot picker
+ *   3. Auto-select if single robot → Connect button
+ */
 export class ConnectionPanel {
   private container: HTMLElement;
   private modeSelect!: HTMLSelectElement;
   private ipInput!: HTMLInputElement;
-  private snInput!: HTMLInputElement;
-  private snSelect!: HTMLSelectElement;
-  private loadRobotsBtn!: HTMLButtonElement;
   private emailInput!: HTMLInputElement;
   private passwordInput!: HTMLInputElement;
   private tokenInput!: HTMLInputElement;
@@ -19,7 +22,12 @@ export class ConnectionPanel {
   private scanBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
   private authToggle!: HTMLElement;
+  private robotPickerGroup!: HTMLElement;
+  private robotSelect!: HTMLSelectElement;
+  private loginBtn!: HTMLButtonElement;
   private useToken = false;
+  private remoteLoggedIn = false;
+  private selectedSn = '';
   private onConnect: ConnectHandler;
 
   constructor(parent: HTMLElement, onConnect: ConnectHandler) {
@@ -44,12 +52,6 @@ export class ConnectionPanel {
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
       </div>
-      <div class="form-group" id="sn-group">
-        <label for="sn-input">Robot</label>
-        <select id="sn-select" style="display:none"><option value="">-- Select robot --</option></select>
-        <input type="text" id="sn-input" placeholder="Serial number (or login to pick)" />
-        <button id="load-robots-btn" class="btn-scan" style="margin-top:4px;width:100%;font-size:12px;">Load my robots</button>
-      </div>
       <div id="auth-toggle" class="form-group" style="display:none">
         <div class="auth-toggle-row">
           <button class="auth-tab active" data-auth="credentials">Email / Password</button>
@@ -68,24 +70,28 @@ export class ConnectionPanel {
         <label for="token-input">Access Token</label>
         <input type="text" id="token-input" placeholder="Paste access token" />
       </div>
+      <button id="login-btn" class="btn-connect" style="display:none">Login</button>
+      <div class="form-group" id="robot-picker-group" style="display:none">
+        <label>Choose Robot for WebView</label>
+        <select id="robot-select"><option value="">-- Select robot --</option></select>
+      </div>
       <button id="connect-btn" class="btn-connect">Connect</button>
       <div id="connection-status" class="status"></div>
     `;
 
     this.modeSelect = this.container.querySelector('#mode-select')!;
     this.ipInput = this.container.querySelector('#ip-input')!;
-    this.snInput = this.container.querySelector('#sn-input')!;
-    this.snSelect = this.container.querySelector('#sn-select')!;
-    this.loadRobotsBtn = this.container.querySelector('#load-robots-btn')!;
     this.emailInput = this.container.querySelector('#email-input')!;
     this.passwordInput = this.container.querySelector('#password-input')!;
     this.tokenInput = this.container.querySelector('#token-input')!;
     this.connectBtn = this.container.querySelector('#connect-btn')!;
+    this.loginBtn = this.container.querySelector('#login-btn')!;
     this.scanBtn = this.container.querySelector('#scan-btn')!;
     this.statusEl = this.container.querySelector('#connection-status')!;
     this.authToggle = this.container.querySelector('#auth-toggle')!;
+    this.robotPickerGroup = this.container.querySelector('#robot-picker-group')!;
+    this.robotSelect = this.container.querySelector('#robot-select')!;
 
-    // Populate mode selector
     for (const [mode, label] of Object.entries(MODE_LABELS)) {
       const option = document.createElement('option');
       option.value = mode;
@@ -93,7 +99,6 @@ export class ConnectionPanel {
       this.modeSelect.appendChild(option);
     }
 
-    // Auth toggle tabs
     this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
         this.useToken = (tab as HTMLElement).dataset.auth === 'token';
@@ -101,18 +106,24 @@ export class ConnectionPanel {
       });
     });
 
-    this.modeSelect.addEventListener('change', () => this.updateVisibility());
+    this.modeSelect.addEventListener('change', () => {
+      this.remoteLoggedIn = false;
+      this.updateVisibility();
+    });
     this.connectBtn.addEventListener('click', () => this.handleConnect());
+    this.loginBtn.addEventListener('click', () => this.handleRemoteLogin());
     this.scanBtn.addEventListener('click', () => this.handleScan());
-    this.loadRobotsBtn.addEventListener('click', () => this.handleLoadRobots());
-    this.snSelect.addEventListener('change', () => {
-      this.snInput.value = this.snSelect.value;
+    this.robotSelect.addEventListener('change', () => {
+      this.selectedSn = this.robotSelect.value;
     });
 
     this.modeSelect.value = 'STA-L';
-    this.ipInput.value = '';
-    this.ipInput.placeholder = 'Robot IP on local network';
     this.updateVisibility();
+
+    // If already logged in from a previous session, pre-load robots
+    if (cloudApi.loadSession() && cloudApi.isLoggedIn) {
+      // Don't auto-show yet — wait until user selects Remote mode
+    }
   }
 
   private updateVisibility(): void {
@@ -120,29 +131,44 @@ export class ConnectionPanel {
     const isRemote = mode === 'STA-T';
 
     const ipGroup = this.container.querySelector('#ip-group') as HTMLElement;
-    const snGroup = this.container.querySelector('#sn-group') as HTMLElement;
     const emailGroup = this.container.querySelector('#email-group') as HTMLElement;
     const passwordGroup = this.container.querySelector('#password-group') as HTMLElement;
     const tokenGroup = this.container.querySelector('#token-group') as HTMLElement;
 
+    // Local modes: show IP input
     ipGroup.style.display = isRemote ? 'none' : '';
-    snGroup.style.display = isRemote ? '' : 'none';
-    this.authToggle.style.display = isRemote ? '' : 'none';
 
-    if (isRemote) {
-      // Update tab active state
+    // Remote mode: show auth OR robot picker (depending on login state)
+    this.authToggle.style.display = isRemote && !this.remoteLoggedIn ? '' : 'none';
+
+    if (isRemote && !this.remoteLoggedIn) {
+      // Show login form
       this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
         const isTokenTab = (tab as HTMLElement).dataset.auth === 'token';
         tab.classList.toggle('active', this.useToken ? isTokenTab : !isTokenTab);
       });
-
       emailGroup.style.display = this.useToken ? 'none' : '';
       passwordGroup.style.display = this.useToken ? 'none' : '';
       tokenGroup.style.display = this.useToken ? '' : 'none';
-    } else {
+      this.loginBtn.style.display = '';
+      this.connectBtn.style.display = 'none';
+      this.robotPickerGroup.style.display = 'none';
+    } else if (isRemote && this.remoteLoggedIn) {
+      // Show robot picker, hide auth
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       tokenGroup.style.display = 'none';
+      this.loginBtn.style.display = 'none';
+      this.connectBtn.style.display = '';
+      this.robotPickerGroup.style.display = '';
+    } else {
+      // Local mode
+      emailGroup.style.display = 'none';
+      passwordGroup.style.display = 'none';
+      tokenGroup.style.display = 'none';
+      this.loginBtn.style.display = 'none';
+      this.connectBtn.style.display = '';
+      this.robotPickerGroup.style.display = 'none';
     }
 
     if (mode === 'AP') {
@@ -157,18 +183,98 @@ export class ConnectionPanel {
     }
   }
 
+  private async handleRemoteLogin(): Promise<void> {
+    this.loginBtn.disabled = true;
+    this.loginBtn.textContent = 'Logging in...';
+    this.setStatus('', 'info');
+
+    try {
+      if (this.useToken) {
+        const token = this.tokenInput.value.trim();
+        if (!token) throw new Error('Paste an access token');
+        cloudApi.setAccessToken(token);
+        cloudApi.saveSession();
+      } else {
+        const email = this.emailInput.value.trim();
+        const pwd = this.passwordInput.value.trim();
+        if (!email || !pwd) throw new Error('Enter email and password');
+        await cloudApi.loginEmail(email, pwd);
+      }
+
+      this.setStatus('Loading your robots...', 'info');
+      const devices = await cloudApi.listDevices();
+
+      this.robotSelect.innerHTML = '';
+      if (devices.length === 0) {
+        this.setStatus('No robots bound to your account', 'error');
+        this.loginBtn.disabled = false;
+        this.loginBtn.textContent = 'Login';
+        return;
+      }
+
+      if (devices.length === 1) {
+        // Auto-select single robot
+        const d = devices[0];
+        const opt = document.createElement('option');
+        opt.value = d.sn;
+        opt.textContent = `${d.alias || d.sn} (${d.series})`;
+        this.robotSelect.appendChild(opt);
+        this.robotSelect.value = d.sn;
+        this.selectedSn = d.sn;
+        this.setStatus(`Robot: ${d.alias || d.sn}`, 'success');
+      } else {
+        // Multiple robots — show picker
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '-- Choose robot --';
+        this.robotSelect.appendChild(placeholder);
+        for (const d of devices) {
+          const opt = document.createElement('option');
+          opt.value = d.sn;
+          opt.textContent = `${d.alias || d.sn} — ${d.series}${d.connIp ? ' (' + d.connIp + ')' : ''} [${d.sn}]`;
+          this.robotSelect.appendChild(opt);
+        }
+        this.selectedSn = '';
+        this.setStatus(`${devices.length} robots found — choose one`, 'success');
+      }
+
+      this.remoteLoggedIn = true;
+      this.updateVisibility();
+    } catch (e) {
+      this.setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      this.loginBtn.disabled = false;
+      this.loginBtn.textContent = 'Login';
+    }
+  }
+
   private handleConnect(): void {
     const mode = this.modeSelect.value as ConnectionMode;
-    const config: ConnectionConfig = {
-      mode,
-      ip: this.ipInput.value.trim(),
-      token: this.tokenInput.value.trim(),
-      serialNumber: this.snInput.value.trim(),
-      email: this.emailInput.value.trim(),
-      password: this.passwordInput.value.trim(),
-    };
 
-    this.onConnect(config);
+    if (mode === 'STA-T') {
+      const sn = this.selectedSn || this.robotSelect.value;
+      if (!sn) {
+        this.setStatus('Please select a robot', 'error');
+        return;
+      }
+      this.onConnect({
+        mode,
+        ip: '',
+        token: cloudApi.accessToken,
+        serialNumber: sn,
+        email: '',
+        password: '',
+      });
+    } else {
+      this.onConnect({
+        mode,
+        ip: this.ipInput.value.trim(),
+        token: '',
+        serialNumber: '',
+        email: '',
+        password: '',
+      });
+    }
   }
 
   private async handleScan(): Promise<void> {
@@ -181,7 +287,6 @@ export class ConnectionPanel {
       if (results.length > 0) {
         const best = results[0];
         this.ipInput.value = best.ip;
-        if (best.sn) this.snInput.value = best.sn;
         if (best.ip !== DEFAULT_AP_IP) {
           this.modeSelect.value = 'STA-L';
           this.updateVisibility();
@@ -195,66 +300,6 @@ export class ConnectionPanel {
     } finally {
       this.scanBtn.disabled = false;
       this.scanBtn.textContent = 'Scan';
-    }
-  }
-
-  private async handleLoadRobots(): Promise<void> {
-    if (!cloudApi.isLoggedIn) {
-      cloudApi.loadSession();
-    }
-    if (!cloudApi.isLoggedIn) {
-      // Try login with current form fields
-      const email = this.emailInput.value.trim();
-      const pwd = this.passwordInput.value.trim();
-      const token = this.tokenInput.value.trim();
-      if (token) {
-        cloudApi.setAccessToken(token);
-      } else if (email && pwd) {
-        this.loadRobotsBtn.disabled = true;
-        this.loadRobotsBtn.textContent = 'Logging in...';
-        try {
-          await cloudApi.loginEmail(email, pwd);
-        } catch (e) {
-          this.setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
-          this.loadRobotsBtn.disabled = false;
-          this.loadRobotsBtn.textContent = 'Load my robots';
-          return;
-        }
-      } else {
-        this.setStatus('Enter credentials first or login in Account Manager', 'error');
-        return;
-      }
-    }
-
-    this.loadRobotsBtn.disabled = true;
-    this.loadRobotsBtn.textContent = 'Loading...';
-    try {
-      const devices = await cloudApi.listDevices();
-      this.snSelect.innerHTML = '<option value="">-- Select robot --</option>';
-      for (const d of devices) {
-        const opt = document.createElement('option');
-        opt.value = d.sn;
-        opt.textContent = `${d.alias || d.sn} (${d.series}${d.connIp ? ' / ' + d.connIp : ''})`;
-        this.snSelect.appendChild(opt);
-      }
-      if (devices.length) {
-        this.snSelect.style.display = '';
-        this.snInput.style.display = 'none';
-        this.loadRobotsBtn.style.display = 'none';
-        this.setStatus(`Found ${devices.length} robot(s)`, 'success');
-        // Auto-select if only one
-        if (devices.length === 1) {
-          this.snSelect.value = devices[0].sn;
-          this.snInput.value = devices[0].sn;
-        }
-      } else {
-        this.setStatus('No robots bound to your account', 'error');
-      }
-    } catch (e) {
-      this.setStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
-    } finally {
-      this.loadRobotsBtn.disabled = false;
-      this.loadRobotsBtn.textContent = 'Load my robots';
     }
   }
 

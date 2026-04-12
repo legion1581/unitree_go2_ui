@@ -863,19 +863,9 @@ export class App {
 
     try {
       if (config.mode === 'STA-T') {
-        let token = config.token;
-        if (!token) {
-          if (!config.email || !config.password) throw new Error('Email and password required');
-          onStep('Logging in...');
-          token = await loginWithEmail(config.email, config.password);
-          onStep('Login successful');
-        } else {
-          // Sync pasted token to cloudApi so Account Manager can use it
-          const { cloudApi } = await import('../api/unitree-cloud');
-          cloudApi.setAccessToken(token);
-          cloudApi.saveSession();
-        }
-        if (!config.serialNumber) throw new Error('Serial number required');
+        const token = config.token;
+        if (!token) throw new Error('Not logged in — use the Login button first');
+        if (!config.serialNumber) throw new Error('No robot selected');
         this.webrtc = await connectRemote(config.serialNumber, token, callbacks, onStep);
       } else {
         if (!config.ip) throw new Error('IP address required');
