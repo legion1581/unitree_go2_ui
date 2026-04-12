@@ -5,7 +5,18 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
 ![Status](https://img.shields.io/badge/status-beta-yellow)
 ![Browser](https://img.shields.io/badge/tested-Chrome-brightgreen)
 
-![Control View](images/control-view.png)
+![Control View](images/control-view-new.png)
+
+<p align="center">
+  <img src="images/connection.png" width="24%" />
+  <img src="images/hub.png" width="24%" />
+  <img src="images/status.png" width="24%" />
+  <img src="images/services.png" width="24%" />
+</p>
+
+<p align="center">
+  <img src="images/account-manager.png" width="60%" />
+</p>
 
 ## Features
 
@@ -16,6 +27,7 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
 - **Mode switching** — Damping, free walk, sit, crouch, run, walk stair, hand stand, bound, cross step, etc.
 - **Robot status** — Battery, motor data (temp, position, torque, lost packets), IMU, LiDAR state, network info
 - **Service manager** — View all running services, start/stop with protection handling
+- **Account Management** — Unitree cloud account: devices, firmware, tutorials, sharing, debug API console
 - **Connection modes:**
   - **Local Network (STA-L)** — Direct connection via IP on same network
   - **Access Point (AP)** — Direct connection at 192.168.12.1
@@ -82,47 +94,14 @@ npm run preview
 4. On the hub, click **WebRTC Connect** to establish the video/control stream
 5. If your account has multiple robots, use the dropdown to pick one before connecting
 
-| Connection | Hub | Status | Services |
-|:---:|:---:|:---:|:---:|
-| ![Connection](images/connection.png) | ![Hub](images/hub.png) | ![Status](images/status.png) | ![Services](images/services.png) |
-
 ## Account Management
 
-Available in **Remote** mode via the **Account Management** button on the hub. Provides full access to the Unitree cloud API without needing the phone app.
+Available in Remote mode via the hub. Provides access to the Unitree cloud API without needing the phone app.
 
-### Devices Tab
-- View all robots bound to your account with online/offline status
-- Device tiles with SN, series, model, IP, connection mode, GCM key
-- Copy any value to clipboard with one click
-- **Details** — full device info, edit alias/remark, firmware updates with download links, danger zone (unbind)
-- **Share** — share robot access with other accounts, view/remove existing shares
-- **Add Robot** — bind a new robot by serial number
-
-### Info Tab
-- **App Version** — latest Unitree app version with direct APK download link
-- **Announcements** — server-side notices
-- **Tutorials** — grouped video tutorials (Starter Guide, Core Features, Advanced Tips) with Watch links
-- **Changelog** — version history with links to release notes
-
-### Account Tab
-- User profile with avatar display
-- Edit nickname
-- Upload/change avatar (file upload or URL)
-- Change password
-- Set region
-- Logout with session management (persisted to localStorage)
-
-### Debug Tab
-- Raw API console — send any GET/POST request to the Unitree cloud API
-- 77 endpoints organized in 13 categories: Auth, User, Devices, Location, Sharing, Firmware, WebRTC, Wallet, IoT, Logs, Content, System, Creative Programming
-- Click any endpoint to auto-fill method, path, and parameters
-- Response displayed inline with color-coded success/error
-
-### API Details
-- All requests signed with `MD5(secret + timestamp + nonce)` matching the official app
-- Passwords sent as `MD5(password)`, not plaintext
-- Session tokens auto-refresh on expiry (code 1001)
-- Proxied through Vite dev server to bypass CORS and Tencent EdgeOne WAF
+- **Devices** — list robots with online status, details, firmware downloads, sharing, bind/unbind
+- **Info** — app version with APK download, grouped video tutorials, changelog, announcements
+- **Account** — profile, avatar, password, region, session management
+- **Debug** — raw API console with 77 endpoints across 13 categories (Auth, Devices, Firmware, WebRTC, Wallet, etc.)
 
 ## Browser Support
 
