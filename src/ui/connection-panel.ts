@@ -204,6 +204,9 @@ export class ConnectionPanel {
       this.setStatus('Loading your robots...', 'info');
       const devices = await cloudApi.listDevices();
 
+      // Cache for hub screen to show robot name
+      try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
+
       this.robotSelect.innerHTML = '';
       if (devices.length === 0) {
         this.setStatus('No robots bound to your account', 'error');

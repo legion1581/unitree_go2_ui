@@ -103,16 +103,38 @@ export class App {
     const hub = document.createElement('div');
     hub.className = 'hub-container';
 
-    // Title
+    // Title — show robot name if available from cloud API
     const title = document.createElement('h2');
     title.className = 'hub-title';
-    title.textContent = 'Go2 Connected';
+    const sn = this.connectionConfig?.serialNumber || '';
+    let robotName = 'Go2 Connected';
+    if (sn) {
+      // Try to find robot alias from cached cloud API session
+      try {
+        const session = localStorage.getItem('unitree_devices_cache');
+        if (session) {
+          const devices = JSON.parse(session) as Array<{ sn: string; alias: string }>;
+          const dev = devices.find(d => d.sn === sn);
+          if (dev?.alias) robotName = dev.alias;
+          else robotName = sn;
+        } else {
+          robotName = sn;
+        }
+      } catch {
+        robotName = sn;
+      }
+    }
+    title.textContent = robotName;
     hub.appendChild(title);
 
     // Connection info
     const info = document.createElement('div');
     info.className = 'hub-info';
-    info.textContent = `IP: ${this.connectionConfig?.ip || 'N/A'} | Mode: ${this.connectionConfig?.mode || 'N/A'}`;
+    const infoItems: string[] = [];
+    if (sn) infoItems.push(`SN: ${sn}`);
+    if (this.connectionConfig?.ip) infoItems.push(`IP: ${this.connectionConfig.ip}`);
+    infoItems.push(`Mode: ${this.connectionConfig?.mode || 'N/A'}`);
+    info.textContent = infoItems.join(' | ');
     hub.appendChild(info);
 
     // Buttons
