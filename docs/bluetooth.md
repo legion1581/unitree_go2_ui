@@ -1,6 +1,6 @@
-# Bluetooth Protocol — Unitree Go2 / G1
+# Bluetooth Protocol — Unitree Go2
 
-This document describes the BLE protocols used to communicate with Unitree robots (Go2, G1, B2, H1) and the Unitree BLE remote control. Covers service UUIDs, encryption, packet format, handshakes, WiFi configuration, and remote control data.
+This document describes the BLE protocols used to communicate with the Unitree Go2 robot and the Unitree BLE remote control. Covers service UUIDs, encryption, packet format, handshakes, WiFi configuration, and remote control data.
 
 ## Table of Contents
 
@@ -25,12 +25,8 @@ Robots and remotes are discovered via BLE advertisement.
 
 | Prefix | Device |
 |--------|--------|
-| `Go2_` | Unitree Go2 |
-| `G1_` | Unitree G1 |
-| `B2_` | Unitree B2 |
-| `H1_` | Unitree H1 |
-| `X1_` | Unitree X1 |
-| `Unitree` (not matching above) | BLE Remote Control (e.g. `Unitree-32KC0D`) |
+| `Go2_` | Unitree Go2 robot |
+| `Unitree` (not `Go2_`) | BLE Remote Control (e.g. `Unitree-32KC0D`) |
 
 ### Protocol Detection
 
@@ -155,7 +151,7 @@ Chunked responses (e.g. GET_SN) include `chunk_idx` and `total_chunks` after the
 ## Robot Connection Flow
 
 ```
-1. BLE Scan        -> Find device with name prefix (Go2_, G1_, etc.)
+1. BLE Scan        -> Find device with name prefix Go2_
 2. GATT Connect    -> Connect to the device
 3. Detect Protocol -> Check services for NUS or FFE0
 4. Subscribe       -> Enable notifications on the notify characteristic
@@ -246,10 +242,7 @@ Firmware 1.1.11+ supports V3 commands that are sent **unencrypted** (no AES-CFB)
 
 ### GCM Key
 
-- **Go2** (no cipher chip): Returns raw hex string (32 ASCII chars = 16-byte key)
-- **G1** (with cipher chip): Returns RSA-OAEP-SHA256 encrypted ciphertext (>100 bytes), must be decrypted with the device's RSA private key
-
-The GCM key is per-device, generated at first boot, and stored persistently. It is used for `data2=3` WebRTC authentication via AES-128-GCM encryption of the SDP nonce.
+The Go2 returns a raw hex string (32 ASCII chars = 16-byte key). The key is per-device, generated at first boot, and stored persistently. It is used for `data2=3` WebRTC authentication via AES-128-GCM encryption of the SDP nonce.
 
 ---
 
@@ -266,7 +259,7 @@ The remote advertises with a **public** Bluetooth address and supports both BR/E
 ### Connection Flow
 
 ```
-1. BLE Scan     -> Find device with name starting with "Unitree" (not Go2_/G1_/etc.)
+1. BLE Scan     -> Find device with name starting with "Unitree" (not Go2_)
 2. LE Connect   -> Force BLE transport (gatttool -t public)
 3. Set MTU      -> Request MTU 64 (200ms after connect)
 4. Subscribe    -> Enable notifications on FFE1
