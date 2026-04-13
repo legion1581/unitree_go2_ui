@@ -2,11 +2,13 @@
 """
 BLE Configuration Server for Unitree Go2
 Exposes REST API for scanning, connecting, and configuring robots via BLE.
+Also supports connecting to the Unitree BLE remote control.
 Runs alongside the Vite dev server — proxied through /ble-api/*.
 """
 
 import asyncio
 import logging
+import struct
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -17,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from bleak import BleakScanner, BleakClient
 from Crypto.Cipher import AES
+import pygatt
 
 log = logging.getLogger("ble_server")
 
@@ -33,6 +36,7 @@ NUS_TX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NUS_RX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 DEVICE_PREFIXES = ("Go2_", "G1_", "B2_", "H1_", "X1_")
+REMOTE_PREFIX = "Unitree"
 CHUNK_SIZE = 14
 DEFAULT_ADAPTER = "hci0"
 _current_adapter = DEFAULT_ADAPTER
@@ -125,13 +129,15 @@ class BLESession:
 
         self.address = address
 
-        # Pre-scan
-        scanner = BleakScanner(scanning_mode="active", bluez={"adapter": _current_adapter})
-        device = await scanner.find_device_by_address(address, timeout=10.0)
+        # Use cached BLEDevice from scan, or do a fresh scan
+        device = _scanned_devices.get(address)
+        if not device:
+            scanner = BleakScanner(scanning_mode="active", bluez={"adapter": _current_adapter})
+            device = await scanner.find_device_by_address(address, timeout=10.0)
         if not device:
             raise HTTPException(404, f"Device {address} not found")
 
-        self.client = BleakClient(address, timeout=30.0, bluez={"adapter": _current_adapter})
+        self.client = BleakClient(device, timeout=30.0, bluez={"adapter": _current_adapter})
         await self.client.connect()
 
         # Detect protocol
@@ -245,9 +251,121 @@ class BLESession:
         return results
 
 
-# ─── Singleton session ────────────────────────────────────────────────
+# ─── Remote Control Session ──────────────────────────────────────────
+
+REMOTE_BUTTON_NAMES = [
+    "R1", "L1", "Start", "Select", "R2", "L2", "F1", "F2",
+    "A", "B", "X", "Y", "Up", "Right", "Down", "Left",
+]
+
+
+class RemoteSession:
+    """Manages a BLE connection to a Unitree remote control.
+    Uses pygatt (gatttool) instead of bleak because the remote is a dual-mode
+    device (BR/EDR + BLE) and bleak's BlueZ D-Bus backend tries classic
+    Bluetooth for public-address dual-mode devices, which fails.
+    """
+
+    def __init__(self):
+        self._adapter: Optional[pygatt.GATTToolBackend] = None
+        self._device = None
+        self.address = ""
+        self.name = ""
+        self.latest_state: Optional[dict] = None
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected and self._device is not None
+
+    def _on_notify(self, handle, value):
+        raw = bytes(value)
+        if len(raw) < 20:
+            return
+        lx = round(struct.unpack_from("<f", raw, 0)[0], 2)
+        rx = round(struct.unpack_from("<f", raw, 4)[0], 2)
+        ry = round(struct.unpack_from("<f", raw, 8)[0], 2)
+        ly = round(struct.unpack_from("<f", raw, 12)[0], 2)
+        btn1 = raw[16]
+        btn2 = raw[17]
+        battery = raw[18]
+        rssi_byte = raw[19]
+
+        buttons = {}
+        for i, bname in enumerate(REMOTE_BUTTON_NAMES):
+            byte = btn1 if i < 8 else btn2
+            bit = i if i < 8 else i - 8
+            buttons[bname] = bool((byte >> bit) & 1)
+
+        self.latest_state = {
+            "lx": lx, "ly": ly, "rx": rx, "ry": ry,
+            "buttons": buttons,
+            "battery": battery,
+            "rssi": rssi_byte if rssi_byte < 128 else rssi_byte - 256,
+        }
+
+    async def connect(self, address: str) -> None:
+        if self.connected:
+            await self.disconnect()
+
+        self.address = address
+
+        # Resolve name from scan cache
+        cached = _scanned_devices.get(address)
+        self.name = (cached.name if cached and hasattr(cached, 'name') else "") or ""
+
+        # pygatt is synchronous — run in executor
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._connect_sync, address)
+
+    def _connect_sync(self, address: str) -> None:
+        self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
+        self._adapter.start()
+        try:
+            self._device = self._adapter.connect(
+                address, address_type=pygatt.BLEAddressType.public, timeout=15,
+            )
+        except Exception as e:
+            self._adapter.stop()
+            self._adapter = None
+            raise HTTPException(500, f"Remote connect failed: {e}")
+
+        # Handshake
+        handshake = "".join(f"{ord(c):x}" for c in "YS+2").encode("utf-8")
+        self._device.char_write(OLD_WRITE_UUID, handshake)
+
+        # Subscribe
+        self._device.subscribe(OLD_NOTIFY_UUID, callback=self._on_notify)
+        self._connected = True
+
+    async def disconnect(self):
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._disconnect_sync)
+
+    def _disconnect_sync(self):
+        try:
+            if self._device:
+                self._device.disconnect()
+        except Exception:
+            pass
+        try:
+            if self._adapter:
+                self._adapter.stop()
+        except Exception:
+            pass
+        self._device = None
+        self._adapter = None
+        self._connected = False
+        self.address = ""
+        self.name = ""
+        self.latest_state = None
+
+
+# ─── Singleton sessions & device cache ───────────────────────────────
 
 session = BLESession()
+remote_session = RemoteSession()
+_scanned_devices: dict[str, object] = {}  # address -> BLEDevice from last scan
 
 
 # ─── FastAPI App ──────────────────────────────────────────────────────
@@ -257,6 +375,8 @@ async def lifespan(app: FastAPI):
     yield
     if session.connected:
         await session.disconnect()
+    if remote_session.connected:
+        await remote_session.disconnect()
 
 app = FastAPI(title="Go2 BLE Server", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -308,23 +428,33 @@ async def set_adapter(name: str):
 
 @app.get("/scan")
 async def scan(timeout: float = 10.0):
+    global _scanned_devices
     devices = await BleakScanner.discover(
         timeout=timeout, return_adv=True, scanning_mode="active",
         bluez={"adapter": _current_adapter},
     )
-    results = []
+    robots = []
+    remotes = []
+    _scanned_devices.clear()
     for dev, adv in devices.values():
         name = dev.name or getattr(adv, 'local_name', None) or ""
+        _scanned_devices[dev.address] = dev  # cache BLEDevice for connect
         if name.startswith(DEVICE_PREFIXES):
             adv_uuids = [str(u).lower() for u in (adv.service_uuids or [])]
             proto = "nus" if NUS_SERVICE_UUID.lower() in adv_uuids else "ffe0" if OLD_SERVICE_UUID.lower() in adv_uuids else "unknown"
-            results.append({
+            robots.append({
                 "name": name,
                 "address": dev.address,
                 "rssi": adv.rssi if hasattr(adv, "rssi") else None,
                 "protocol": proto,
             })
-    return {"robots": results}
+        elif name.startswith(REMOTE_PREFIX) and not name.startswith(DEVICE_PREFIXES):
+            remotes.append({
+                "name": name,
+                "address": dev.address,
+                "rssi": adv.rssi if hasattr(adv, "rssi") else None,
+            })
+    return {"robots": robots, "remotes": remotes}
 
 
 @app.get("/status")
@@ -378,6 +508,45 @@ async def set_wifi(req: WifiRequest):
     results = await session.set_wifi(req.ssid, req.password, req.ap_mode, req.country)
     success = all(results.values())
     return {"success": success, "details": results}
+
+
+# ─── Remote Control Routes ───────────────────────────────────────────
+
+@app.get("/remote/status")
+async def remote_status():
+    return {
+        "connected": remote_session.connected,
+        "address": remote_session.address,
+        "name": remote_session.name,
+    }
+
+
+@app.post("/remote/connect")
+async def remote_connect(address: str):
+    try:
+        await remote_session.connect(address)
+        return {"connected": True, "address": address, "name": remote_session.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/remote/disconnect")
+async def remote_disconnect():
+    await remote_session.disconnect()
+    return {"connected": False}
+
+
+@app.get("/remote/state")
+async def remote_state():
+    if not remote_session.connected:
+        raise HTTPException(400, "Remote not connected")
+    return remote_session.latest_state or {
+        "lx": 0, "ly": 0, "rx": 0, "ry": 0,
+        "buttons": {n: False for n in REMOTE_BUTTON_NAMES},
+        "battery": 0, "rssi": 0,
+    }
 
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
 - **Robot status** — Battery, motor data (temp, position, torque, lost packets), IMU, LiDAR state, network info
 - **Service manager** — View all running services, start/stop with protection handling
 - **Account Management** — Unitree cloud account: devices, firmware, tutorials, sharing, debug API console
+- **Bluetooth Setup** — Configure robot WiFi over BLE (scan, connect, STA/AP mode) without the phone app
+- **Remote Control** — Connect to the Unitree BLE remote, live joystick/button visualization with Hz counter
 - **Connection modes:**
   - **Local Network (STA-L)** — Direct connection via IP on same network
   - **Access Point (AP)** — Direct connection at 192.168.12.1
@@ -54,7 +56,9 @@ npm install
 ### Development
 
 ```bash
-npm run dev
+npm run start        # Starts Vite + BLE server together
+npm run start:no-ble # Vite only (no Bluetooth features)
+npm run dev          # Vite only (same as start:no-ble)
 ```
 
 Open http://localhost:5173 in **Chrome** (recommended).
@@ -62,7 +66,7 @@ Open http://localhost:5173 in **Chrome** (recommended).
 The dev server includes:
 - Hot module replacement
 - Built-in UDP multicast scanner (no separate process needed)
-- Proxy for robot API and Unitree cloud API (avoids CORS)
+- Proxy for robot API, Unitree cloud API, and BLE server (avoids CORS)
 
 ### Production Build
 
@@ -94,6 +98,27 @@ npm run preview
 4. On the hub, click **WebRTC Connect** to establish the video/control stream
 5. If your account has multiple robots, use the dropdown to pick one before connecting
 
+## Bluetooth Setup
+
+Configure the robot's WiFi over BLE — no phone app needed. Accessible from the connection screen via the **Bluetooth Setup** button.
+
+- **Adapter selection** — pick which HCI Bluetooth adapter to use (useful with USB dongles)
+- **Scan** — discover nearby Unitree robots (Go2, G1, B2, H1) and remote controls via BLE
+- **Connect & handshake** — AES-128-CFB encrypted BLE protocol (old FFE0 and Nordic UART)
+- **Robot info** — serial number, AP MAC address, protocol version
+- **WiFi config** — set SSID, password, country code in STA (join network) or AP (hotspot) mode
+- **Remote control** — connect to the Unitree BLE remote (dual-mode BR/EDR+BLE via pygatt), live controller view with joystick canvases, 16-button state, battery, and update rate (Hz)
+
+Requires a Python backend (`server/ble_server.py`) and a Bluetooth adapter. Use `npm run start` to launch both servers together.
+
+See [docs/bluetooth.md](docs/bluetooth.md) for full protocol documentation (encryption, packet format, button mapping, WebRTC relay).
+
+```bash
+# Or run the BLE server separately:
+pip install -r server/requirements.txt
+npm run ble-server
+```
+
 ## Account Management
 
 Available in Remote mode via the hub. Provides access to the Unitree cloud API without needing the phone app.
@@ -122,12 +147,13 @@ src/
   ui/
     components/     # Action bar, PIP camera, status/services/account pages, nav bar
     scene/          # Three.js scene, robot model, voxel map
-  proxy-plugin.ts   # Vite plugin: robot proxy, scanner, cloud API proxy
+  proxy-plugin.ts   # Vite plugin: robot proxy, scanner, cloud API, BLE API proxy
 public/
   icons/            # Action and mode SVG icons
   sprites/          # UI sprites and backgrounds
   models/           # Go2.glb 3D model
 server/
+  ble_server.py     # FastAPI BLE backend (scan, connect, WiFi config)
   scanner.mjs       # Standalone UDP multicast scanner (optional)
 ```
 
