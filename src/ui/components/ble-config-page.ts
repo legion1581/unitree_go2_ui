@@ -46,9 +46,10 @@ export class BleConfigPage {
     this.statusBar.textContent = 'Checking BLE server...';
     this.container.appendChild(this.statusBar);
 
-    // Content
+    // Content — constrained width for desktop
     this.content = document.createElement('div');
     this.content.className = 'page-content';
+    this.content.style.cssText += 'max-width:520px;margin:0 auto;';
     this.container.appendChild(this.content);
 
     parent.appendChild(this.container);
@@ -188,7 +189,7 @@ export class BleConfigPage {
         connectBtn.className = 'acct-btn acct-btn-primary';
         connectBtn.style.cssText = 'padding:6px 14px;font-size:12px;';
         connectBtn.textContent = 'Connect';
-        connectBtn.addEventListener('click', (e) => { e.stopPropagation(); this.doConnect(robot.address); });
+        connectBtn.addEventListener('click', (e) => { e.stopPropagation(); this.doConnect(robot.address, connectBtn); });
         row.appendChild(connectBtn);
         resultsDiv.appendChild(row);
       }
@@ -199,16 +200,22 @@ export class BleConfigPage {
     }
   }
 
-  private async doConnect(address: string): Promise<void> {
+  private async doConnect(address: string, connectBtn?: HTMLButtonElement): Promise<void> {
     if (!address) return;
-    this.setStatus(`Connecting to ${address}...`, '#4fc3f7');
+    if (connectBtn) { connectBtn.disabled = true; connectBtn.textContent = 'Connecting...'; }
+    this.setStatus('Scanning for device...', '#4fc3f7');
     try {
+      this.setStatus('Connecting to BLE device...', '#4fc3f7');
+      await new Promise(r => setTimeout(r, 100)); // let UI update
+      this.setStatus('Performing handshake...', '#4fc3f7');
       await this.fetchJSON('/connect?address=' + encodeURIComponent(address), { method: 'POST' });
-      this.setStatus(`Connected to ${address}`, '#66bb6a');
+      this.setStatus('Fetching robot info...', '#66bb6a');
       const status = await this.fetchStatus();
+      this.setStatus(`Connected to ${status.address}`, '#66bb6a');
       await this.showConnectedView(status);
     } catch (e) {
       this.setStatus(`Connection failed: ${e instanceof Error ? e.message : String(e)}`, '#ef5350');
+      if (connectBtn) { connectBtn.disabled = false; connectBtn.textContent = 'Connect'; }
     }
   }
 
@@ -249,22 +256,31 @@ export class BleConfigPage {
     countryInput.input.value = 'US';
 
     // Mode toggle
+    const modeLabel = document.createElement('div');
+    modeLabel.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
+    modeLabel.textContent = 'WiFi Mode';
+    form.appendChild(modeLabel);
+
     const modeWrap = document.createElement('div');
-    modeWrap.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;';
-    const staBtn = document.createElement('button');
-    staBtn.className = 'acct-tab-btn active';
-    staBtn.textContent = 'STA (Join WiFi)';
-    staBtn.style.cssText = 'flex:1;padding:8px;border-radius:6px;border:1px solid #2a2d35;background:#0a0c10;color:#4fc3f7;cursor:pointer;font-size:12px;';
-    const apBtn = document.createElement('button');
-    apBtn.className = 'acct-tab-btn';
-    apBtn.textContent = 'AP (Hotspot)';
-    apBtn.style.cssText = 'flex:1;padding:8px;border-radius:6px;border:1px solid #2a2d35;background:#0a0c10;color:#888;cursor:pointer;font-size:12px;';
+    modeWrap.style.cssText = 'display:flex;gap:0;margin-bottom:14px;border-radius:8px;overflow:hidden;border:1px solid #2a2d35;';
     let apMode = false;
-    staBtn.addEventListener('click', () => { apMode = false; staBtn.style.color = '#4fc3f7'; apBtn.style.color = '#888'; });
-    apBtn.addEventListener('click', () => { apMode = true; apBtn.style.color = '#4fc3f7'; staBtn.style.color = '#888'; });
+
+    const staBtn = document.createElement('button');
+    const apBtn = document.createElement('button');
+    const modeStyle = (active: boolean) => `flex:1;padding:10px 8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.15s;${
+      active ? 'background:#4fc3f7;color:#000;' : 'background:#0a0c10;color:#666;'
+    }`;
+
+    staBtn.style.cssText = modeStyle(true);
+    staBtn.innerHTML = '<div>STA</div><div style="font-size:10px;font-weight:400;margin-top:2px;">Join existing WiFi</div>';
+    apBtn.style.cssText = modeStyle(false);
+    apBtn.innerHTML = '<div>AP</div><div style="font-size:10px;font-weight:400;margin-top:2px;">Create hotspot</div>';
+
+    staBtn.addEventListener('click', () => { apMode = false; staBtn.style.cssText = modeStyle(true); apBtn.style.cssText = modeStyle(false); });
+    apBtn.addEventListener('click', () => { apMode = true; apBtn.style.cssText = modeStyle(true); staBtn.style.cssText = modeStyle(false); });
+
     modeWrap.appendChild(staBtn);
     modeWrap.appendChild(apBtn);
-
     form.appendChild(modeWrap);
     form.appendChild(ssidInput.wrapper);
     form.appendChild(pwdInput.wrapper);
