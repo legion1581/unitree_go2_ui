@@ -63,7 +63,7 @@ export class BleConfigPage {
         await this.showConnectedView(status);
       } else {
         this.setStatus('Not connected', '#888');
-        this.showScanView();
+        await this.showScanView();
       }
     } catch {
       this.setStatus('BLE server not running. Start with: python3 server/ble_server.py', '#ef5350');
@@ -117,9 +117,36 @@ export class BleConfigPage {
 
   // ─── Scan view ─────────────────────────────────────────────────
 
-  private showScanView(): void {
+  private async showScanView(): Promise<void> {
     this.content.innerHTML = '';
 
+    // Adapter picker
+    try {
+      const data = await this.fetchJSON<{ adapters: Array<{ name: string; address: string; up: boolean; type: string }>; current: string }>('/adapters');
+      if (data.adapters.length > 1) {
+        const adapterSection = this.section('Bluetooth Adapter');
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;';
+        for (const a of data.adapters) {
+          const btn = document.createElement('button');
+          const isCurrent = a.name === data.current;
+          btn.style.cssText = `padding:8px 14px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid ${isCurrent ? '#4fc3f7' : '#2a2d35'};background:${isCurrent ? 'rgba(79,195,247,0.1)' : '#0a0c10'};color:${isCurrent ? '#4fc3f7' : a.up ? '#aaa' : '#555'};`;
+          btn.innerHTML = `<strong>${a.name}</strong><br><span style="font-size:10px;">${a.address}${a.type ? ' · ' + a.type : ''}${!a.up ? ' (down)' : ''}</span>`;
+          if (!isCurrent) {
+            btn.addEventListener('click', async () => {
+              await this.fetchJSON(`/adapter?name=${encodeURIComponent(a.name)}`, { method: 'POST' });
+              this.setStatus(`Switched to ${a.name}`, '#4fc3f7');
+              await this.showScanView();
+            });
+          }
+          row.appendChild(btn);
+        }
+        adapterSection.appendChild(row);
+        this.content.appendChild(adapterSection);
+      }
+    } catch { /* no adapter info available, skip */ }
+
+    // Scan
     const s = this.section('Scan for Robots');
     const scanBtn = this.button('Scan', () => this.doScan(scanBtn, resultsDiv));
     s.appendChild(scanBtn);
@@ -127,14 +154,6 @@ export class BleConfigPage {
     resultsDiv.style.marginTop = '12px';
     s.appendChild(resultsDiv);
     this.content.appendChild(s);
-
-    // Manual connect
-    const manual = this.section('Connect by Address');
-    const addrInput = this.input('BLE Address', 'text');
-    addrInput.input.placeholder = '2C:C3:E6:F7:CC:AE';
-    manual.appendChild(addrInput.wrapper);
-    manual.appendChild(this.button('Connect', () => this.doConnect(addrInput.input.value.trim())));
-    this.content.appendChild(manual);
   }
 
   private async doScan(btn: HTMLButtonElement, resultsDiv: HTMLElement): Promise<void> {

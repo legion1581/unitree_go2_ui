@@ -34,7 +34,8 @@ NUS_RX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 DEVICE_PREFIXES = ("Go2_", "G1_", "B2_", "H1_", "X1_")
 CHUNK_SIZE = 14
-ADAPTER = "hci1"
+DEFAULT_ADAPTER = "hci0"
+_current_adapter = DEFAULT_ADAPTER
 
 
 class Cmd(IntEnum):
@@ -125,12 +126,12 @@ class BLESession:
         self.address = address
 
         # Pre-scan
-        scanner = BleakScanner(scanning_mode="active", bluez={"adapter": ADAPTER})
+        scanner = BleakScanner(scanning_mode="active", bluez={"adapter": _current_adapter})
         device = await scanner.find_device_by_address(address, timeout=10.0)
         if not device:
             raise HTTPException(404, f"Device {address} not found")
 
-        self.client = BleakClient(address, timeout=30.0, bluez={"adapter": ADAPTER})
+        self.client = BleakClient(address, timeout=30.0, bluez={"adapter": _current_adapter})
         await self.client.connect()
 
         # Detect protocol
@@ -272,11 +273,44 @@ class WifiRequest(BaseModel):
 
 # ─── Routes ───────────────────────────────────────────────────────────
 
+@app.get("/adapters")
+async def list_adapters():
+    """List available HCI Bluetooth adapters."""
+    import subprocess
+    adapters = []
+    try:
+        out = subprocess.check_output(["hciconfig", "-a"], text=True, timeout=5)
+        current = None
+        for line in out.splitlines():
+            if line and not line[0].isspace() and ":" in line:
+                name = line.split(":")[0].strip()
+                current = {"name": name, "address": "", "up": False, "type": ""}
+                adapters.append(current)
+            elif current and "BD Address:" in line:
+                current["address"] = line.split("BD Address:")[1].split()[0].strip()
+                current["up"] = "UP" in line and "RUNNING" in line
+            elif current and "Manufacturer:" in line:
+                current["type"] = line.split("Manufacturer:")[1].strip()
+    except Exception:
+        pass
+    return {"adapters": adapters, "current": _current_adapter}
+
+
+@app.post("/adapter")
+async def set_adapter(name: str):
+    """Switch the active BLE adapter."""
+    global _current_adapter
+    if session.connected:
+        await session.disconnect()
+    _current_adapter = name
+    return {"current": _current_adapter}
+
+
 @app.get("/scan")
 async def scan(timeout: float = 10.0):
     devices = await BleakScanner.discover(
         timeout=timeout, return_adv=True, scanning_mode="active",
-        bluez={"adapter": ADAPTER},
+        bluez={"adapter": _current_adapter},
     )
     results = []
     for dev, adv in devices.values():
