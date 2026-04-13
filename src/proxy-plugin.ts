@@ -86,6 +86,42 @@ export function robotProxyPlugin(): Plugin {
           return;
         }
 
+        // Proxy BLE server API (Python FastAPI on port 5051)
+        if (url.pathname.startsWith('/ble-api/')) {
+          const targetPath = req.url!.replace('/ble-api', '');
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            const body = Buffer.concat(chunks);
+            const headers: Record<string, string> = {};
+            for (const [key, val] of Object.entries(req.headers)) {
+              if (typeof val === 'string' && key !== 'host' && key !== 'origin' && key !== 'referer') {
+                headers[key] = val;
+              }
+            }
+            if (body.length > 0) {
+              headers['content-length'] = body.length.toString();
+            }
+
+            const proxyReq = http.request(
+              { hostname: '127.0.0.1', port: 5051, path: targetPath, method: req.method, headers },
+              (proxyRes) => {
+                res.statusCode = proxyRes.statusCode ?? 500;
+                if (proxyRes.headers['content-type']) res.setHeader('Content-Type', proxyRes.headers['content-type']);
+                proxyRes.pipe(res);
+              },
+            );
+            proxyReq.on('error', (err) => {
+              res.statusCode = 502;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: `BLE server not running: ${err.message}. Start with: python3 server/ble_server.py` }));
+            });
+            if (body.length > 0) proxyReq.end(body);
+            else proxyReq.end();
+          });
+          return;
+        }
+
         // Proxy Unitree cloud API requests to avoid CORS
         if (url.pathname.startsWith('/unitree-api/')) {
           const targetPath = req.url!.replace('/unitree-api', '');

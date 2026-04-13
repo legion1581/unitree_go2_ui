@@ -8,6 +8,7 @@ import { SettingBar, EmergencyStop } from './components/side-buttons';
 import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { AccountPage } from './components/account-page';
+import { BleConfigPage } from './components/ble-config-page';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -15,7 +16,7 @@ import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'account';
+type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'account' | 'ble-config';
 
 export class App {
   private root: HTMLElement;
@@ -42,6 +43,7 @@ export class App {
   // Services page
   private servicesPage: ServicesPage | null = null;
   private accountPage: AccountPage | null = null;
+  private bleConfigPage: BleConfigPage | null = null;
   private serviceEntries: ServiceEntry[] = [];
   private serviceReportTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -93,6 +95,13 @@ export class App {
     this.root.appendChild(modal);
 
     this.connectionPanel = new ConnectionPanel(modal, (config) => this.connect(config));
+
+    // Bluetooth Setup button
+    const bleBtn = document.createElement('button');
+    bleBtn.className = 'ble-setup-btn';
+    bleBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg> Bluetooth Setup`;
+    bleBtn.addEventListener('click', () => this.showBleConfigScreen());
+    modal.appendChild(bleBtn);
   }
 
   private showHubScreen(): void {
@@ -427,6 +436,13 @@ export class App {
     this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
   }
 
+  private showBleConfigScreen(): void {
+    this.currentScreen = 'ble-config';
+    this.root.innerHTML = '';
+    this.root.className = 'app-root status-screen';
+    this.bleConfigPage = new BleConfigPage(this.root, () => this.showConnectionScreen());
+  }
+
   private showAccountScreen(): void {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
@@ -449,6 +465,8 @@ export class App {
     this.servicesPage = null;
     this.accountPage?.destroy();
     this.accountPage = null;
+    this.bleConfigPage?.destroy();
+    this.bleConfigPage = null;
     this.viewMode = 'three';
     this.showHubScreen();
   }
