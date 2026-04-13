@@ -36,24 +36,14 @@ export async function aesGcmDecrypt(encryptedBase64: string): Promise<string> {
   const nonce = raw.slice(raw.length - 28, raw.length - 16);
   const tag = raw.slice(raw.length - 16);
 
-  // GCM expects ciphertext + tag concatenated
-  const cipherWithTag = new Uint8Array(ciphertext.length + tag.length);
-  cipherWithTag.set(ciphertext);
-  cipherWithTag.set(tag, ciphertext.length);
+  const key = forge.util.createBuffer(String.fromCharCode(...CON_NOTIFY_KEY));
+  const iv = forge.util.createBuffer(String.fromCharCode(...nonce));
 
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    CON_NOTIFY_KEY,
-    'AES-GCM',
-    false,
-    ['decrypt'],
-  );
+  const decipher = forge.cipher.createDecipher('AES-GCM', key);
+  decipher.start({ iv, tag: forge.util.createBuffer(String.fromCharCode(...tag)) });
+  decipher.update(forge.util.createBuffer(String.fromCharCode(...ciphertext)));
+  const ok = decipher.finish();
+  if (!ok) throw new Error('AES-GCM decryption failed (authentication tag mismatch)');
 
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: nonce },
-    cryptoKey,
-    cipherWithTag,
-  );
-
-  return new TextDecoder().decode(decrypted);
+  return forge.util.decodeUtf8(decipher.output.getBytes());
 }

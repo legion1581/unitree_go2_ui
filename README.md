@@ -57,7 +57,15 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 in **Chrome** (recommended).
+Starts the UI in local-only mode at http://localhost:5173.
+
+For LAN visibility from other devices on your network, use:
+
+```bash
+npm run dev:host
+```
+
+Open the printed URL in **Chrome** (recommended).
 
 The dev server includes:
 - Hot module replacement
