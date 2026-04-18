@@ -98,20 +98,21 @@ npm run preview
 4. On the hub, click **WebRTC Connect** to establish the video/control stream
 5. If your account has multiple robots, use the dropdown to pick one before connecting
 
-## Bluetooth Setup
+## Bluetooth
 
-Configure the robot's WiFi over BLE — no phone app needed. Accessible from the connection screen via the **Bluetooth Setup** button.
+Bluetooth configuration overlay available from any screen via the **BT icon** in the upper-right corner.
 
-- **Adapter selection** — pick which HCI Bluetooth adapter to use (useful with USB dongles)
-- **Scan** — discover nearby Unitree robots (Go2, G1, B2, H1) and remote controls via BLE
-- **Connect & handshake** — AES-128-CFB encrypted BLE protocol (old FFE0 and Nordic UART)
-- **Robot info** — serial number, AP MAC address, protocol version
-- **WiFi config** — set SSID, password, country code in STA (join network) or AP (hotspot) mode
-- **Remote control** — connect to the Unitree BLE remote (dual-mode BR/EDR+BLE via pygatt), live controller view with joystick canvases, 16-button state, battery, and update rate (Hz)
+<p align="center">
+  <img src="images/bluetooth-popover-1.png" width="45%" />
+  <img src="images/bluetooth-popover-2.png" width="45%" />
+</p>
 
-Requires a Python backend (`server/ble_server.py`) and a Bluetooth adapter. Use `npm run start` to launch both servers together.
+- **Scan & connect** — discover and connect to Go2 robots and Unitree BLE remote controls
+- **Adapter selection** — switch between multiple HCI adapters (useful with USB dongles)
+- **Robot** — fetch serial number and AP MAC, configure WiFi (SSID, password, STA/AP mode, region)
+- **Remote** — read live joystick axes and button states, relay them to the robot over WebRTC (`rt/wirelesscontroller`)
 
-See [docs/bluetooth.md](docs/bluetooth.md) for full protocol documentation (encryption, packet format, button mapping, WebRTC relay).
+See [docs/bluetooth.md](docs/bluetooth.md) for the full protocol reference.
 
 ```bash
 # Or run the BLE server separately:

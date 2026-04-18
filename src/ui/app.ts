@@ -8,8 +8,9 @@ import { SettingBar, EmergencyStop } from './components/side-buttons';
 import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { AccountPage } from './components/account-page';
-import { BleConfigPage } from './components/ble-config-page';
 import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
+import { BtPopover } from './components/bt-popover';
+import { btBackend } from '../api/bt-backend';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -17,7 +18,7 @@ import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'account' | 'ble-config';
+type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'account';
 
 export class App {
   private root: HTMLElement;
@@ -44,7 +45,6 @@ export class App {
   // Services page
   private servicesPage: ServicesPage | null = null;
   private accountPage: AccountPage | null = null;
-  private bleConfigPage: BleConfigPage | null = null;
   private serviceEntries: ServiceEntry[] = [];
   private serviceReportTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -60,8 +60,11 @@ export class App {
   };
 
   // BT remote relay state
-  private relayTimer: ReturnType<typeof setInterval> | null = null;
   private relayOn = false;
+  private relayUnsub: (() => void) | null = null;
+  private leftJoystickWrap: HTMLElement | null = null;
+  private rightJoystickWrap: HTMLElement | null = null;
+  private btPopover: BtPopover | null = null;
 
   // Robot state (accumulated from topic messages)
   private robotState = {
@@ -96,10 +99,14 @@ export class App {
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
+    this.btStatusIcon.setClickHandler(() => this.toggleBtPopover());
     this.btStatusIcon.onStatusChange((s) => {
       this.btStatus = s;
+      // Update nav-bar BT icon (control view)
+      this.updateNavBarBtIcon();
       if (this.currentScreen === 'control') {
-        this.settingBar?.setRelayAvailable(s.remoteConnected);
+        const label = s.remoteName || s.remoteAddress;
+        this.settingBar?.setRelayAvailable(s.remoteConnected, label);
         if (!s.remoteConnected && this.relayOn) this.setRelay(false);
       }
     });
@@ -120,13 +127,6 @@ export class App {
     this.root.appendChild(modal);
 
     this.connectionPanel = new ConnectionPanel(modal, (config) => this.connect(config));
-
-    // Bluetooth Setup button
-    const bleBtn = document.createElement('button');
-    bleBtn.className = 'ble-setup-btn';
-    bleBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg> Bluetooth Setup`;
-    bleBtn.addEventListener('click', () => this.showBleConfigScreen());
-    modal.appendChild(bleBtn);
   }
 
   private showHubScreen(): void {
@@ -332,6 +332,8 @@ export class App {
 
     // Nav bar (top) — back goes to hub, not disconnect
     this.navBar = new NavBar(this.controlUi, () => this.goToHub());
+    this.navBar.setBtIconClick(() => this.toggleBtPopover());
+    this.updateNavBarBtIcon();
 
     // PIP camera
     this.pipCamera = new PipCamera(this.controlUi);
@@ -348,7 +350,7 @@ export class App {
       onVolumeSet: (level) => this.sendVolume(level),
       onRelayToggle: (enabled) => this.setRelay(enabled),
     });
-    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected);
+    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
 
     // Emergency stop
     new EmergencyStop(this.controlUi, (active) => this.sendStop(active));
@@ -367,6 +369,7 @@ export class App {
       this.joystickState.ly = 0;
     });
     opWrapper.appendChild(w1);
+    this.leftJoystickWrap = w1;
 
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
@@ -385,6 +388,7 @@ export class App {
       this.joystickState.ry = 0;
     });
     opWrapper.appendChild(w3);
+    this.rightJoystickWrap = w3;
 
     this.controlUi.appendChild(opWrapper);
 
@@ -467,14 +471,6 @@ export class App {
     this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
   }
 
-  private showBleConfigScreen(): void {
-    this.currentScreen = 'ble-config';
-    this.root.innerHTML = '';
-    this.root.className = 'app-root status-screen';
-    this.btStatusIcon?.setVisible(true);
-    this.bleConfigPage = new BleConfigPage(this.root, () => this.showConnectionScreen());
-  }
-
   private showAccountScreen(): void {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
@@ -487,6 +483,8 @@ export class App {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
     this.setRelay(false);
+    this.btPopover?.close();
+    this.btPopover = null;
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -499,8 +497,6 @@ export class App {
     this.servicesPage = null;
     this.accountPage?.destroy();
     this.accountPage = null;
-    this.bleConfigPage?.destroy();
-    this.bleConfigPage = null;
     this.viewMode = 'three';
     this.showHubScreen();
   }
@@ -619,36 +615,58 @@ export class App {
     }
   }
 
+  // ── Nav-bar BT icon & popover ──
+
+  private updateNavBarBtIcon(): void {
+    if (!this.navBar) return;
+    const s = this.btStatus;
+    const connected = s.robotConnected || s.remoteConnected;
+    const parts: string[] = [];
+    if (s.robotConnected) parts.push(`Robot: ${s.robotAddress}`);
+    if (s.remoteConnected) parts.push(`Remote: ${s.remoteName || s.remoteAddress}`);
+    const tooltip = connected ? parts.join(' · ') : 'Bluetooth: not connected';
+    this.navBar.setBluetoothStatus(connected, tooltip);
+  }
+
+  private toggleBtPopover(): void {
+    if (this.btPopover) {
+      this.btPopover.close();
+      this.btPopover = null;
+    } else {
+      this.btPopover = new BtPopover(() => { this.btPopover = null; });
+    }
+  }
+
   // ── BT Remote Relay Loop ──
 
   private setRelay(enabled: boolean): void {
     if (enabled) {
-      if (this.relayTimer) return;
+      if (this.relayUnsub) return;
       this.relayOn = true;
-      this.relayTimer = setInterval(() => this.relayTick(), 50);
+      // Zero virtual joystick state and hide them — BT remote is in charge
+      this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
+
+      // Subscribe to BT backend remote_state → publish to robot on every packet (~20 Hz)
+      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
+      this.relayUnsub = btBackend().subscribe('remote_state', (s: { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> }) => {
+        if (!this.dataHandler) return;
+        let keys = 0;
+        for (let i = 0; i < order.length; i++) {
+          if (s.buttons[order[i]]) keys |= (1 << i);
+        }
+        this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
+          lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
+        });
+      });
     } else {
       this.relayOn = false;
-      if (this.relayTimer) { clearInterval(this.relayTimer); this.relayTimer = null; }
+      this.relayUnsub?.();
+      this.relayUnsub = null;
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
     }
-  }
-
-  private async relayTick(): Promise<void> {
-    if (!this.dataHandler) return;
-    try {
-      const resp = await fetch('/ble-api/remote/state', { signal: AbortSignal.timeout(200) });
-      if (!resp.ok) return;
-      const s = await resp.json() as { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> };
-
-      // Pack 16 buttons into uint16 keys bitmask (same order as APK)
-      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
-      let keys = 0;
-      for (let i = 0; i < order.length; i++) {
-        if (s.buttons[order[i]]) keys |= (1 << i);
-      }
-      this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
-        lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
-      });
-    } catch { /* ignore transient errors */ }
   }
 
   // ── Video & Topic Subscriptions ──

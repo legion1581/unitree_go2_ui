@@ -15,13 +15,14 @@ const LIDAR_SVG_OFF = `<svg width="25" height="25" viewBox="0 0 24 24" fill="non
   <path d="M12 6a6 6 0 0 0 0 12"/>
 </svg>`;
 
-// Relay Remote icon — gamepad/joystick silhouette
-const RELAY_SVG = (color: string) => `<svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="2" y="8" width="20" height="10" rx="5"/>
-  <line x1="7" y1="13" x2="9" y2="13"/>
-  <line x1="8" y1="12" x2="8" y2="14"/>
-  <circle cx="15" cy="12" r="0.8" fill="${color}"/>
-  <circle cx="17" cy="14" r="0.8" fill="${color}"/>
+// Relay Remote icon — classic gamepad silhouette with two sticks and a D-pad
+const RELAY_SVG = (color: string) => `<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Body shape (two rounded grips joined by central bridge) -->
+  <path d="M7 8 C3 8, 2 13, 3 17 C3.5 19, 5 20, 7 19.5 L10 17 L16 17 L19 19.5 C21 20, 22.5 19, 23 17 C24 13, 23 8, 19 8 Z"/>
+  <!-- Left stick -->
+  <circle cx="8" cy="13" r="1.8" fill="${color}" stroke="none"/>
+  <!-- Right stick -->
+  <circle cx="18" cy="13" r="1.8" fill="${color}" stroke="none"/>
 </svg>`;
 
 export interface SettingCallbacks {
@@ -42,6 +43,7 @@ export class SettingBar {
   private relayBtn!: HTMLButtonElement;
   private relayOn = false;
   private relayAvailable = false;
+  private remoteName = '';
   private volumeLevel = 0;
   private lampLevel = 0;
   private callbacks: SettingCallbacks;
@@ -113,8 +115,9 @@ export class SettingBar {
   }
 
   /** Called when BLE remote connection status changes. */
-  setRelayAvailable(available: boolean): void {
+  setRelayAvailable(available: boolean, remoteName: string = ''): void {
     this.relayAvailable = available;
+    this.remoteName = remoteName;
     if (!available && this.relayOn) {
       // Auto-disable relay if remote got disconnected
       this.relayOn = false;
@@ -123,18 +126,23 @@ export class SettingBar {
     this.relayBtn.disabled = !available;
     this.relayBtn.style.cursor = available ? 'pointer' : 'not-allowed';
     this.relayBtn.style.opacity = available ? '1' : '0.5';
-    this.relayBtn.title = available
-      ? (this.relayOn ? 'Relay ON — BT remote is controlling the robot' : 'Relay OFF — click to enable')
-      : 'Connect a BLE remote to enable relay';
     this.updateRelayVisual();
   }
 
   private updateRelayVisual(): void {
-    const color = !this.relayAvailable ? '#444' : (this.relayOn ? '#42CF55' : '#888');
+    const color = !this.relayAvailable ? '#444' : (this.relayOn ? '#42CF55' : '#ccc');
     this.relayBtn.innerHTML = RELAY_SVG(color);
-    this.relayBtn.title = !this.relayAvailable
-      ? 'Connect a BLE remote to enable relay'
-      : (this.relayOn ? 'Relay ON — BT remote is controlling the robot' : 'Relay OFF — click to enable');
+
+    let tooltip: string;
+    if (!this.relayAvailable) {
+      tooltip = 'Connect a BLE remote to enable relay';
+    } else {
+      const nameSuffix = this.remoteName ? ` (${this.remoteName})` : '';
+      tooltip = this.relayOn
+        ? `Relay ON — controlling robot via${nameSuffix}`
+        : `Relay OFF — click to relay${nameSuffix}`;
+    }
+    this.relayBtn.title = tooltip;
   }
 
   setRadar(enabled: boolean): void {

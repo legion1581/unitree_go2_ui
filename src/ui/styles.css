@@ -946,6 +946,10 @@ body {
   50% { opacity: 0.3; }
 }
 
+@keyframes bt-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Slider Control (Volume/Brightness) ── */
 .slider-popup {
   position: absolute;
@@ -1413,24 +1417,3 @@ body {
 .acct-btn-danger { background: #c62828; color: #fff; }
 .acct-btn-danger:hover { background: #e53935; }
 
-.ble-setup-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 10px;
-  margin-top: 12px;
-  background: transparent;
-  border: 1px solid #2a2d35;
-  color: #4fc3f7;
-  border-radius: 8px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-.ble-setup-btn:hover {
-  background: rgba(79, 195, 247, 0.05);
-  border-color: #4fc3f7;
-}

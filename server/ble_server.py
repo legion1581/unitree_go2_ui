@@ -7,17 +7,19 @@ Runs alongside the Vite dev server — proxied through /ble-api/*.
 """
 
 import asyncio
+import json
 import logging
 import struct
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from bleak import BleakScanner, BleakClient
+from bleak import BleakScanner  # scanning only; connections use pygatt
 from Crypto.Cipher import AES
 import pygatt
 
@@ -78,14 +80,19 @@ def build_chunked(instruction: int, chunk_data: bytes, idx: int = 1, total: int 
 # ─── BLE Session ──────────────────────────────────────────────────────
 
 class BLESession:
-    """Manages a single BLE connection to a robot."""
+    """Manages a BLE connection to the robot via pygatt (gatttool).
+    Migrated from bleak for reliability on dual-mode / public-address adapters."""
 
     def __init__(self):
-        self.client: Optional[BleakClient] = None
+        self._adapter: Optional[pygatt.GATTToolBackend] = None
+        self._device = None
         self.write_uuid = OLD_WRITE_UUID
         self.notify_uuid = OLD_NOTIFY_UUID
         self.protocol = "unknown"
         self.address = ""
+        self._connected = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+
         self.event = asyncio.Event()
         self.response: Optional[bytes] = None
         self.sn_chunks: dict[int, bytes] = {}
@@ -93,10 +100,12 @@ class BLESession:
 
     @property
     def connected(self) -> bool:
-        return self.client is not None and self.client.is_connected
+        return self._connected and self._device is not None
 
-    def _on_notify(self, sender, data: bytearray):
-        raw = bytes(data)
+    def _on_notify(self, handle, value):
+        """Called from pygatt's background thread — must use call_soon_threadsafe
+        to signal the asyncio event."""
+        raw = bytes(value)
         try:
             plain = ble_decrypt(raw)
         except Exception:
@@ -117,59 +126,106 @@ class BLESession:
                     self.sn_chunks[i] for i in sorted(self.sn_chunks)
                 ).decode("utf-8").rstrip("\x00")
                 self.sn_chunks.clear()
-                self.event.set()
+                if self._loop:
+                    self._loop.call_soon_threadsafe(self.event.set)
             return
 
         self.response = plain
-        self.event.set()
+        if self._loop:
+            self._loop.call_soon_threadsafe(self.event.set)
+
+    def _on_disconnect(self, event=None):
+        log.info("Robot disconnected (pygatt callback)")
+        self._connected = False
 
     async def connect(self, address: str) -> str:
         if self.connected:
             await self.disconnect()
 
         self.address = address
+        self._loop = asyncio.get_event_loop()
 
-        # Use cached BLEDevice from scan, or do a fresh scan
-        device = _scanned_devices.get(address)
-        if not device:
-            scanner = BleakScanner(scanning_mode="active", bluez={"adapter": _current_adapter})
-            device = await scanner.find_device_by_address(address, timeout=10.0)
-        if not device:
-            raise HTTPException(404, f"Device {address} not found")
+        await self._loop.run_in_executor(None, self._connect_sync, address)
+        return self.protocol
 
-        self.client = BleakClient(device, timeout=30.0, bluez={"adapter": _current_adapter})
-        await self.client.connect()
+    def _connect_sync(self, address: str) -> None:
+        self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
+        self._adapter.start()
+        try:
+            self._device = self._adapter.connect(
+                address, address_type=pygatt.BLEAddressType.public, timeout=15,
+            )
+        except Exception as e:
+            try: self._adapter.stop()
+            except Exception: pass
+            self._adapter = None
+            raise HTTPException(500, f"Connect failed: {e}")
 
-        # Detect protocol
-        service_uuids = [str(s.uuid).lower() for s in self.client.services]
-        if NUS_SERVICE_UUID.lower() in service_uuids:
+        # Discover characteristics to detect protocol (FFE0 vs NUS)
+        try:
+            chars = self._device.discover_characteristics()
+            char_uuids = set(str(u).lower() for u in chars.keys())
+        except Exception:
+            char_uuids = set()
+
+        if NUS_TX_UUID.lower() in char_uuids:
             self.write_uuid = NUS_TX_UUID
             self.notify_uuid = NUS_RX_UUID
             self.protocol = "nus"
-        elif OLD_SERVICE_UUID.lower() in service_uuids:
+        elif OLD_WRITE_UUID.lower() in char_uuids:
             self.write_uuid = OLD_WRITE_UUID
             self.notify_uuid = OLD_NOTIFY_UUID
             self.protocol = "ffe0"
         else:
-            self.protocol = "unknown"
+            # Fall back to old protocol
+            self.write_uuid = OLD_WRITE_UUID
+            self.notify_uuid = OLD_NOTIFY_UUID
+            self.protocol = "ffe0"
 
-        await self.client.start_notify(self.notify_uuid, self._on_notify)
-        await asyncio.sleep(0.5)
-        self.event.clear()
-        self.response = None
+        # Subscribe to notifications
+        self._device.subscribe(self.notify_uuid, callback=self._on_notify)
 
-        return self.protocol
+        try:
+            self._device.register_disconnect_callback(self._on_disconnect)
+        except Exception:
+            pass
+
+        self._connected = True
 
     async def disconnect(self):
-        if self.client and self.client.is_connected:
-            await self.client.disconnect()
-        self.client = None
+        if self._loop is None:
+            self._loop = asyncio.get_event_loop()
+        await self._loop.run_in_executor(None, self._disconnect_sync)
+
+    def _disconnect_sync(self):
+        try:
+            if self._device:
+                self._device.disconnect()
+        except Exception:
+            pass
+        try:
+            if self._adapter:
+                self._adapter.stop()
+        except Exception:
+            pass
+        self._device = None
+        self._adapter = None
+        self._connected = False
         self.address = ""
+
+    def _write_sync(self, packet: bytes) -> None:
+        if self._device:
+            self._device.char_write(self.write_uuid, packet)
+
+    async def _write(self, packet: bytes) -> None:
+        if not self._loop:
+            self._loop = asyncio.get_event_loop()
+        await self._loop.run_in_executor(None, self._write_sync, packet)
 
     async def _write_and_wait(self, packet: bytes, timeout: float = 5.0) -> Optional[bytes]:
         self.event.clear()
         self.response = None
-        await self.client.write_gatt_char(self.write_uuid, packet, response=False)
+        await self._write(packet)
         try:
             await asyncio.wait_for(self.event.wait(), timeout)
         except asyncio.TimeoutError:
@@ -186,12 +242,11 @@ class BLESession:
         self.sn_chunks.clear()
         self.event.clear()
         pkt = build_simple(Cmd.GET_SN)
-        await self.client.write_gatt_char(self.write_uuid, pkt, response=False)
+        await self._write(pkt)
         try:
             await asyncio.wait_for(self.event.wait(), 5.0)
         except asyncio.TimeoutError:
             pass
-        # Wait a bit more for extra chunks
         await asyncio.sleep(0.5)
         return self.sn_result
 
@@ -206,44 +261,40 @@ class BLESession:
     async def set_wifi(self, ssid: str, password: str, ap_mode: bool = False, country: str = "US") -> dict:
         results = {}
 
-        # Set mode
         mode_byte = 0x01 if ap_mode else 0x02
         resp = await self._write_and_wait(build_simple(Cmd.WIFI_TYPE, bytes([mode_byte])))
         results["mode"] = resp is not None and len(resp) > 3 and resp[3] == 0x01
 
-        # Send SSID
         ssid_bytes = ssid.encode("utf-8")
         total = (len(ssid_bytes) + CHUNK_SIZE - 1) // CHUNK_SIZE
         for i in range(total):
             chunk = ssid_bytes[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
             pkt = build_chunked(Cmd.WIFI_SSID, chunk, idx=i + 1, total=total)
             if i + 1 < total:
-                await self.client.write_gatt_char(self.write_uuid, pkt, response=False)
+                await self._write(pkt)
                 await asyncio.sleep(0.05)
             else:
                 resp = await self._write_and_wait(pkt)
                 results["ssid"] = resp is not None and len(resp) > 3 and resp[3] == 0x01
 
-        # Send password
         pwd_bytes = password.encode("utf-8")
         total = (len(pwd_bytes) + CHUNK_SIZE - 1) // CHUNK_SIZE
         for i in range(total):
             chunk = pwd_bytes[i * CHUNK_SIZE:(i + 1) * CHUNK_SIZE]
             pkt = build_chunked(Cmd.WIFI_PWD, chunk, idx=i + 1, total=total)
             if i + 1 < total:
-                await self.client.write_gatt_char(self.write_uuid, pkt, response=False)
+                await self._write(pkt)
                 await asyncio.sleep(0.1)
             else:
                 self.event.clear()
                 self.response = None
-                await self.client.write_gatt_char(self.write_uuid, pkt, response=False)
+                await self._write(pkt)
                 try:
                     await asyncio.wait_for(self.event.wait(), 15.0)
                     results["password"] = self.response is not None and len(self.response) > 3 and self.response[3] == 0x01
                 except asyncio.TimeoutError:
                     results["password"] = False
 
-        # Set country
         country_data = bytes([0x01]) + country.encode("utf-8") + b"\x00"
         resp = await self._write_and_wait(build_simple(Cmd.COUNTRY, country_data))
         results["country"] = resp is not None and len(resp) > 3 and resp[3] == 0x01
@@ -266,6 +317,9 @@ class RemoteSession:
     Bluetooth for public-address dual-mode devices, which fails.
     """
 
+    # If no notification in this many seconds -> consider remote disconnected
+    STALE_TIMEOUT = 2.0
+
     def __init__(self):
         self._adapter: Optional[pygatt.GATTToolBackend] = None
         self._device = None
@@ -273,15 +327,23 @@ class RemoteSession:
         self.name = ""
         self.latest_state: Optional[dict] = None
         self._connected = False
+        self._last_notify_time = 0.0
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     @property
     def connected(self) -> bool:
-        return self._connected and self._device is not None
+        if not self._connected or self._device is None:
+            return False
+        # Stale if no notifications for too long (remote powered off / out of range)
+        if self._last_notify_time > 0 and (time.monotonic() - self._last_notify_time) > self.STALE_TIMEOUT:
+            return False
+        return True
 
     def _on_notify(self, handle, value):
         raw = bytes(value)
         if len(raw) < 20:
             return
+        self._last_notify_time = time.monotonic()
         lx = round(struct.unpack_from("<f", raw, 0)[0], 2)
         rx = round(struct.unpack_from("<f", raw, 4)[0], 2)
         ry = round(struct.unpack_from("<f", raw, 8)[0], 2)
@@ -303,40 +365,92 @@ class RemoteSession:
             "battery": battery,
             "rssi": rssi_byte if rssi_byte < 128 else rssi_byte - 256,
         }
+        # Broadcast to WebSocket subscribers (thread-safe marshaling to asyncio loop)
+        if self._loop:
+            state = self.latest_state
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(_broadcast_topic(TOPIC_REMOTE_STATE, state))
+            )
 
     async def connect(self, address: str) -> None:
         if self.connected:
             await self.disconnect()
 
         self.address = address
+        self._loop = asyncio.get_event_loop()
 
         # Resolve name from scan cache
         cached = _scanned_devices.get(address)
         self.name = (cached.name if cached and hasattr(cached, 'name') else "") or ""
 
         # pygatt is synchronous — run in executor
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self._connect_sync, address)
+        await self._loop.run_in_executor(None, self._connect_sync, address)
 
     def _connect_sync(self, address: str) -> None:
-        self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
-        self._adapter.start()
-        try:
-            self._device = self._adapter.connect(
-                address, address_type=pygatt.BLEAddressType.public, timeout=15,
-            )
-        except Exception as e:
-            self._adapter.stop()
-            self._adapter = None
-            raise HTTPException(500, f"Remote connect failed: {e}")
+        import subprocess
+        import time as _t
 
-        # Handshake
+        last_err: Optional[Exception] = None
+        # gatttool often times out on the first attempt due to adapter contention or
+        # stale BlueZ state. Retry up to 3 times with full cleanup between tries.
+        for attempt in range(3):
+            # Clean up any stale device state in BlueZ before each try
+            try:
+                subprocess.run(
+                    ["bluetoothctl", "remove", address],
+                    capture_output=True, timeout=3, check=False,
+                )
+            except Exception:
+                pass
+
+            self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
+            self._adapter.start()
+
+            try:
+                self._device = self._adapter.connect(
+                    address, address_type=pygatt.BLEAddressType.public, timeout=15,
+                )
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                log.info(f"Remote connect attempt {attempt + 1} failed: {e}")
+                try: self._adapter.stop()
+                except Exception: pass
+                self._adapter = None
+                _t.sleep(1.0)  # let BlueZ settle before retry
+
+        if last_err is not None:
+            raise HTTPException(500, f"Remote connect failed after retries: {last_err}")
+
+        # Handshake — write-without-response (matches APK; avoids NotificationTimeout
+        # if the device doesn't ACK within the write window)
         handshake = "".join(f"{ord(c):x}" for c in "YS+2").encode("utf-8")
-        self._device.char_write(OLD_WRITE_UUID, handshake)
+        try:
+            self._device.char_write(OLD_WRITE_UUID, handshake, wait_for_response=False)
+        except TypeError:
+            # Older pygatt without wait_for_response kwarg
+            self._device.char_write(OLD_WRITE_UUID, handshake)
+        except Exception as e:
+            log.warning(f"Handshake write failed (continuing): {e}")
 
-        # Subscribe
+        # Subscribe to notifications
         self._device.subscribe(OLD_NOTIFY_UUID, callback=self._on_notify)
+
+        # Register disconnect callback (fires when pygatt detects GATT disconnect)
+        try:
+            self._device.register_disconnect_callback(self._on_disconnect)
+        except Exception:
+            pass  # older pygatt versions may not support this
+
+        self._last_notify_time = time.monotonic()  # grace period before staleness check
         self._connected = True
+
+    def _on_disconnect(self, event=None):
+        """Called by pygatt when the GATT link drops."""
+        log.info("Remote disconnected (pygatt callback)")
+        self._connected = False
+        self.latest_state = None
 
     async def disconnect(self):
         loop = asyncio.get_event_loop()
@@ -370,9 +484,125 @@ _scanned_devices: dict[str, object] = {}  # address -> BLEDevice from last scan
 
 # ─── FastAPI App ──────────────────────────────────────────────────────
 
+# Single-WebSocket pub/sub registry: each WS carries its own set of subscribed topics
+# in a dict mounted on the connection.
+TOPIC_STATUS = "status"
+TOPIC_ADAPTERS = "adapters"
+TOPIC_REMOTE_STATE = "remote_state"
+
+_ws_clients: set[WebSocket] = set()  # all connected WS clients
+
+
+def _subs_of(ws: WebSocket) -> set:
+    """Return the set of topics this WS is subscribed to (lazy-init)."""
+    subs = getattr(ws, "_bt_subs", None)
+    if subs is None:
+        subs = set()
+        setattr(ws, "_bt_subs", subs)
+    return subs
+
+
+async def _broadcast_topic(topic: str, data: dict) -> None:
+    """Send an event to every WS subscribed to `topic`."""
+    if not _ws_clients:
+        return
+    payload = {"type": topic, "data": data}
+    dead: list[WebSocket] = []
+    for ws in list(_ws_clients):
+        if topic not in _subs_of(ws):
+            continue
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _ws_clients.discard(ws)
+
+
+def _snapshot_status() -> dict:
+    return {
+        "robot": {
+            "connected": session.connected,
+            "address": session.address,
+            "protocol": session.protocol,
+        },
+        "remote": {
+            "connected": remote_session.connected,
+            "address": remote_session.address,
+            "name": remote_session.name,
+        },
+    }
+
+
+def _list_adapters_sync() -> dict:
+    """Synchronous helper used by both the HTTP endpoint and the WS monitor."""
+    import subprocess
+    adapters = []
+    try:
+        out = subprocess.check_output(["hciconfig", "-a"], text=True, timeout=5)
+        current = None
+        for line in out.splitlines():
+            if line and not line[0].isspace() and ":" in line:
+                name = line.split(":")[0].strip()
+                current = {"name": name, "address": "", "up": False, "type": ""}
+                adapters.append(current)
+            elif current and "BD Address:" in line:
+                current["address"] = line.split("BD Address:")[1].split()[0].strip()
+                current["up"] = "UP" in line and "RUNNING" in line
+            elif current and "Manufacturer:" in line:
+                current["type"] = line.split("Manufacturer:")[1].strip()
+    except Exception:
+        pass
+    return {"adapters": adapters, "current": _current_adapter}
+
+
+async def _status_monitor():
+    """Push status updates on change + ~5s heartbeat; also tear down stale remotes."""
+    last_snapshot: Optional[dict] = None
+    heartbeat_counter = 0
+    while True:
+        try:
+            await asyncio.sleep(0.5)
+            if remote_session._connected and not remote_session.connected:
+                log.info("Remote session stale — tearing down (monitor)")
+                await remote_session.disconnect()
+
+            snap = _snapshot_status()
+            heartbeat_counter += 1
+            if snap != last_snapshot or heartbeat_counter >= 10:
+                await _broadcast_topic(TOPIC_STATUS, snap)
+                last_snapshot = snap
+                heartbeat_counter = 0
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(f"Status monitor error: {e}")
+
+
+async def _adapter_monitor():
+    """Push adapter list updates on change."""
+    last_snapshot: Optional[dict] = None
+    while True:
+        try:
+            await asyncio.sleep(2.0)
+            loop = asyncio.get_event_loop()
+            snap = await loop.run_in_executor(None, _list_adapters_sync)
+            if snap != last_snapshot:
+                await _broadcast_topic(TOPIC_ADAPTERS, snap)
+                last_snapshot = snap
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.warning(f"Adapter monitor error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    status_task = asyncio.create_task(_status_monitor())
+    adapter_task = asyncio.create_task(_adapter_monitor())
     yield
+    status_task.cancel()
+    adapter_task.cancel()
     if session.connected:
         await session.disconnect()
     if remote_session.connected:
@@ -396,24 +626,10 @@ class WifiRequest(BaseModel):
 @app.get("/adapters")
 async def list_adapters():
     """List available HCI Bluetooth adapters."""
-    import subprocess
-    adapters = []
-    try:
-        out = subprocess.check_output(["hciconfig", "-a"], text=True, timeout=5)
-        current = None
-        for line in out.splitlines():
-            if line and not line[0].isspace() and ":" in line:
-                name = line.split(":")[0].strip()
-                current = {"name": name, "address": "", "up": False, "type": ""}
-                adapters.append(current)
-            elif current and "BD Address:" in line:
-                current["address"] = line.split("BD Address:")[1].split()[0].strip()
-                current["up"] = "UP" in line and "RUNNING" in line
-            elif current and "Manufacturer:" in line:
-                current["type"] = line.split("Manufacturer:")[1].strip()
-    except Exception:
-        pass
-    return {"adapters": adapters, "current": _current_adapter}
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _list_adapters_sync)
+
+
 
 
 @app.post("/adapter")
@@ -429,10 +645,24 @@ async def set_adapter(name: str):
 @app.get("/scan")
 async def scan(timeout: float = 10.0):
     global _scanned_devices
-    devices = await BleakScanner.discover(
-        timeout=timeout, return_adv=True, scanning_mode="active",
-        bluez={"adapter": _current_adapter},
-    )
+    try:
+        devices = await BleakScanner.discover(
+            timeout=timeout, return_adv=True, scanning_mode="active",
+            bluez={"adapter": _current_adapter},
+        )
+    except Exception as e:
+        # BlueZ can raise "No discovery started" if pygatt/bluetoothctl disturbed the adapter
+        # mid-flight. Retry once with a fresh scanner instance.
+        log.info(f"Scan failed ({e}); retrying once")
+        await asyncio.sleep(0.5)
+        try:
+            devices = await BleakScanner.discover(
+                timeout=timeout, return_adv=True, scanning_mode="active",
+                bluez={"adapter": _current_adapter},
+            )
+        except Exception as e2:
+            raise HTTPException(500, f"Scan failed: {e2}")
+
     robots = []
     remotes = []
     _scanned_devices.clear()
@@ -464,6 +694,8 @@ async def status():
         "address": session.address,
         "protocol": session.protocol,
     }
+
+
 
 
 @app.post("/connect")
@@ -514,6 +746,10 @@ async def set_wifi(req: WifiRequest):
 
 @app.get("/remote/status")
 async def remote_status():
+    # If session is stale (no notifications received in 3s) clean it up
+    if remote_session._connected and not remote_session.connected:
+        log.info("Remote session stale — tearing down")
+        await remote_session.disconnect()
     return {
         "connected": remote_session.connected,
         "address": remote_session.address,
@@ -549,7 +785,50 @@ async def remote_state():
     }
 
 
+@app.websocket("/ws")
+async def unified_ws(ws: WebSocket):
+    """Single WebSocket for all BLE backend events.
+
+    Protocol:
+      Client -> Server: {"type": "subscribe" | "unsubscribe", "topic": "status" | "adapters" | "remote_state"}
+      Server -> Client: {"type": <topic>, "data": <payload>}
+    """
+    await ws.accept()
+    _ws_clients.add(ws)
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            mtype = msg.get("type")
+            topic = msg.get("topic")
+            if mtype == "subscribe" and topic in (TOPIC_STATUS, TOPIC_ADAPTERS, TOPIC_REMOTE_STATE):
+                _subs_of(ws).add(topic)
+                # Push an immediate snapshot so the client sees state right away
+                if topic == TOPIC_STATUS:
+                    await ws.send_json({"type": topic, "data": _snapshot_status()})
+                elif topic == TOPIC_ADAPTERS:
+                    loop = asyncio.get_event_loop()
+                    snap = await loop.run_in_executor(None, _list_adapters_sync)
+                    await ws.send_json({"type": topic, "data": snap})
+                elif topic == TOPIC_REMOTE_STATE and remote_session.latest_state:
+                    await ws.send_json({"type": topic, "data": remote_session.latest_state})
+            elif mtype == "unsubscribe" and topic:
+                _subs_of(ws).discard(topic)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning(f"WS error: {e}")
+    finally:
+        _ws_clients.discard(ws)
+
+
 if __name__ == "__main__":
     import uvicorn
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    # Quiet pygatt's per-notification INFO spam (one line per packet at 20 Hz)
+    logging.getLogger("pygatt").setLevel(logging.WARNING)
+    logging.getLogger("pygatt.backends.gatttool.gatttool").setLevel(logging.WARNING)
     uvicorn.run(app, host="0.0.0.0", port=5051)
