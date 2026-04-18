@@ -1,0 +1,7 @@
+fastapi>=0.110.0
+uvicorn>=0.27.0
+# WebSocket support — uvicorn passes `logger` kwarg which needs websockets >= 10
+websockets>=11.0
+bleak>=0.22.0
+pycryptodome>=3.20.0
+pygatt>=4.0.0

@@ -8,6 +8,9 @@ import { SettingBar, EmergencyStop } from './components/side-buttons';
 import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { AccountPage } from './components/account-page';
+import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
+import { BtPopover } from './components/bt-popover';
+import { btBackend } from '../api/bt-backend';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -49,6 +52,20 @@ export class App {
   private joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
   private joystickTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Bluetooth status (persistent across screens)
+  private btStatusIcon: BtStatusIcon | null = null;
+  private btStatus: BluetoothStatus = {
+    robotConnected: false, robotAddress: '',
+    remoteConnected: false, remoteName: '', remoteAddress: '',
+  };
+
+  // BT remote relay state
+  private relayOn = false;
+  private relayUnsub: (() => void) | null = null;
+  private leftJoystickWrap: HTMLElement | null = null;
+  private rightJoystickWrap: HTMLElement | null = null;
+  private btPopover: BtPopover | null = null;
+
   // Robot state (accumulated from topic messages)
   private robotState = {
     batteryPercent: 0,
@@ -78,6 +95,22 @@ export class App {
     this.root = root;
     root.innerHTML = '';
     root.className = 'app-root';
+
+    // Persistent Bluetooth status icon (mounted on document.body so it survives
+    // screen changes). Hidden on the control view where the relay icon takes over.
+    this.btStatusIcon = new BtStatusIcon(document.body);
+    this.btStatusIcon.setClickHandler(() => this.toggleBtPopover());
+    this.btStatusIcon.onStatusChange((s) => {
+      this.btStatus = s;
+      // Update nav-bar BT icon (control view)
+      this.updateNavBarBtIcon();
+      if (this.currentScreen === 'control') {
+        const label = s.remoteName || s.remoteAddress;
+        this.settingBar?.setRelayAvailable(s.remoteConnected, label);
+        if (!s.remoteConnected && this.relayOn) this.setRelay(false);
+      }
+    });
+
     this.showConnectionScreen();
   }
 
@@ -87,6 +120,7 @@ export class App {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
     this.root.className = 'app-root connection-screen';
+    this.btStatusIcon?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -99,6 +133,7 @@ export class App {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
+    this.btStatusIcon?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -286,6 +321,7 @@ export class App {
     this.currentScreen = 'control';
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
+    this.btStatusIcon?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -296,6 +332,8 @@ export class App {
 
     // Nav bar (top) — back goes to hub, not disconnect
     this.navBar = new NavBar(this.controlUi, () => this.goToHub());
+    this.navBar.setBtIconClick(() => this.toggleBtPopover());
+    this.updateNavBarBtIcon();
 
     // PIP camera
     this.pipCamera = new PipCamera(this.controlUi);
@@ -310,7 +348,9 @@ export class App {
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
+      onRelayToggle: (enabled) => this.setRelay(enabled),
     });
+    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
 
     // Emergency stop
     new EmergencyStop(this.controlUi, (active) => this.sendStop(active));
@@ -329,6 +369,7 @@ export class App {
       this.joystickState.ly = 0;
     });
     opWrapper.appendChild(w1);
+    this.leftJoystickWrap = w1;
 
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
@@ -347,6 +388,7 @@ export class App {
       this.joystickState.ry = 0;
     });
     opWrapper.appendChild(w3);
+    this.rightJoystickWrap = w3;
 
     this.controlUi.appendChild(opWrapper);
 
@@ -370,6 +412,7 @@ export class App {
     this.currentScreen = 'status';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
   }
@@ -378,6 +421,7 @@ export class App {
     this.currentScreen = 'services';
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
+    this.btStatusIcon?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -431,12 +475,16 @@ export class App {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true);
     this.accountPage = new AccountPage(this.root, () => this.goToHub());
   }
 
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
+    this.setRelay(false);
+    this.btPopover?.close();
+    this.btPopover = null;
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -564,6 +612,60 @@ export class App {
     if (this.joystickTimer) {
       clearInterval(this.joystickTimer);
       this.joystickTimer = null;
+    }
+  }
+
+  // ── Nav-bar BT icon & popover ──
+
+  private updateNavBarBtIcon(): void {
+    if (!this.navBar) return;
+    const s = this.btStatus;
+    const connected = s.robotConnected || s.remoteConnected;
+    const parts: string[] = [];
+    if (s.robotConnected) parts.push(`Robot: ${s.robotAddress}`);
+    if (s.remoteConnected) parts.push(`Remote: ${s.remoteName || s.remoteAddress}`);
+    const tooltip = connected ? parts.join(' · ') : 'Bluetooth: not connected';
+    this.navBar.setBluetoothStatus(connected, tooltip);
+  }
+
+  private toggleBtPopover(): void {
+    if (this.btPopover) {
+      this.btPopover.close();
+      this.btPopover = null;
+    } else {
+      this.btPopover = new BtPopover(() => { this.btPopover = null; });
+    }
+  }
+
+  // ── BT Remote Relay Loop ──
+
+  private setRelay(enabled: boolean): void {
+    if (enabled) {
+      if (this.relayUnsub) return;
+      this.relayOn = true;
+      // Zero virtual joystick state and hide them — BT remote is in charge
+      this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
+
+      // Subscribe to BT backend remote_state → publish to robot on every packet (~20 Hz)
+      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
+      this.relayUnsub = btBackend().subscribe('remote_state', (s: { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> }) => {
+        if (!this.dataHandler) return;
+        let keys = 0;
+        for (let i = 0; i < order.length; i++) {
+          if (s.buttons[order[i]]) keys |= (1 << i);
+        }
+        this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
+          lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
+        });
+      });
+    } else {
+      this.relayOn = false;
+      this.relayUnsub?.();
+      this.relayUnsub = null;
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
     }
   }
 
@@ -1097,6 +1199,7 @@ export class App {
     const wasRemote = this.connectionConfig?.mode === 'STA-T';
 
     this.stopJoystickLoop();
+    this.setRelay(false);
     this.stopBgNoise();
     this.dataHandler?.destroy();
     this.dataHandler = null;

@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "bash start.sh",
+    "start:no-ble": "bash start.sh --no-ble",
+    "ble-server": "python3 server/ble_server.py",
     "scanner": "node server/scanner.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview"
