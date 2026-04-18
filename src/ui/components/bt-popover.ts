@@ -35,6 +35,7 @@ export class BtPopover {
   private remoteStatus: RemoteStatus = { connected: false, address: '', name: '' };
   private lastRenderedRemoteAddr = '';   // to avoid DOM rebuild when nothing changed
   private lastRenderedRobotAddr = '';
+  private connectingAddrs: Set<string> = new Set();  // addresses with an in-flight connect
   private unsubStatus: (() => void) | null = null;
   private unsubAdapters: (() => void) | null = null;
   private unsubRemoteState: (() => void) | null = null;
@@ -217,15 +218,25 @@ export class BtPopover {
       return;
     }
 
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;';
+    // Vertical list — scrolls internally when there are more than 3 adapters
+    // (each row ~30px tall + 4px gap = ~34px; cap at 3 rows = ~104px)
+    const list = document.createElement('div');
+    const needsScroll = adapters.length > 3;
+    list.style.cssText = `display:flex;flex-direction:column;gap:4px;${needsScroll ? 'max-height:104px;overflow-y:auto;padding-right:4px;' : ''}`;
     for (const a of adapters) {
       const isCurrent = a.name === current;
-      const btn = document.createElement('button');
-      btn.style.cssText = `flex:1;min-width:0;padding:6px 8px;border-radius:5px;font-size:11px;cursor:${isCurrent ? 'default' : 'pointer'};text-align:center;border:1px solid ${isCurrent ? '#4fc3f7' : '#2a2d35'};background:${isCurrent ? 'rgba(79,195,247,0.1)' : '#0a0c10'};color:${isCurrent ? '#4fc3f7' : a.up ? '#aaa' : '#555'};`;
-      btn.innerHTML = `<div style="font-weight:600;">${this.esc(a.name)}</div><div style="font-size:9px;opacity:0.7;white-space:nowrap;">${this.esc(a.address)} ${a.up ? '' : '(down)'}</div>`;
+      const row = document.createElement('button');
+      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px;font-size:11px;cursor:${isCurrent ? 'default' : 'pointer'};text-align:left;border:1px solid ${isCurrent ? '#4fc3f7' : '#2a2d35'};background:${isCurrent ? 'rgba(79,195,247,0.1)' : '#0a0c10'};color:${isCurrent ? '#4fc3f7' : a.up ? '#aaa' : '#555'};`;
+      const dotColor = isCurrent ? '#4fc3f7' : a.up ? '#66bb6a' : '#555';
+      row.innerHTML = `
+        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};flex-shrink:0;"></span>
+        <span style="font-weight:600;min-width:36px;">${this.esc(a.name)}</span>
+        <span style="font-family:monospace;font-size:10px;opacity:0.75;flex:1;">${this.esc(a.address)}</span>
+        ${a.up ? '' : '<span style="font-size:9px;color:#888;">down</span>'}
+        ${isCurrent ? '<span style="font-size:9px;color:#4fc3f7;">active</span>' : ''}
+      `;
       if (!isCurrent) {
-        btn.addEventListener('click', async () => {
+        row.addEventListener('click', async () => {
           try {
             await this.fetchJSON(`/adapter?name=${encodeURIComponent(a.name)}`, { method: 'POST' });
             await this.refreshStatus();
@@ -235,9 +246,9 @@ export class BtPopover {
           }
         });
       }
-      row.appendChild(btn);
+      list.appendChild(row);
     }
-    this.adapterBody.appendChild(row);
+    this.adapterBody.appendChild(list);
   }
 
   private updateEmptyPlaceholder(): void {
@@ -651,10 +662,12 @@ export class BtPopover {
   }
 
   private updateScanRowStates(): void {
-    // Flip any Connect buttons to green Connected tag when state changes
+    // Flip any Connect buttons to green Connected tag when state changes.
+    // Skip rows whose connect is currently in flight — we don't want to wipe the spinner.
     if (!this.resultsDiv) return;
     for (const row of Array.from(this.resultsDiv.querySelectorAll('[data-device-addr]')) as HTMLElement[]) {
       const addr = row.getAttribute('data-device-addr')!;
+      if (this.connectingAddrs.has(addr)) continue;  // preserve spinner
       const type = row.getAttribute('data-device-type')!;
       const isConnected = (type === 'Robot' && this.robotStatus.address === addr && this.robotStatus.connected)
         || (type === 'Remote' && this.remoteStatus.address === addr && this.remoteStatus.connected);
@@ -697,6 +710,7 @@ export class BtPopover {
   }
 
   private async handleConnect(_row: HTMLElement, type: string, addr: string, btn: HTMLButtonElement): Promise<void> {
+    this.connectingAddrs.add(addr);
     this.setBtnConnecting(btn, true);
     try {
       const path = type === 'Robot'
@@ -704,8 +718,10 @@ export class BtPopover {
         : '/remote/connect?address=' + encodeURIComponent(addr);
       // Connect can take 30-60s if pygatt has to retry a few times
       await this.fetchJSON(path, { method: 'POST' }, 90000);
+      this.connectingAddrs.delete(addr);
       await this.refreshStatus();
     } catch (e) {
+      this.connectingAddrs.delete(addr);
       this.setBtnConnecting(btn, false);
       const msg = e instanceof Error ? e.message : String(e);
       this.showError(`Connect failed: ${msg}`);

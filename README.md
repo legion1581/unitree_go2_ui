@@ -112,6 +112,14 @@ Bluetooth configuration overlay available from any screen via the **BT icon** in
 - **Robot** — fetch serial number and AP MAC, configure WiFi (SSID, password, STA/AP mode, region)
 - **Remote** — read live joystick axes and button states, relay them to the robot over WebRTC (`rt/wirelesscontroller`)
 
+### Relay the BT Remote to the Robot
+
+When a BLE remote control is connected, a gamepad icon appears in the control view's setting bar (alongside Radar, LiDAR, Volume, Light). Click it to forward the remote's joystick axes and buttons to the robot — the on-screen virtual joysticks hide while relay is active.
+
+<p align="center">
+  <img src="images/bt-relay-button.png" width="60%" />
+</p>
+
 See [docs/bluetooth.md](docs/bluetooth.md) for the full protocol reference.
 
 ```bash
