@@ -15,11 +15,21 @@ const LIDAR_SVG_OFF = `<svg width="25" height="25" viewBox="0 0 24 24" fill="non
   <path d="M12 6a6 6 0 0 0 0 12"/>
 </svg>`;
 
+// Relay Remote icon — gamepad/joystick silhouette
+const RELAY_SVG = (color: string) => `<svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="2" y="8" width="20" height="10" rx="5"/>
+  <line x1="7" y1="13" x2="9" y2="13"/>
+  <line x1="8" y1="12" x2="8" y2="14"/>
+  <circle cx="15" cy="12" r="0.8" fill="${color}"/>
+  <circle cx="17" cy="14" r="0.8" fill="${color}"/>
+</svg>`;
+
 export interface SettingCallbacks {
   onRadarToggle: (enabled: boolean) => void;
   onLampSet: (level: number) => void;
   onVolumeSet: (level: number) => void;
   onLidarToggle: (enabled: boolean) => void;
+  onRelayToggle: (enabled: boolean) => void;
 }
 
 export class SettingBar {
@@ -29,6 +39,9 @@ export class SettingBar {
   private radarBtn!: HTMLButtonElement;
   private volumeBtn!: HTMLButtonElement;
   private lampBtn!: HTMLButtonElement;
+  private relayBtn!: HTMLButtonElement;
+  private relayOn = false;
+  private relayAvailable = false;
   private volumeLevel = 0;
   private lampLevel = 0;
   private callbacks: SettingCallbacks;
@@ -77,12 +90,51 @@ export class SettingBar {
       });
     });
 
+    // Relay Remote button (disabled until remote is connected)
+    this.relayBtn = this.createSvgBtn(RELAY_SVG('#444'), 'Relay Remote');
+    this.relayBtn.disabled = true;
+    this.relayBtn.title = 'Connect a BLE remote to enable relay';
+    this.relayBtn.style.cursor = 'not-allowed';
+    this.relayBtn.style.opacity = '0.5';
+    this.relayBtn.addEventListener('click', () => {
+      if (!this.relayAvailable) return;
+      this.relayOn = !this.relayOn;
+      this.updateRelayVisual();
+      callbacks.onRelayToggle(this.relayOn);
+    });
+
     this.container.appendChild(this.radarBtn);
     this.container.appendChild(lidarBtn);
     this.container.appendChild(this.volumeBtn);
     this.container.appendChild(this.lampBtn);
+    this.container.appendChild(this.relayBtn);
 
     parent.appendChild(this.container);
+  }
+
+  /** Called when BLE remote connection status changes. */
+  setRelayAvailable(available: boolean): void {
+    this.relayAvailable = available;
+    if (!available && this.relayOn) {
+      // Auto-disable relay if remote got disconnected
+      this.relayOn = false;
+      this.callbacks.onRelayToggle(false);
+    }
+    this.relayBtn.disabled = !available;
+    this.relayBtn.style.cursor = available ? 'pointer' : 'not-allowed';
+    this.relayBtn.style.opacity = available ? '1' : '0.5';
+    this.relayBtn.title = available
+      ? (this.relayOn ? 'Relay ON — BT remote is controlling the robot' : 'Relay OFF — click to enable')
+      : 'Connect a BLE remote to enable relay';
+    this.updateRelayVisual();
+  }
+
+  private updateRelayVisual(): void {
+    const color = !this.relayAvailable ? '#444' : (this.relayOn ? '#42CF55' : '#888');
+    this.relayBtn.innerHTML = RELAY_SVG(color);
+    this.relayBtn.title = !this.relayAvailable
+      ? 'Connect a BLE remote to enable relay'
+      : (this.relayOn ? 'Relay ON — BT remote is controlling the robot' : 'Relay OFF — click to enable');
   }
 
   setRadar(enabled: boolean): void {

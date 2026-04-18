@@ -9,6 +9,7 @@ import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { AccountPage } from './components/account-page';
 import { BleConfigPage } from './components/ble-config-page';
+import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -51,6 +52,17 @@ export class App {
   private joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
   private joystickTimer: ReturnType<typeof setInterval> | null = null;
 
+  // Bluetooth status (persistent across screens)
+  private btStatusIcon: BtStatusIcon | null = null;
+  private btStatus: BluetoothStatus = {
+    robotConnected: false, robotAddress: '',
+    remoteConnected: false, remoteName: '', remoteAddress: '',
+  };
+
+  // BT remote relay state
+  private relayTimer: ReturnType<typeof setInterval> | null = null;
+  private relayOn = false;
+
   // Robot state (accumulated from topic messages)
   private robotState = {
     batteryPercent: 0,
@@ -80,6 +92,18 @@ export class App {
     this.root = root;
     root.innerHTML = '';
     root.className = 'app-root';
+
+    // Persistent Bluetooth status icon (mounted on document.body so it survives
+    // screen changes). Hidden on the control view where the relay icon takes over.
+    this.btStatusIcon = new BtStatusIcon(document.body);
+    this.btStatusIcon.onStatusChange((s) => {
+      this.btStatus = s;
+      if (this.currentScreen === 'control') {
+        this.settingBar?.setRelayAvailable(s.remoteConnected);
+        if (!s.remoteConnected && this.relayOn) this.setRelay(false);
+      }
+    });
+
     this.showConnectionScreen();
   }
 
@@ -89,6 +113,7 @@ export class App {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
     this.root.className = 'app-root connection-screen';
+    this.btStatusIcon?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -108,6 +133,7 @@ export class App {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
+    this.btStatusIcon?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -295,6 +321,7 @@ export class App {
     this.currentScreen = 'control';
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
+    this.btStatusIcon?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -319,7 +346,9 @@ export class App {
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
+      onRelayToggle: (enabled) => this.setRelay(enabled),
     });
+    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected);
 
     // Emergency stop
     new EmergencyStop(this.controlUi, (active) => this.sendStop(active));
@@ -379,6 +408,7 @@ export class App {
     this.currentScreen = 'status';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
   }
@@ -387,6 +417,7 @@ export class App {
     this.currentScreen = 'services';
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
+    this.btStatusIcon?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -440,6 +471,7 @@ export class App {
     this.currentScreen = 'ble-config';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true);
     this.bleConfigPage = new BleConfigPage(this.root, () => this.showConnectionScreen());
   }
 
@@ -447,12 +479,14 @@ export class App {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true);
     this.accountPage = new AccountPage(this.root, () => this.goToHub());
   }
 
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
+    this.setRelay(false);
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -583,6 +617,38 @@ export class App {
       clearInterval(this.joystickTimer);
       this.joystickTimer = null;
     }
+  }
+
+  // ── BT Remote Relay Loop ──
+
+  private setRelay(enabled: boolean): void {
+    if (enabled) {
+      if (this.relayTimer) return;
+      this.relayOn = true;
+      this.relayTimer = setInterval(() => this.relayTick(), 50);
+    } else {
+      this.relayOn = false;
+      if (this.relayTimer) { clearInterval(this.relayTimer); this.relayTimer = null; }
+    }
+  }
+
+  private async relayTick(): Promise<void> {
+    if (!this.dataHandler) return;
+    try {
+      const resp = await fetch('/ble-api/remote/state', { signal: AbortSignal.timeout(200) });
+      if (!resp.ok) return;
+      const s = await resp.json() as { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> };
+
+      // Pack 16 buttons into uint16 keys bitmask (same order as APK)
+      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
+      let keys = 0;
+      for (let i = 0; i < order.length; i++) {
+        if (s.buttons[order[i]]) keys |= (1 << i);
+      }
+      this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
+        lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
+      });
+    } catch { /* ignore transient errors */ }
   }
 
   // ── Video & Topic Subscriptions ──
@@ -1115,6 +1181,7 @@ export class App {
     const wasRemote = this.connectionConfig?.mode === 'STA-T';
 
     this.stopJoystickLoop();
+    this.setRelay(false);
     this.stopBgNoise();
     this.dataHandler?.destroy();
     this.dataHandler = null;
