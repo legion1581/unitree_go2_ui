@@ -4,6 +4,7 @@ This document describes the BLE protocols used to communicate with the Unitree G
 
 ## Table of Contents
 
+- [System Requirements](#system-requirements)
 - [Scanning](#scanning)
 - [Service UUIDs](#service-uuids)
 - [Encryption](#encryption)
@@ -14,6 +15,87 @@ This document describes the BLE protocols used to communicate with the Unitree G
 - [V3 Protocol Extension (GCM Key)](#v3-protocol-extension-gcm-key)
 - [Remote Control](#remote-control)
 - [WebRTC Relay](#webrtc-relay)
+
+---
+
+## System Requirements
+
+### Linux Packages
+
+| Package | Purpose | Install |
+|---|---|---|
+| `bluez` | BlueZ daemon, `bluetoothctl`, `gatttool`, `hciconfig` | `sudo apt install bluez` |
+
+The `bluez` package provides both the BlueZ D-Bus daemon (`bluetoothd`) used by `bleak` for the robot, and `gatttool` used by `pygatt` for the remote control.
+
+### Python Packages
+
+All listed in `server/requirements.txt`:
+
+```
+fastapi>=0.110.0      # REST API
+uvicorn>=0.27.0       # ASGI server
+bleak>=0.22.0         # BlueZ D-Bus BLE client (used for robot)
+pycryptodome>=3.20.0  # AES-128-CFB encryption
+pygatt>=4.0.0         # gatttool wrapper (used for remote control)
+```
+
+Install with:
+```bash
+pip install -r server/requirements.txt
+```
+
+### User Permissions
+
+On **Ubuntu 22.04** (and some other distros), the default D-Bus policy at `/etc/dbus-1/system.d/bluetooth.conf` already allows any local user to communicate with `org.bluez`, so no group membership is needed.
+
+On **Debian, Fedora, Arch, Ubuntu with hardened D-Bus policies**, add your user to the `bluetooth` group:
+
+```bash
+sudo usermod -aG bluetooth $USER
+# Log out and back in for group changes to take effect
+```
+
+### Required Services
+
+BlueZ daemon must be running:
+
+```bash
+sudo systemctl enable --now bluetooth
+systemctl is-active bluetooth  # should print "active"
+```
+
+### Bluetooth Adapter
+
+Check your HCI adapter(s):
+
+```bash
+hciconfig -a
+```
+
+If the adapter shows `DOWN` (common for USB dongles after plug-in), bring it up:
+
+```bash
+sudo hciconfig hci0 up   # or hci1, etc.
+```
+
+The BLE server exposes `/adapters` and `/adapter` endpoints to switch between adapters at runtime.
+
+### What's NOT Required
+
+- **Running as root** — not needed
+- **`setcap CAP_NET_RAW` on binaries** — `gatttool` and `hcitool` delegate privileged ops to `bluetoothd` which already runs as root
+- **Disabling AppArmor/SELinux** — default policies allow everything needed
+
+### Troubleshooting
+
+| Error | Fix |
+|---|---|
+| `Operation not permitted` during scan | Ensure `bluetoothd` is running (`systemctl status bluetooth`) |
+| `org.bluez.Error.NotReady` | Adapter is DOWN — `sudo hciconfig hciX up` |
+| `org.bluez.Error.NotAvailable: br-connection-profile-unavailable` (remote) | Normal for dual-mode remote on BlueZ 5.64; `pygatt` handles this automatically |
+| `Could not connect to the system bus` | User not in `bluetooth` group on a distro that requires it |
+| Adapter not found | USB dongle not recognized — check `dmesg | tail` for driver errors |
 
 ---
 
