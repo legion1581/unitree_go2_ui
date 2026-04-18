@@ -10,7 +10,9 @@ import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { AccountPage } from './components/account-page';
 import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
 import { BtPopover } from './components/bt-popover';
+import { ThemeToggle } from './components/theme-toggle';
 import { btBackend } from '../api/bt-backend';
+import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -54,6 +56,7 @@ export class App {
 
   // Bluetooth status (persistent across screens)
   private btStatusIcon: BtStatusIcon | null = null;
+  private themeToggle: ThemeToggle | null = null;
   private btStatus: BluetoothStatus = {
     robotConnected: false, robotAddress: '',
     remoteConnected: false, remoteName: '', remoteAddress: '',
@@ -96,6 +99,12 @@ export class App {
     root.innerHTML = '';
     root.className = 'app-root';
 
+    // Eager theme init — applies data-theme attribute to <html> so CSS picks it up
+    theme();
+
+    // Persistent theme toggle (sun/moon) next to the BT icon
+    this.themeToggle = new ThemeToggle(document.body);
+
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
@@ -120,7 +129,7 @@ export class App {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
     this.root.className = 'app-root connection-screen';
-    this.btStatusIcon?.setVisible(true);
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -133,7 +142,7 @@ export class App {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
-    this.btStatusIcon?.setVisible(true);
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -321,7 +330,7 @@ export class App {
     this.currentScreen = 'control';
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
-    this.btStatusIcon?.setVisible(false);
+    this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -374,6 +383,7 @@ export class App {
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
     this.actionBar = new ActionBar(w2, (action) => {
+      console.log(`[go2:action] REQ → ${action.name} (api_id=${action.apiId}, param=${action.param ?? '{}'})`);
       this.dataHandler?.publishRequest(RTC_TOPIC.SPORT_MOD, action.apiId, action.param);
     });
     opWrapper.appendChild(w2);
@@ -412,7 +422,7 @@ export class App {
     this.currentScreen = 'status';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
-    this.btStatusIcon?.setVisible(true);
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
   }
@@ -421,7 +431,7 @@ export class App {
     this.currentScreen = 'services';
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
-    this.btStatusIcon?.setVisible(true);
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -475,7 +485,7 @@ export class App {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
-    this.btStatusIcon?.setVisible(true);
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountPage = new AccountPage(this.root, () => this.goToHub());
   }
 
@@ -738,6 +748,14 @@ export class App {
       if (msg.topic === 'rt/api/bashrunner/response') { this.handleBashrunnerResponse(msg.data); return; }
       if (msg.topic === 'rt/api/motion_switcher/response') { this.handleMotionSwitcherResponse(msg.data); return; }
       if (msg.topic === 'rt/api/robot_state/response') { this.handleRobotStateResponse(msg.data); return; }
+      if (msg.topic === 'rt/api/sport/response') {
+        const d = msg.data as { header?: { identity?: { api_id?: number }; status?: { code?: number } }; data?: unknown };
+        const apiId = d?.header?.identity?.api_id;
+        const code = d?.header?.status?.code;
+        const ok = code === 0;
+        console.log(`[go2:action] ${ok ? 'RES ←' : 'ERR ←'} api_id=${apiId} code=${code}${d?.data !== undefined ? ' data=' + JSON.stringify(d.data) : ''}`);
+        return;
+      }
     }
 
     if (!msg.topic || !msg.data) return;

@@ -44,6 +44,10 @@ export class ConnectionPanel {
       <div class="form-group">
         <label for="mode-select">Connection Mode</label>
         <select id="mode-select"></select>
+        <div class="mode-hero" id="mode-hero">
+          <img id="mode-hero-img" src="/sprites/mode_sta_hero.png" alt="" />
+          <img class="mode-hero-badge" id="mode-hero-badge" src="/sprites/mode_cloud.png" alt="" />
+        </div>
       </div>
       <div class="form-group" id="ip-group">
         <label for="ip-input">Robot IP Address</label>
@@ -133,6 +137,20 @@ export class ConnectionPanel {
   private updateVisibility(): void {
     const mode = this.modeSelect.value as ConnectionMode;
     const isRemote = mode === 'STA-T';
+
+    // Swap the connection-mode hero illustration (APK icons)
+    const heroImg = this.container.querySelector('#mode-hero-img') as HTMLImageElement;
+    const heroBadge = this.container.querySelector('#mode-hero-badge') as HTMLImageElement;
+    if (heroImg && heroBadge) {
+      if (mode === 'AP') {
+        heroImg.src = '/sprites/mode_ap_hero.png';
+        heroBadge.style.display = 'none';
+      } else {
+        heroImg.src = '/sprites/mode_sta_hero.png';
+        // STA-T = STA + cloud badge (remote connection via Unitree cloud)
+        heroBadge.style.display = isRemote ? '' : 'none';
+      }
+    }
 
     const ipGroup = this.container.querySelector('#ip-group') as HTMLElement;
     const emailGroup = this.container.querySelector('#email-group') as HTMLElement;

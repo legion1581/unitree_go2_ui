@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RobotModel } from './robot-model';
 import { VoxelMap } from './voxel-map';
+import { theme } from '../theme';
 
 export class Scene3D {
   renderer: THREE.WebGLRenderer;
@@ -12,6 +13,8 @@ export class Scene3D {
   robotModel: RobotModel;
   voxelMap: VoxelMap;
   private animationId: number = 0;
+  private grid: THREE.GridHelper | null = null;
+  private unsubTheme: () => void = () => {};
 
   // View toggle state (double-tap)
   private viewType: 'overview' | 'follow' = 'overview';
@@ -29,8 +32,8 @@ export class Scene3D {
     this.renderer.toneMappingExposure = 1.0;
 
     this.scene = new THREE.Scene();
-    // APK: background + fog = 0x282828 (dark gray), fog(near=0.015, far=20)
-    this.scene.background = new THREE.Color(0x282828);
+    // Theme-aware background (APK dark = 0x282828; light = near-white)
+    this.scene.background = new THREE.Color(theme().colors.background);
 
     // Z-up coordinate system to match Go2 model and APK
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
@@ -55,6 +58,12 @@ export class Scene3D {
 
     // Double-tap detection on canvas
     canvas.addEventListener('pointerdown', (e) => this.handleDoubleTap(e));
+
+    // Re-apply background + grid on theme change
+    this.unsubTheme = theme().onChange((_t, colors) => {
+      this.scene.background = new THREE.Color(colors.background);
+      this.rebuildGrid(colors.grid);
+    });
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
@@ -82,14 +91,23 @@ export class Scene3D {
   }
 
   private setupGrid(): void {
-    // APK: GridHelper(40, 40, 0x887C48) rotated to XY plane for Z-up
-    const grid = new THREE.GridHelper(40, 40, 0x887C48, 0x887C48);
-    grid.rotateX(Math.PI / 2);
-    this.scene.add(grid);
+    this.rebuildGrid(theme().colors.grid);
+  }
+
+  private rebuildGrid(color: number): void {
+    if (this.grid) {
+      this.scene.remove(this.grid);
+      (this.grid.material as THREE.Material).dispose?.();
+      this.grid.geometry.dispose();
+    }
+    const g = new THREE.GridHelper(40, 40, color, color);
+    g.rotateX(Math.PI / 2);
+    this.scene.add(g);
+    this.grid = g;
   }
 
   private loadEnvironment(): void {
-    new RGBELoader().load('/models/venice_sunset_1k.hdr', (texture) => {
+    new HDRLoader().load('/models/venice_sunset_1k.hdr', (texture) => {
       texture.mapping = THREE.EquirectangularReflectionMapping;
       this.scene.environment = texture;
     });
@@ -164,6 +182,7 @@ export class Scene3D {
 
   destroy(): void {
     cancelAnimationFrame(this.animationId);
+    this.unsubTheme();
     this.renderer.dispose();
   }
 }

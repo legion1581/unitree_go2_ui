@@ -57,7 +57,8 @@ export class BtPopover {
     });
 
     this.panel = document.createElement('div');
-    this.panel.style.cssText = 'background:#0f1114;border:1px solid #1f2229;border-radius:10px;padding:14px 16px;width:420px;max-height:calc(100vh - 80px);overflow-y:auto;min-height:320px;box-sizing:border-box;color:#ccc;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,0.5);';
+    this.panel.className = 'bt-popover-panel';
+    this.panel.style.cssText = 'border-radius:10px;padding:14px 16px;width:420px;max-height:calc(100vh - 80px);overflow-y:auto;min-height:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,0.5);';
     this.overlay.appendChild(this.panel);
 
     document.body.appendChild(this.overlay);
@@ -103,10 +104,9 @@ export class BtPopover {
   private button(text: string, onClick: () => void, variant: 'primary' | 'danger' | 'secondary' = 'primary'): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.textContent = text;
-    btn.style.cssText = `padding:6px 12px;font-size:12px;border-radius:5px;cursor:pointer;border:none;font-weight:500;`;
-    if (variant === 'primary') btn.style.cssText += 'background:#4fc3f7;color:#000;';
-    else if (variant === 'danger') btn.style.cssText += 'background:#ef5350;color:#fff;';
-    else btn.style.cssText += 'background:#2a2d35;color:#ccc;';
+    btn.className = `bt-btn bt-btn-${variant}`;
+    // No `border:none` inline — let the class control the border (needed for light-theme secondary)
+    btn.style.cssText = `padding:6px 12px;font-size:12px;border-radius:5px;cursor:pointer;font-weight:500;`;
     btn.addEventListener('click', onClick);
     return btn;
   }
@@ -226,7 +226,8 @@ export class BtPopover {
     for (const a of adapters) {
       const isCurrent = a.name === current;
       const row = document.createElement('button');
-      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px;font-size:11px;cursor:${isCurrent ? 'default' : 'pointer'};text-align:left;border:1px solid ${isCurrent ? '#4fc3f7' : '#2a2d35'};background:${isCurrent ? 'rgba(79,195,247,0.1)' : '#0a0c10'};color:${isCurrent ? '#4fc3f7' : a.up ? '#aaa' : '#555'};`;
+      row.className = `bt-adapter-row${isCurrent ? ' bt-adapter-row-active' : ''}${!a.up ? ' bt-adapter-row-down' : ''}`;
+      row.style.cssText = `display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px;font-size:11px;cursor:${isCurrent ? 'default' : 'pointer'};text-align:left;`;
       const dotColor = isCurrent ? '#4fc3f7' : a.up ? '#66bb6a' : '#555';
       row.innerHTML = `
         <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};flex-shrink:0;"></span>
@@ -310,16 +311,18 @@ export class BtPopover {
     // Mode toggle
     let apMode = false;
     const modeWrap = document.createElement('div');
-    modeWrap.style.cssText = 'display:flex;gap:0;margin-bottom:8px;border-radius:6px;overflow:hidden;border:1px solid #2a2d35;';
+    modeWrap.className = 'bt-mode-wrap';
+    modeWrap.style.cssText = 'display:flex;gap:0;margin-bottom:8px;border-radius:6px;overflow:hidden;';
     const staBtn = document.createElement('button');
     const apBtn = document.createElement('button');
-    const modeStyle = (active: boolean) => `flex:1;padding:6px 4px;border:none;cursor:pointer;font-size:11px;font-weight:600;${
-      active ? 'background:#4fc3f7;color:#000;' : 'background:#0a0c10;color:#666;'
-    }`;
-    staBtn.style.cssText = modeStyle(true); staBtn.textContent = 'STA';
-    apBtn.style.cssText = modeStyle(false); apBtn.textContent = 'AP';
-    staBtn.addEventListener('click', () => { apMode = false; staBtn.style.cssText = modeStyle(true); apBtn.style.cssText = modeStyle(false); });
-    apBtn.addEventListener('click', () => { apMode = true; apBtn.style.cssText = modeStyle(true); staBtn.style.cssText = modeStyle(false); });
+    const applyMode = (btn: HTMLButtonElement, active: boolean) => {
+      btn.className = `bt-mode-btn${active ? ' bt-mode-btn-active' : ''}`;
+      btn.style.cssText = 'flex:1;padding:6px 4px;border:none;cursor:pointer;font-size:11px;font-weight:600;';
+    };
+    applyMode(staBtn, true); staBtn.textContent = 'STA';
+    applyMode(apBtn, false); apBtn.textContent = 'AP';
+    staBtn.addEventListener('click', () => { apMode = false; applyMode(staBtn, true); applyMode(apBtn, false); });
+    apBtn.addEventListener('click', () => { apMode = true; applyMode(apBtn, true); applyMode(staBtn, false); });
     modeWrap.appendChild(staBtn);
     modeWrap.appendChild(apBtn);
     this.robotBody.appendChild(modeWrap);
@@ -389,7 +392,8 @@ export class BtPopover {
     wrap.appendChild(lbl);
     const input = document.createElement('input');
     input.type = type;
-    input.style.cssText = 'width:100%;padding:6px 8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:4px;font-size:12px;box-sizing:border-box;';
+    input.className = 'bt-field';
+    input.style.cssText = 'width:100%;padding:6px 8px;border-radius:4px;font-size:12px;box-sizing:border-box;';
     wrap.appendChild(input);
     return { wrap, input };
   }
@@ -448,7 +452,8 @@ export class BtPopover {
     lbl.textContent = 'Region';
     wrap.appendChild(lbl);
     const select = document.createElement('select');
-    select.style.cssText = 'width:100%;padding:6px 8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:4px;font-size:12px;box-sizing:border-box;cursor:pointer;';
+    select.className = 'bt-field';
+    select.style.cssText = 'width:100%;padding:6px 8px;border-radius:4px;font-size:12px;box-sizing:border-box;cursor:pointer;';
     for (const [code, name] of countries) {
       const opt = document.createElement('option');
       opt.value = code;
@@ -756,9 +761,10 @@ export class BtPopover {
 
   private deviceRow(icon: string, name: string, address: string, rssi: number | null, type: string): HTMLElement {
     const row = document.createElement('div');
+    row.className = 'bt-device-row';
     row.setAttribute('data-device-addr', address);
     row.setAttribute('data-device-type', type);
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:4px;background:#0a0c10;border-radius:6px;border:1px solid #1f2229;';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:8px;margin-bottom:4px;border-radius:6px;';
     row.innerHTML = `
       <div style="font-size:18px;width:22px;text-align:center;">${icon}</div>
       <div style="flex:1;min-width:0;">

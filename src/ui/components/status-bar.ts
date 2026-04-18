@@ -1,5 +1,23 @@
+import { theme } from '../theme';
+
 const BT_SVG = (color: string) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
   <path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/>
+</svg>`;
+
+const SUN_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFB74D" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="4"/>
+  <line x1="12" y1="2" x2="12" y2="5"/>
+  <line x1="12" y1="19" x2="12" y2="22"/>
+  <line x1="2" y1="12" x2="5" y2="12"/>
+  <line x1="19" y1="12" x2="22" y2="12"/>
+  <line x1="4.5" y1="4.5" x2="6.5" y2="6.5"/>
+  <line x1="17.5" y1="17.5" x2="19.5" y2="19.5"/>
+  <line x1="4.5" y1="19.5" x2="6.5" y2="17.5"/>
+  <line x1="17.5" y1="6.5" x2="19.5" y2="4.5"/>
+</svg>`;
+
+const MOON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#b0b3bb" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
 </svg>`;
 
 export class NavBar {
@@ -8,7 +26,10 @@ export class NavBar {
   private batteryFill!: HTMLElement;
   private batteryText!: HTMLElement;
   private motorTempEl!: HTMLElement;
+  private wifiIconEl!: HTMLImageElement;
   private btIconWrap!: HTMLElement;
+  private themeIconWrap!: HTMLElement;
+  private unsubTheme: () => void = () => {};
   private onBack: () => void;
   private onBtIconClick: (() => void) | null = null;
 
@@ -41,6 +62,8 @@ export class NavBar {
         <div class="nav-divider"></div>
         <span class="net-type-label"></span>
         <img class="wifi-icon" src="/sprites/icon_wifi.png" alt="WiFi" />
+        <div class="nav-theme-icon" title="Toggle theme"
+             style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;margin-left:4px;transition:all 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>
         <div class="nav-bt-icon" title="Bluetooth: not connected"
              style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;margin-left:4px;transition:all 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);">${BT_SVG('#b0b3bb')}</div>
       </div>
@@ -50,7 +73,10 @@ export class NavBar {
     this.batteryText = this.container.querySelector('.battery-text')!;
     this.motorTempEl = this.container.querySelector('.motor-temp-label')!;
     this.netTypeEl = this.container.querySelector('.net-type-label')!;
+    this.wifiIconEl = this.container.querySelector('.wifi-icon')!;
     this.btIconWrap = this.container.querySelector('.nav-bt-icon')!;
+    this.themeIconWrap = this.container.querySelector('.nav-theme-icon')!;
+
     this.btIconWrap.addEventListener('click', () => { this.onBtIconClick?.(); });
     this.btIconWrap.addEventListener('mouseenter', () => {
       this.btIconWrap.style.background = 'rgba(79,195,247,0.2)';
@@ -60,7 +86,31 @@ export class NavBar {
       this.btIconWrap.style.background = this.btIconWrap.dataset.connected === 'true' ? 'rgba(79,195,247,0.15)' : 'rgba(26,29,35,0.95)';
       this.btIconWrap.style.transform = 'scale(1)';
     });
+
+    // Theme toggle
+    this.themeIconWrap.addEventListener('click', () => theme().toggle());
+    this.themeIconWrap.addEventListener('mouseenter', () => {
+      this.themeIconWrap.style.background = 'rgba(255,183,77,0.15)';
+      this.themeIconWrap.style.transform = 'scale(1.05)';
+    });
+    this.themeIconWrap.addEventListener('mouseleave', () => {
+      this.themeIconWrap.style.background = 'rgba(26,29,35,0.95)';
+      this.themeIconWrap.style.transform = 'scale(1)';
+    });
+    this.renderTheme(theme().theme);
+    this.unsubTheme = theme().onChange((t) => this.renderTheme(t));
+
     this.container.querySelector('.back-btn')!.addEventListener('click', this.onBack);
+  }
+
+  private renderTheme(t: 'dark' | 'light'): void {
+    // Dark mode shows moon (click -> go light); Light mode shows sun (click -> go dark)
+    this.themeIconWrap.innerHTML = t === 'dark' ? MOON_SVG : SUN_SVG;
+    this.themeIconWrap.title = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+  }
+
+  destroy(): void {
+    this.unsubTheme();
   }
 
   setBattery(percent: number): void {
@@ -86,6 +136,14 @@ export class NavBar {
 
   setNetworkType(type: string): void {
     this.netTypeEl.textContent = type;
+    // Swap the nav-bar WiFi icon based on the actual transport (APK icons)
+    let src = '/sprites/icon_wifi.png';
+    const upper = type.toUpperCase();
+    if (upper === '4G' || upper === 'LTE') src = '/sprites/icon_net_4g.png';
+    else if (upper === 'AP') src = '/sprites/icon_net_ap.png';
+    else if (upper === 'STA-T' || upper === 'REMOTE') src = '/sprites/icon_net_remote.png';
+    else if (upper === 'STA-L') src = '/sprites/icon_net_sta.png';
+    if (this.wifiIconEl.getAttribute('src') !== src) this.wifiIconEl.src = src;
   }
 
   setBluetoothStatus(connected: boolean, tooltip: string): void {
