@@ -17,5 +17,17 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/ble-api/, ''),
       },
     },
+    // Keep Vite's file watcher out of the decompiled APK trees —
+    // they contain tens of thousands of smali files and blow past
+    // Linux's default inotify watcher limit (ENOSPC).
+    watch: {
+      ignored: [
+        '**/reverse_engineer/**',
+        '**/_frontend_1.11.4/**',
+        '**/node_modules/**',
+        '**/.git/**',
+        '**/dist/**',
+      ],
+    },
   },
 });

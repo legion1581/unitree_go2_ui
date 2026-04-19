@@ -2,7 +2,7 @@
  * Account Manager page — 4 tabs: Devices, Info, Account, Debug
  */
 
-import { cloudApi, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
+import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -174,12 +174,30 @@ export class AccountPage {
     }));
     this.content.appendChild(avatarSec);
 
-    // Change password
+    // Change password (wrap password inputs in a <form> so Chrome doesn't
+    // warn about unassociated password fields; include a hidden username
+    // input so a11y + autofill can associate the credential with the user)
     const pw = this.section('Change Password');
     const oldPw = this.input('Current Password', 'password', 'password');
+    oldPw.input.autocomplete = 'current-password';
     const newPw = this.input('New Password', 'password', 'password');
-    pw.appendChild(oldPw.wrapper);
-    pw.appendChild(newPw.wrapper);
+    newPw.input.autocomplete = 'new-password';
+    const pwForm = document.createElement('form');
+    pwForm.autocomplete = 'on';
+    pwForm.addEventListener('submit', (e) => e.preventDefault());
+    // Hidden username field — satisfies Chrome a11y hint ("Password forms
+    // should have (optionally hidden) username fields")
+    const hiddenUser = document.createElement('input');
+    hiddenUser.type = 'text';
+    hiddenUser.autocomplete = 'username';
+    hiddenUser.value = cloudApi.user?.email || cloudApi.user?.mobile || '';
+    hiddenUser.style.cssText = 'display:none;';
+    hiddenUser.setAttribute('aria-hidden', 'true');
+    hiddenUser.setAttribute('tabindex', '-1');
+    pwForm.appendChild(hiddenUser);
+    pwForm.appendChild(oldPw.wrapper);
+    pwForm.appendChild(newPw.wrapper);
+    pw.appendChild(pwForm);
     pw.appendChild(this.button('Change Password', async () => {
       try {
         await cloudApi.changePassword(oldPw.input.value, newPw.input.value);
@@ -227,11 +245,15 @@ export class AccountPage {
 
   private renderLoginForm(): void {
     const s = this.section('Login');
-    const form = document.createElement('div');
+    const form = document.createElement('form');
     form.className = 'acct-form';
+    form.autocomplete = 'on';
+    form.addEventListener('submit', (e) => e.preventDefault());
 
     const emailInput = this.input('Email', 'email');
+    emailInput.input.autocomplete = 'username';
     const pwdInput = this.input('Password', 'password', 'password');
+    pwdInput.input.autocomplete = 'current-password';
     form.appendChild(emailInput.wrapper);
     form.appendChild(pwdInput.wrapper);
 
@@ -673,9 +695,33 @@ export class AccountPage {
     paramsInput.style.cssText = 'width:100%;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-family:monospace;font-size:12px;resize:vertical;';
     form.appendChild(paramsInput);
 
+    // Decryption status banner (hidden until first request)
+    const decBanner = document.createElement('div');
+    decBanner.style.cssText = 'font-size:11px;padding:6px 10px;margin-top:10px;border-radius:6px;display:none;font-family:monospace;';
+
     // Response area — right below Send button
     const resultEl = document.createElement('pre');
-    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;margin-top:10px;padding:10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;display:none;';
+    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;margin-top:8px;padding:10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;display:none;';
+
+    const renderDecBanner = () => {
+      const m = getLastResponseMeta();
+      let label = '', color = '', bg = '', border = '';
+      if (m.decryption === 'none') {
+        label = `🔓 Plain JSON (${m.bodyBytes} bytes)`;
+        color = '#888'; bg = 'rgba(100,100,100,0.08)'; border = '1px solid #2a2d35';
+      } else if (m.decryption === 'body-cfb') {
+        label = `🔐 AES-CFB body decrypted (${m.bodyBytes} bytes ciphertext) · first bytes: ${m.rawPreview}`;
+        color = '#4fc3f7'; bg = 'rgba(79,195,247,0.08)'; border = '1px solid rgba(79,195,247,0.35)';
+      } else if (m.decryption === 'failed') {
+        label = `⚠ Decryption failed — raw first bytes: ${m.rawPreview}`;
+        color = '#ef9a9a'; bg = 'rgba(239,83,80,0.08)'; border = '1px solid rgba(239,83,80,0.35)';
+      }
+      decBanner.style.display = '';
+      decBanner.style.color = color;
+      decBanner.style.background = bg;
+      decBanner.style.border = border;
+      decBanner.textContent = label;
+    };
 
     const sendBtn = this.button('Send Request', async () => {
       const params: Record<string, string> = {};
@@ -686,13 +732,16 @@ export class AccountPage {
       resultEl.style.display = '';
       resultEl.textContent = 'Loading...';
       resultEl.style.color = '#888';
+      decBanner.style.display = 'none';
       try {
         const resp = await cloudApi.rawRequest(methodSel.value, pathInput.value.trim(), Object.keys(params).length ? params : undefined);
+        renderDecBanner();
         resultEl.textContent = JSON.stringify(resp, null, 2);
         resultEl.style.color = resp.code === 100 ? '#a5d6a7' : '#ef9a9a';
-      } catch (e) { resultEl.textContent = String(e); resultEl.style.color = '#ef5350'; }
+      } catch (e) { renderDecBanner(); resultEl.textContent = String(e); resultEl.style.color = '#ef5350'; }
     });
     form.appendChild(sendBtn);
+    form.appendChild(decBanner);
     form.appendChild(resultEl);
     s.appendChild(form);
     this.content.appendChild(s);

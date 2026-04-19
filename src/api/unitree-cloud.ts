@@ -10,9 +10,58 @@ const API_BASE = '/unitree-api';
 const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
 const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
 
+// Unitree shipped response-body encryption in recent app versions (v1.12+).
+// Some endpoints (tutorial/list, app/version, app/version/intro/list) now
+// return raw AES-128-CFB128 ciphertext instead of JSON. The key/IV were
+// extracted from com/unitree/baselibrary/util/AESUtil.smali — same pair
+// also used by the BLE protocol.
+const CLOUD_AES_KEY = 'df98b715d5c6ed2b25817b6f2554124a';
+const CLOUD_AES_IV  = '2841ae97419c2973296a0d4bdfe19a4f';
+
 function md5(s: string): string {
   return forge.md.md5.create().update(s).digest().toHex();
 }
+
+/** AES-128-CFB (128-bit segment) decrypt. Returns raw-byte-string + UTF-8 decoded
+ *  string if valid. Never throws — callers check .utf8 to tell success. */
+function decryptCloudBody(cipherBytes: Uint8Array): { raw: string; utf8: string | null } {
+  const keyBytes = forge.util.hexToBytes(CLOUD_AES_KEY);
+  const ivBytes = forge.util.hexToBytes(CLOUD_AES_IV);
+  const decipher = forge.cipher.createDecipher('AES-CFB', keyBytes);
+  decipher.start({ iv: ivBytes });
+  let bin = '';
+  for (let i = 0; i < cipherBytes.length; i++) bin += String.fromCharCode(cipherBytes[i]);
+  decipher.update(forge.util.createBuffer(bin, 'raw'));
+  decipher.finish();
+  const raw = decipher.output.getBytes();
+  try {
+    return { raw, utf8: forge.util.decodeUtf8(raw) };
+  } catch {
+    return { raw, utf8: null };
+  }
+}
+
+/** Hex preview of the first `max` bytes — used for diagnostic logging. */
+function bytesToHex(s: string, max = 48): string {
+  let out = '';
+  const n = Math.min(s.length, max);
+  for (let i = 0; i < n; i++) out += s.charCodeAt(i).toString(16).padStart(2, '0') + ' ';
+  if (s.length > max) out += '…';
+  return out.trim();
+}
+
+/** Globally exposed meta for the most recent request (read by the Debug tab). */
+export interface LastResponseMeta {
+  path: string;
+  bodyBytes: number;
+  decryption: 'none' | 'body-cfb' | 'failed';
+  rawPreview: string;
+  decryptedPreview: string;
+}
+let _lastResponseMeta: LastResponseMeta = {
+  path: '', bodyBytes: 0, decryption: 'none', rawPreview: '', decryptedPreview: '',
+};
+export function getLastResponseMeta(): LastResponseMeta { return { ..._lastResponseMeta }; }
 
 function buildHeaders(token = ''): Record<string, string> {
   const ts = Date.now().toString();
@@ -26,7 +75,7 @@ function buildHeaders(token = ''): Record<string, string> {
     'DevicePlatform': 'Android',
     'DeviceModel': 'SM-S931B',
     'SystemVersion': '34',
-    'AppVersion': '1.11.4',
+    'AppVersion': '1.12.4',
     'AppLocale': navigator.language?.replace('-', '_') || 'en_US',
     'AppTimestamp': ts,
     'AppNonce': nonce,
@@ -169,6 +218,9 @@ export class UnitreeCloudAPI {
       ? `${API_BASE}/${path}?${new URLSearchParams(params)}`
       : `${API_BASE}/${path}`;
 
+    console.groupCollapsed(`[cloud-api] ${method} ${path}`);
+    if (params) console.log('params:', params);
+
     const resp = await fetch(url, {
       method,
       headers: buildHeaders(this.token),
@@ -176,16 +228,62 @@ export class UnitreeCloudAPI {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const json: ApiResponse<T> = await resp.json();
+    if (!resp.ok) { console.groupEnd(); throw new Error(`HTTP ${resp.status}`); }
+
+    // Recent Unitree app versions encrypt some response bodies with AES-CFB.
+    // Handle three shapes:
+    //   1) Plain JSON                          -> parse directly
+    //   2) Raw ciphertext body                  -> decrypt entire body
+    //   3) JSON envelope with encrypted `data` -> decrypt just the string field
+    // Upstream returns either plain JSON (most endpoints) or raw AES-128-CFB
+    // ciphertext (e.g. the /announcement endpoint since app v1.12). Compressed
+    // responses (gzip/deflate) are auto-decompressed by fetch because the Vite
+    // proxy now forwards Content-Encoding.
+    const raw = await resp.arrayBuffer();
+    const rawBytes = new Uint8Array(raw);
+    const asText = new TextDecoder('utf-8', { fatal: false }).decode(raw);
+    const hexPreview = bytesToHex(String.fromCharCode(...rawBytes.slice(0, 32)), 32);
+
+    _lastResponseMeta = {
+      path, bodyBytes: rawBytes.length, decryption: 'none',
+      rawPreview: hexPreview,
+      decryptedPreview: '',
+    };
+
+    let json: ApiResponse<T> | null = null;
+    try {
+      json = JSON.parse(asText);
+    } catch {
+      // Body wasn't plain JSON — try AES-CFB decrypt with the hardcoded key/IV
+      const r = decryptCloudBody(rawBytes);
+      if (r.utf8) {
+        try {
+          json = JSON.parse(r.utf8);
+          _lastResponseMeta.decryption = 'body-cfb';
+          _lastResponseMeta.decryptedPreview = r.utf8.slice(0, 400);
+          console.log(`[cloud-api] ${path}: AES-CFB decrypted (${rawBytes.length} bytes ciphertext)`);
+        } catch { /* fall through to failure */ }
+      }
+      if (!json) {
+        const decHex = bytesToHex(r.raw, 32);
+        _lastResponseMeta.decryption = 'failed';
+        _lastResponseMeta.decryptedPreview = `(non-UTF-8) hex: ${decHex}`;
+        console.warn(`[cloud-api] ${path}: decode failed. raw: ${hexPreview} · aes-cfb: ${decHex}`);
+        console.groupEnd();
+        throw new Error(`Response decode failed (plain + AES-CFB). Body hex: ${hexPreview}`);
+      }
+    }
+
+    const result = json as ApiResponse<T>;
+    console.groupEnd();
 
     // Auto-refresh on token expiry
-    if (json.code === 1001 && this.refreshToken) {
+    if (result.code === 1001 && this.refreshToken) {
       const refreshed = await this.doRefreshToken();
       if (refreshed) return this.request(method, path, params);
     }
 
-    return json;
+    return result;
   }
 
   private async get<T>(path: string, params?: Record<string, string>): Promise<T> {

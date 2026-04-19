@@ -62,14 +62,16 @@ export class ConnectionPanel {
           <button class="auth-tab" data-auth="token">Token</button>
         </div>
       </div>
-      <div class="form-group" id="email-group">
-        <label for="email-input">Email</label>
-        <input type="email" id="email-input" placeholder="Unitree account email" />
-      </div>
-      <div class="form-group" id="password-group">
-        <label for="password-input">Password</label>
-        <input type="password" id="password-input" placeholder="Account password" />
-      </div>
+      <form id="credentials-form" autocomplete="on" onsubmit="return false;">
+        <div class="form-group" id="email-group">
+          <label for="email-input">Email</label>
+          <input type="email" id="email-input" placeholder="Unitree account email" autocomplete="username" />
+        </div>
+        <div class="form-group" id="password-group">
+          <label for="password-input">Password</label>
+          <input type="password" id="password-input" placeholder="Account password" autocomplete="current-password" />
+        </div>
+      </form>
       <div class="form-group" id="token-group">
         <label for="token-input">Access Token</label>
         <input type="text" id="token-input" placeholder="Paste access token" />

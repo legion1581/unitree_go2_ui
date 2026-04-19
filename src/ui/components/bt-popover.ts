@@ -329,10 +329,19 @@ export class BtPopover {
 
     const ssidInput = this.wifiInput('SSID', 'text');
     const pwdInput = this.wifiInput('Password', 'password');
+    // This password belongs to the robot's WiFi, not to the user — don't let the
+    // browser autofill it with saved account credentials and don't save it.
+    pwdInput.input.autocomplete = 'off';
+    pwdInput.input.setAttribute('data-lpignore', 'true');  // LastPass hint
     const countrySelect = this.wifiCountrySelect();
-    this.robotBody.appendChild(ssidInput.wrap);
-    this.robotBody.appendChild(pwdInput.wrap);
-    this.robotBody.appendChild(countrySelect.wrap);
+    // Wrap in a <form> so Chrome doesn't warn about a standalone password field.
+    const wifiForm = document.createElement('form');
+    wifiForm.autocomplete = 'off';
+    wifiForm.addEventListener('submit', (e) => e.preventDefault());
+    wifiForm.appendChild(ssidInput.wrap);
+    wifiForm.appendChild(pwdInput.wrap);
+    wifiForm.appendChild(countrySelect.wrap);
+    this.robotBody.appendChild(wifiForm);
 
     const wifiStatus = document.createElement('div');
     wifiStatus.style.cssText = 'font-size:11px;min-height:14px;margin-top:4px;';
