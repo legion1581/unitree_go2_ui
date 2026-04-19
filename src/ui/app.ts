@@ -150,38 +150,41 @@ export class App {
     const isConnected = !!this.webrtc;
     const isRemoteMode = this.connectionConfig?.mode === 'STA-T';
 
-    // Title — show robot name
+    // Title + connection info — refreshed whenever the Remote-mode picker
+    // changes so the header follows the currently selected robot.
     const title = document.createElement('h2');
     title.className = 'hub-title';
-    const sn = this.connectionConfig?.serialNumber || '';
-    let robotName = isConnected ? 'Go2 Connected' : 'Go2 Dashboard';
-    if (sn) {
-      try {
-        const cache = localStorage.getItem('unitree_devices_cache');
-        if (cache) {
-          const devices = JSON.parse(cache) as Array<{ sn: string; alias: string }>;
-          const dev = devices.find(d => d.sn === sn);
-          if (dev?.alias) robotName = dev.alias;
-          else robotName = sn;
-        } else {
-          robotName = sn;
-        }
-      } catch { robotName = sn; }
-    }
-    title.textContent = robotName;
     hub.appendChild(title);
 
-    // Connection info
     const info = document.createElement('div');
     info.className = 'hub-info';
-    const infoItems: string[] = [];
-    if (sn) infoItems.push(`SN: ${sn}`);
-    if (this.connectionConfig?.ip) infoItems.push(`IP: ${this.connectionConfig.ip}`);
-    infoItems.push(`Mode: ${this.connectionConfig?.mode || 'N/A'}`);
-    if (isConnected) infoItems.push('WebRTC: Connected');
-    else if (isRemoteMode) infoItems.push('WebRTC: Not connected');
-    info.textContent = infoItems.join(' | ');
     hub.appendChild(info);
+
+    const cachedDevicesForHeader = (() => {
+      try {
+        const c = localStorage.getItem('unitree_devices_cache');
+        return c ? JSON.parse(c) as Array<{ sn: string; alias: string }> : [];
+      } catch { return []; }
+    })();
+
+    const renderHeader = (): void => {
+      const sn = this.connectionConfig?.serialNumber || '';
+      let robotName = isConnected ? 'Go2 Connected' : 'Go2 Dashboard';
+      if (sn) {
+        const dev = cachedDevicesForHeader.find(d => d.sn === sn);
+        robotName = dev?.alias || sn;
+      }
+      title.textContent = robotName;
+
+      const infoItems: string[] = [];
+      if (sn) infoItems.push(`SN: ${sn}`);
+      if (this.connectionConfig?.ip) infoItems.push(`IP: ${this.connectionConfig.ip}`);
+      infoItems.push(`Mode: ${this.connectionConfig?.mode || 'N/A'}`);
+      if (isConnected) infoItems.push('WebRTC: Connected');
+      else if (isRemoteMode) infoItems.push('WebRTC: Not connected');
+      info.textContent = infoItems.join(' | ');
+    };
+    renderHeader();
 
     // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
     if (isRemoteMode) {
@@ -198,15 +201,17 @@ export class App {
       if (cachedDevices.length > 1) {
         const robotSel = document.createElement('select');
         robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
+        const currentSn = this.connectionConfig?.serialNumber || '';
         for (const d of cachedDevices) {
           const opt = document.createElement('option');
           opt.value = d.sn;
           opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
-          if (d.sn === sn) opt.selected = true;
+          if (d.sn === currentSn) opt.selected = true;
           robotSel.appendChild(opt);
         }
         robotSel.addEventListener('change', () => {
           if (this.connectionConfig) this.connectionConfig.serialNumber = robotSel.value;
+          renderHeader();
         });
         remoteSection.appendChild(robotSel);
       }
