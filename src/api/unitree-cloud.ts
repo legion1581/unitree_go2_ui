@@ -41,6 +41,17 @@ function decryptCloudBody(cipherBytes: Uint8Array): { raw: string; utf8: string 
   }
 }
 
+/** Parse a JWT payload (no signature check) — used for local `exp` inspection. */
+function decodeJwtPayload(tok: string): Record<string, unknown> | null {
+  try {
+    const p = tok.split('.')[1];
+    if (!p) return null;
+    let s = p.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    return JSON.parse(atob(s));
+  } catch { return null; }
+}
+
 /** Hex preview of the first `max` bytes — used for diagnostic logging. */
 function bytesToHex(s: string, max = 48): string {
   let out = '';
@@ -54,27 +65,32 @@ function bytesToHex(s: string, max = 48): string {
 export interface LastResponseMeta {
   path: string;
   bodyBytes: number;
+  contentType: string;
+  /** Content-Encoding header from the server (gzip / deflate / br / 'none') —
+   *  fetch auto-decompresses, so bodyBytes is the *decompressed* size. */
+  compression: string;
   decryption: 'none' | 'body-cfb' | 'failed';
   rawPreview: string;
   decryptedPreview: string;
 }
 let _lastResponseMeta: LastResponseMeta = {
-  path: '', bodyBytes: 0, decryption: 'none', rawPreview: '', decryptedPreview: '',
+  path: '', bodyBytes: 0, contentType: '', compression: 'none', decryption: 'none',
+  rawPreview: '', decryptedPreview: '',
 };
 export function getLastResponseMeta(): LastResponseMeta { return { ..._lastResponseMeta }; }
 
-function buildHeaders(token = ''): Record<string, string> {
+/** Platform identity we impersonate. Most endpoints just want a valid header set;
+ *  a few (notably GET /app/version) key their response off this. */
+export type Platform = 'Android' | 'iOS';
+
+function buildHeaders(token = '', platform: Platform = 'Android'): Record<string, string> {
   const ts = Date.now().toString();
   const nonce = crypto.randomUUID?.()?.replace(/-/g, '') || md5(ts + Math.random());
   const sign = md5(`${SIGN_SECRET}${ts}${nonce}`);
 
-  return {
+  const common = {
     'Content-Type': 'application/x-www-form-urlencoded',
-    'DeviceId': 'Samsung/Samsung/SM-S931B/s24/14/34',
     'AppTimezone': Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-    'DevicePlatform': 'Android',
-    'DeviceModel': 'SM-S931B',
-    'SystemVersion': '34',
     'AppVersion': '1.12.4',
     'AppLocale': navigator.language?.replace('-', '_') || 'en_US',
     'AppTimestamp': ts,
@@ -83,6 +99,24 @@ function buildHeaders(token = ''): Record<string, string> {
     'Channel': 'UMENG_CHANNEL',
     'Token': token,
     'AppName': 'Go2',
+  };
+
+  if (platform === 'iOS') {
+    return {
+      ...common,
+      'DeviceId': 'Apple/iPhone/iPhone15,3/17.6.1/34',
+      'DevicePlatform': 'iOS',
+      'DeviceModel': 'iPhone15,3',
+      'SystemVersion': '17.6.1',
+    };
+  }
+
+  return {
+    ...common,
+    'DeviceId': 'Samsung/Samsung/SM-S931B/s24/14/34',
+    'DevicePlatform': 'Android',
+    'DeviceModel': 'SM-S931B',
+    'SystemVersion': '34',
   };
 }
 
@@ -164,6 +198,7 @@ class UnitreeCloudError extends Error {
 export class UnitreeCloudAPI {
   private token = '';
   private refreshToken = '';
+  private _lastRefreshedAt: number | null = null;
   user: UserInfo | null = null;
 
   get isLoggedIn(): boolean {
@@ -174,8 +209,14 @@ export class UnitreeCloudAPI {
     return this.token;
   }
 
+  /** Unix seconds when the access token was last minted (login or refresh). */
+  get lastRefreshedAt(): number | null {
+    return this._lastRefreshedAt;
+  }
+
   setAccessToken(token: string): void {
     this.token = token;
+    this._lastRefreshedAt = Math.floor(Date.now() / 1000);
   }
 
   // ─── Session persistence ─────────────────────────────────────────
@@ -186,6 +227,7 @@ export class UnitreeCloudAPI {
         token: this.token,
         refreshToken: this.refreshToken,
         user: this.user,
+        lastRefreshedAt: this._lastRefreshedAt,
       }));
     } catch { /* ignore */ }
   }
@@ -198,6 +240,7 @@ export class UnitreeCloudAPI {
       this.token = data.token || '';
       this.refreshToken = data.refreshToken || '';
       this.user = data.user || null;
+      this._lastRefreshedAt = typeof data.lastRefreshedAt === 'number' ? data.lastRefreshedAt : null;
       return !!this.token;
     } catch {
       return false;
@@ -208,12 +251,28 @@ export class UnitreeCloudAPI {
     this.token = '';
     this.refreshToken = '';
     this.user = null;
+    this._lastRefreshedAt = null;
     localStorage.removeItem('unitree_session');
+  }
+
+  /** Proactively refresh the access token if it's near/past expiry.
+   *  Returns false (and clears the session) if the token can't be renewed. */
+  async ensureFreshToken(bufferSeconds = 600): Promise<boolean> {
+    if (!this.token) return false;
+    const payload = decodeJwtPayload(this.token);
+    const exp = payload && typeof payload.exp === 'number' ? (payload.exp as number) : null;
+    if (exp === null) return true; // unknown exp — rely on 1001 handling mid-flight
+    const now = Math.floor(Date.now() / 1000);
+    if (exp - now > bufferSeconds) return true;
+    if (!this.refreshToken) { this.clearSession(); return false; }
+    const ok = await this.doRefreshToken();
+    if (!ok) this.clearSession();
+    return ok;
   }
 
   // ─── HTTP helpers ────────────────────────────────────────────────
 
-  private async request<T>(method: string, path: string, params?: Record<string, string>): Promise<ApiResponse<T>> {
+  private async request<T>(method: string, path: string, params?: Record<string, string>, platform: Platform = 'Android'): Promise<ApiResponse<T>> {
     const url = method === 'GET' && params
       ? `${API_BASE}/${path}?${new URLSearchParams(params)}`
       : `${API_BASE}/${path}`;
@@ -223,29 +282,30 @@ export class UnitreeCloudAPI {
 
     const resp = await fetch(url, {
       method,
-      headers: buildHeaders(this.token),
+      headers: buildHeaders(this.token, platform),
       body: method === 'POST' && params ? new URLSearchParams(params) : undefined,
       signal: AbortSignal.timeout(15000),
     });
 
     if (!resp.ok) { console.groupEnd(); throw new Error(`HTTP ${resp.status}`); }
 
-    // Recent Unitree app versions encrypt some response bodies with AES-CFB.
-    // Handle three shapes:
-    //   1) Plain JSON                          -> parse directly
-    //   2) Raw ciphertext body                  -> decrypt entire body
-    //   3) JSON envelope with encrypted `data` -> decrypt just the string field
     // Upstream returns either plain JSON (most endpoints) or raw AES-128-CFB
     // ciphertext (e.g. the /announcement endpoint since app v1.12). Compressed
-    // responses (gzip/deflate) are auto-decompressed by fetch because the Vite
-    // proxy now forwards Content-Encoding.
+    // responses (gzip/deflate/br) are auto-decompressed by fetch because the
+    // Vite proxy forwards Content-Encoding; we still capture the original
+    // encoding into the meta for display.
+    const contentType = resp.headers.get('content-type') || '';
+    const contentEncoding = resp.headers.get('content-encoding') || 'none';
+
     const raw = await resp.arrayBuffer();
     const rawBytes = new Uint8Array(raw);
     const asText = new TextDecoder('utf-8', { fatal: false }).decode(raw);
     const hexPreview = bytesToHex(String.fromCharCode(...rawBytes.slice(0, 32)), 32);
 
     _lastResponseMeta = {
-      path, bodyBytes: rawBytes.length, decryption: 'none',
+      path, bodyBytes: rawBytes.length,
+      contentType, compression: contentEncoding,
+      decryption: 'none',
       rawPreview: hexPreview,
       decryptedPreview: '',
     };
@@ -280,7 +340,7 @@ export class UnitreeCloudAPI {
     // Auto-refresh on token expiry
     if (result.code === 1001 && this.refreshToken) {
       const refreshed = await this.doRefreshToken();
-      if (refreshed) return this.request(method, path, params);
+      if (refreshed) return this.request(method, path, params, platform);
     }
 
     return result;
@@ -306,6 +366,7 @@ export class UnitreeCloudAPI {
       if (resp.code === 100 && resp.data) {
         this.token = resp.data.accessToken;
         this.refreshToken = resp.data.refreshToken || this.refreshToken;
+        this._lastRefreshedAt = Math.floor(Date.now() / 1000);
         this.saveSession();
         return true;
       }
@@ -324,6 +385,7 @@ export class UnitreeCloudAPI {
     this.token = resp.data!.accessToken;
     this.refreshToken = resp.data!.refreshToken || '';
     this.user = resp.data!.user || null;
+    this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
     return this.user!;
   }
@@ -340,6 +402,7 @@ export class UnitreeCloudAPI {
     this.token = resp.data!.accessToken;
     this.refreshToken = resp.data!.refreshToken || '';
     this.user = resp.data!.user || null;
+    this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
   }
 
@@ -431,9 +494,13 @@ export class UnitreeCloudAPI {
 
   // ─── App info ────────────────────────────────────────────────────
 
-  async getAppVersion(): Promise<AppVersionInfo | null> {
+  async getAppVersion(platform: Platform = 'Android'): Promise<AppVersionInfo | null> {
     try {
-      const raw = await this.get<string>('app/version', { platform: 'Android' });
+      // Send matching DevicePlatform header + query param so the server returns
+      // the version info for the requested store (APK vs App Store).
+      const resp = await this.request<string>('GET', 'app/version', { platform }, platform);
+      if (resp.code !== 100) return null;
+      const raw = resp.data;
       if (typeof raw === 'string') return JSON.parse(raw);
       return raw as unknown as AppVersionInfo;
     } catch { return null; }
@@ -481,8 +548,8 @@ export class UnitreeCloudAPI {
 
   // ─── Debug / Raw ─────────────────────────────────────────────────
 
-  async rawRequest(method: string, path: string, params?: Record<string, string>): Promise<ApiResponse> {
-    return await this.request(method, path, params);
+  async rawRequest(method: string, path: string, params?: Record<string, string>, platform: Platform = 'Android'): Promise<ApiResponse> {
+    return await this.request(method, path, params, platform);
   }
 }
 

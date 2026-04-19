@@ -699,28 +699,73 @@ export class AccountPage {
     const decBanner = document.createElement('div');
     decBanner.style.cssText = 'font-size:11px;padding:6px 10px;margin-top:10px;border-radius:6px;display:none;font-family:monospace;';
 
-    // Response area — right below Send button
+    // Response area — right below Send button, with a copy button overlay
+    const resultWrap = document.createElement('div');
+    resultWrap.style.cssText = 'position:relative;margin-top:8px;display:none;';
     const resultEl = document.createElement('pre');
-    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;margin-top:8px;padding:10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;display:none;';
+    resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;padding:10px 10px 10px 10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;margin:0;user-select:text;-webkit-user-select:text;';
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copy';
+    copyBtn.style.cssText = 'position:absolute;top:6px;right:6px;padding:3px 10px;font-size:11px;border-radius:4px;border:1px solid #2a2d35;background:rgba(26,29,35,0.9);color:#aaa;cursor:pointer;font-family:inherit;';
+    copyBtn.addEventListener('mouseenter', () => { copyBtn.style.background = 'rgba(79,195,247,0.15)'; copyBtn.style.color = '#4fc3f7'; copyBtn.style.borderColor = 'rgba(79,195,247,0.4)'; });
+    copyBtn.addEventListener('mouseleave', () => { copyBtn.style.background = 'rgba(26,29,35,0.9)'; copyBtn.style.color = '#aaa'; copyBtn.style.borderColor = '#2a2d35'; });
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(resultEl.textContent || '');
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = 'Copied ✓';
+        setTimeout(() => { copyBtn.textContent = orig; }, 1200);
+      } catch {
+        // Fallback: select the text so the user can Ctrl+C
+        const range = document.createRange();
+        range.selectNodeContents(resultEl);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    });
+    resultWrap.appendChild(resultEl);
+    resultWrap.appendChild(copyBtn);
 
     const renderDecBanner = () => {
       const m = getLastResponseMeta();
-      let label = '', color = '', bg = '', border = '';
-      if (m.decryption === 'none') {
-        label = `🔓 Plain JSON (${m.bodyBytes} bytes)`;
-        color = '#888'; bg = 'rgba(100,100,100,0.08)'; border = '1px solid #2a2d35';
-      } else if (m.decryption === 'body-cfb') {
-        label = `🔐 AES-CFB body decrypted (${m.bodyBytes} bytes ciphertext) · first bytes: ${m.rawPreview}`;
+      const parts: string[] = [];
+
+      // Compression pill (shows what the wire bytes were before fetch decoded them)
+      if (m.compression && m.compression !== 'none' && m.compression !== 'identity') {
+        parts.push(`📦 ${m.compression} (server compressed, fetch auto-decoded)`);
+      } else {
+        parts.push(`📦 uncompressed`);
+      }
+
+      // Encryption pill
+      if (m.decryption === 'body-cfb') {
+        parts.push(`🔐 AES-CFB decrypted · first bytes: ${m.rawPreview}`);
+      } else if (m.decryption === 'failed') {
+        parts.push(`⚠ decrypt failed · ${m.rawPreview}`);
+      } else {
+        parts.push(`🔓 plain JSON`);
+      }
+
+      // Size + content-type
+      parts.push(`${m.bodyBytes} B` + (m.contentType ? ` · ${m.contentType.split(';')[0]}` : ''));
+
+      // Colour/border derived from the dominant condition
+      let color = '#888', bg = 'rgba(100,100,100,0.08)', border = '1px solid #2a2d35';
+      if (m.decryption === 'body-cfb') {
         color = '#4fc3f7'; bg = 'rgba(79,195,247,0.08)'; border = '1px solid rgba(79,195,247,0.35)';
       } else if (m.decryption === 'failed') {
-        label = `⚠ Decryption failed — raw first bytes: ${m.rawPreview}`;
         color = '#ef9a9a'; bg = 'rgba(239,83,80,0.08)'; border = '1px solid rgba(239,83,80,0.35)';
+      } else if (m.compression !== 'none' && m.compression !== 'identity') {
+        color = '#a5d6a7'; bg = 'rgba(165,214,167,0.08)'; border = '1px solid rgba(165,214,167,0.35)';
       }
+
       decBanner.style.display = '';
       decBanner.style.color = color;
       decBanner.style.background = bg;
       decBanner.style.border = border;
-      decBanner.textContent = label;
+      decBanner.textContent = parts.join('  ·  ');
     };
 
     const sendBtn = this.button('Send Request', async () => {
@@ -729,7 +774,7 @@ export class AccountPage {
         const t = line.trim();
         if (t && t.includes('=')) { const [k, ...v] = t.split('='); params[k.trim()] = v.join('=').trim(); }
       }
-      resultEl.style.display = '';
+      resultWrap.style.display = '';
       resultEl.textContent = 'Loading...';
       resultEl.style.color = '#888';
       decBanner.style.display = 'none';
@@ -742,7 +787,7 @@ export class AccountPage {
     });
     form.appendChild(sendBtn);
     form.appendChild(decBanner);
-    form.appendChild(resultEl);
+    form.appendChild(resultWrap);
     s.appendChild(form);
     this.content.appendChild(s);
 

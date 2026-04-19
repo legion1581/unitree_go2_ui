@@ -535,7 +535,14 @@ def _snapshot_status() -> dict:
 
 
 def _list_adapters_sync() -> dict:
-    """Synchronous helper used by both the HTTP endpoint and the WS monitor."""
+    """Parse `hciconfig -a`. Each adapter block looks like:
+
+        hci1:  Type: Primary  Bus: USB
+            BD Address: 68:8F:C9:40:2E:18  ACL MTU: 1021:9  SCO MTU: 255:4
+            UP RUNNING            <-- status line (may be absent -> adapter is DOWN)
+            ...
+            Manufacturer: not assigned (2875)
+    """
     import subprocess
     adapters = []
     try:
@@ -548,7 +555,9 @@ def _list_adapters_sync() -> dict:
                 adapters.append(current)
             elif current and "BD Address:" in line:
                 current["address"] = line.split("BD Address:")[1].split()[0].strip()
-                current["up"] = "UP" in line and "RUNNING" in line
+            elif current and "UP" in line.split() and "RUNNING" in line.split():
+                # Status line appears on its own, e.g. "\tUP RUNNING PSCAN"
+                current["up"] = True
             elif current and "Manufacturer:" in line:
                 current["type"] = line.split("Manufacturer:")[1].strip()
     except Exception:

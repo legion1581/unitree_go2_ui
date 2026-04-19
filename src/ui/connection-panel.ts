@@ -73,8 +73,13 @@ export class ConnectionPanel {
         </div>
       </form>
       <div class="form-group" id="token-group">
-        <label for="token-input">Access Token</label>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label for="token-input" style="margin:0;">Access Token</label>
+          <button type="button" id="token-info-btn" title="Show token details"
+            style="background:none;border:1px solid var(--border-color,#555);color:inherit;width:18px;height:18px;border-radius:50%;cursor:pointer;padding:0;font-size:11px;line-height:1;display:inline-flex;align-items:center;justify-content:center;opacity:0.7;">i</button>
+        </div>
         <input type="text" id="token-input" placeholder="Paste access token" />
+        <div id="token-info-panel" style="display:none;margin-top:6px;padding:8px 10px;border:1px solid var(--border-color,#444);border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;background:rgba(255,255,255,0.03);"></div>
       </div>
       <button id="login-btn" class="btn-connect" style="display:none">Login</button>
       <div class="form-group" id="robot-picker-group" style="display:none">
@@ -127,13 +132,36 @@ export class ConnectionPanel {
       this.selectedSn = this.robotSelect.value;
     });
 
-    this.modeSelect.value = 'STA-L';
-    this.updateVisibility();
+    const infoBtn = this.container.querySelector('#token-info-btn') as HTMLButtonElement;
+    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement;
+    infoBtn.addEventListener('click', () => {
+      const showing = infoPanel.style.display !== 'none';
+      if (showing) { infoPanel.style.display = 'none'; return; }
+      this.renderTokenInfo();
+      infoPanel.style.display = '';
+    });
+    this.tokenInput.addEventListener('input', () => {
+      if (infoPanel.style.display !== 'none') this.renderTokenInfo();
+    });
 
-    // If already logged in from a previous session, pre-load robots
+    this.modeSelect.value = 'STA-L';
+
+    // If a previous session saved a token, pre-fill the Token field and default
+    // to the Token tab in Remote mode — user just hits Login.
     if (cloudApi.loadSession() && cloudApi.isLoggedIn) {
-      // Don't auto-show yet — wait until user selects Remote mode
+      this.tokenInput.value = cloudApi.accessToken;
+      this.useToken = true;
+      void this.ensureFreshAndUpdate();
     }
+
+    this.updateVisibility();
+  }
+
+  private async ensureFreshAndUpdate(): Promise<void> {
+    const ok = await cloudApi.ensureFreshToken();
+    this.tokenInput.value = ok ? cloudApi.accessToken : '';
+    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement | null;
+    if (infoPanel && infoPanel.style.display !== 'none') this.renderTokenInfo();
   }
 
   private updateVisibility(): void {
@@ -197,6 +225,51 @@ export class ConnectionPanel {
         this.ipInput.placeholder = 'Robot IP on local network';
       }
     }
+  }
+
+  private decodeJwt(tok: string): { header: Record<string, unknown>; payload: Record<string, unknown> } | null {
+    try {
+      const [h, p] = tok.split('.');
+      if (!h || !p) return null;
+      const dec = (s: string): Record<string, unknown> => {
+        s = s.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        return JSON.parse(atob(s));
+      };
+      return { header: dec(h), payload: dec(p) };
+    } catch { return null; }
+  }
+
+  private renderTokenInfo(): void {
+    const panel = this.container.querySelector('#token-info-panel') as HTMLElement;
+    const tok = this.tokenInput.value.trim();
+    if (!tok) { panel.innerHTML = '<em style="opacity:0.6">No token</em>'; return; }
+    const parts = this.decodeJwt(tok);
+    if (!parts) { panel.innerHTML = '<em style="color:#e84855">Not a valid JWT</em>'; return; }
+    const p = parts.payload as { uid?: number; sub?: string; iss?: string; type?: string; ct?: number; exp?: number };
+    const h = parts.header as { alg?: string; typ?: string };
+    const fmt = (ts?: number) => ts ? new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—';
+    const now = Math.floor(Date.now() / 1000);
+    const remaining = p.exp ? p.exp - now : 0;
+    const days = Math.floor(Math.abs(remaining) / 86400);
+    const hours = Math.floor((Math.abs(remaining) % 86400) / 3600);
+    let status: string;
+    if (!p.exp) status = '—';
+    else if (remaining <= 0) status = `<span style="color:#e84855">expired ${days}d ${hours}h ago</span>`;
+    else if (remaining < 86400) status = `<span style="color:#f5a623">${hours}h left</span>`;
+    else status = `<span style="color:#6cc04a">${days}d ${hours}h left</span>`;
+    // Only surface lastRefreshedAt when the pasted token matches the stored
+    // session — otherwise the value is for an unrelated token.
+    const refreshedAt = (tok === cloudApi.accessToken) ? cloudApi.lastRefreshedAt : null;
+    const row = (k: string, v: string) => `<div><span style="opacity:0.6">${k}:</span> ${v}</div>`;
+    panel.innerHTML =
+      row('UID', String(p.uid ?? '—')) +
+      row('Type', `${p.type ?? '—'} · sub=${p.sub ?? '—'}`) +
+      row('Issuer', String(p.iss ?? '—')) +
+      row('Issued', fmt(p.ct)) +
+      row('Expires', `${fmt(p.exp)} · ${status}`) +
+      row('Last refreshed', refreshedAt ? fmt(refreshedAt) : '—') +
+      row('Algorithm', `${h.alg ?? '—'} / ${h.typ ?? '—'}`);
   }
 
   private async handleRemoteLogin(): Promise<void> {
