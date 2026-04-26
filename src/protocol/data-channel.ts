@@ -185,6 +185,93 @@ export class DataChannelHandler {
     }, 30000);
   }
 
+  /**
+   * Push a static file to the robot in chunks (mirrors the APK's uploadFile).
+   * `base64Data` is the file payload base64-encoded. `filePath` is the robot-side
+   * slot name (e.g. "map.pcd"). Resolves once the robot acks every chunk; rejects
+   * on chunk failure or per-chunk timeout.
+   */
+  async pushFile(
+    filePath: string,
+    base64Data: string,
+    business: string = 'uslam_final_pcd',
+    chunkSize: number = 30 * 1024,
+    onProgress?: (frac: number) => void,
+  ): Promise<void> {
+    const chunks: string[] = [];
+    for (let i = 0; i < base64Data.length; i += chunkSize) {
+      chunks.push(base64Data.slice(i, i + chunkSize));
+    }
+    const total = chunks.length;
+    if (total === 0) throw new Error(`pushFile: empty payload for ${filePath}`);
+
+    const prevHandler = this.onTopicData;
+    let pendingUuid = '';
+    let pendingResolve: ((status: string | null) => void) | null = null;
+
+    this.onTopicData = (msg) => {
+      const m = msg as { type?: string; info?: { req_uuid?: string; req_type?: string; file_status?: string } };
+      if (m.type === DATA_CHANNEL_TYPE.RTC_INNER_REQ &&
+          m.info?.req_type === 'push_static_file' &&
+          m.info?.req_uuid === pendingUuid &&
+          pendingResolve) {
+        const r = pendingResolve;
+        pendingResolve = null;
+        r(m.info.file_status ?? null);
+        return;
+      }
+      if (prevHandler) prevHandler(msg);
+    };
+
+    try {
+      for (let g = 0; g < total; g++) {
+        // Throttle: 500ms breather every 5 chunks (matches APK)
+        if (g > 0 && g % 5 === 0) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        const uuid = `upload_req_${Date.now() % 2 ** 31 + Math.floor(Math.random() * 1000)}_${g}`;
+        pendingUuid = uuid;
+
+        const ack = new Promise<string | null>((resolve) => {
+          pendingResolve = resolve;
+          setTimeout(() => {
+            if (pendingResolve === resolve) {
+              pendingResolve = null;
+              resolve(null);
+            }
+          }, 10000);
+        });
+
+        this.webrtc.send({
+          type: DATA_CHANNEL_TYPE.RTC_INNER_REQ,
+          topic: '',
+          data: {
+            req_type: 'push_static_file',
+            req_uuid: uuid,
+            related_bussiness: business,
+            file_md5: 'null',
+            file_path: filePath,
+            file_size_after_b64: base64Data.length,
+            file: {
+              chunk_index: g + 1,
+              total_chunk_num: total,
+              chunk_data: chunks[g],
+              chunk_data_size: chunks[g].length,
+            },
+          },
+        });
+
+        const status = await ack;
+        if (status !== 'ok') {
+          throw new Error(`pushFile: ${filePath} chunk ${g + 1}/${total} status=${status ?? 'timeout'}`);
+        }
+        onProgress?.((g + 1) / total);
+      }
+    } finally {
+      this.onTopicData = prevHandler;
+    }
+  }
+
   isValidated(): boolean {
     return this.validated;
   }

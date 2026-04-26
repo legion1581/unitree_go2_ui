@@ -1397,7 +1397,7 @@ body {
 }
 
 .mapping-sidebar {
-  width: 280px;
+  width: 380px;
   overflow-y: auto;
   background: #12141a;
   border-left: 1px solid #1f2229;
@@ -1547,6 +1547,67 @@ body {
   color: #888;
   scrollbar-width: thin;
   scrollbar-color: #2a2d35 transparent;
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+.mapping-log * {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.mapping-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.mapping-log-copy {
+  background: transparent;
+  border: 1px solid #2a2d35;
+  color: #6879e4;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.mapping-log-copy:hover {
+  background: rgba(104, 121, 228, 0.1);
+}
+
+.mapping-cmd-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mapping-cmd-label {
+  font-size: 11px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.mapping-cmd-select {
+  font-family: inherit;
+}
+
+.mapping-cmd-payload {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 36px;
+}
+
+.mapping-cmd-hint {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: #6879e4;
+  margin: 2px 0 6px;
+  word-break: break-all;
 }
 
 .mapping-log-line {

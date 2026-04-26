@@ -7,4 +7,14 @@ export default defineConfig({
     outDir: 'dist',
   },
   plugins: [robotProxyPlugin()],
+  server: {
+    watch: {
+      ignored: [
+        '**/reverse_engineer/**',
+        '**/_frontend_*/**',
+        '**/dist/**',
+        '**/node_modules/**',
+      ],
+    },
+  },
 });

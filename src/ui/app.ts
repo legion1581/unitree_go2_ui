@@ -283,6 +283,10 @@ export class App {
       (topic) => this.dataHandler?.subscribe(topic),
       (topic) => this.dataHandler?.unsubscribe(topic),
       (path, cb) => this.dataHandler?.requestFile(path, cb),
+      (path, b64, onProgress) =>
+        this.dataHandler
+          ? this.dataHandler.pushFile(path, b64, 'uslam_final_pcd', 30 * 1024, onProgress)
+          : Promise.reject(new Error('Data channel not ready')),
     );
   }
 

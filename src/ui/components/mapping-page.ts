@@ -1,8 +1,93 @@
 import { SlamScene, type ClickMode } from '../scene/slam-scene';
 import { RTC_TOPIC } from '../../protocol/topics';
 import SlamWorker from '../../workers/slam-worker?worker';
+import { putBundle, getBundle, deleteBundle, bytesToBase64, base64ToBytes, type MapBundle } from '../../storage/map-pcd-store';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
+
+// Catalog of every endpoint discovered in the uslam_server binary + APK.
+// Each item: command string the user edits + DDS topic it gets published on.
+const USLAM = 'rt/uslam/client_command';
+const COMMAND_TEMPLATES: Array<{ label: string; items: Array<{ cmd: string; topic: string }> }> = [
+  { label: 'Mapping', items: [
+    { cmd: 'mapping/start', topic: USLAM },
+    { cmd: 'mapping/stop', topic: USLAM },
+    { cmd: 'mapping/cancel', topic: USLAM },
+    { cmd: 'mapping/get_status', topic: USLAM },
+    { cmd: 'mapping/run_mapping_process', topic: USLAM },
+    { cmd: 'mapping/get_cloud_map', topic: USLAM },
+    { cmd: 'mapping/set_map_pose/{x}/{y}/{z}/{qx}/{qy}/{qz}/{qw}', topic: USLAM },
+  ]},
+  { label: 'Localization', items: [
+    { cmd: 'localization/start', topic: USLAM },
+    { cmd: 'localization/stop', topic: USLAM },
+    { cmd: 'localization/get_status', topic: USLAM },
+    { cmd: 'localization/set_initial_pose/{x}/{y}/{yaw}', topic: USLAM },
+    { cmd: 'localization/set_initial_pose_type/{type}', topic: USLAM },
+  ]},
+  { label: 'Navigation', items: [
+    { cmd: 'navigation/start', topic: USLAM },
+    { cmd: 'navigation/stop', topic: USLAM },
+    { cmd: 'navigation/get_status', topic: USLAM },
+    { cmd: 'navigation/set_goal_pose/{x}/{y}/{yaw}', topic: USLAM },
+  ]},
+  { label: 'Patrol', items: [
+    { cmd: 'patrol/start', topic: USLAM },
+    { cmd: 'patrol/stop', topic: USLAM },
+    { cmd: 'patrol/pause', topic: USLAM },
+    { cmd: 'patrol/go', topic: USLAM },
+    { cmd: 'patrol/get_status', topic: USLAM },
+    { cmd: 'patrol/get_patrol_points', topic: USLAM },
+    { cmd: 'patrol/add_patrol_point/{x}/{y}/{yaw}', topic: USLAM },
+    { cmd: 'patrol/clear_all_patrol_points', topic: USLAM },
+    { cmd: 'patrol/clear_all_patrol_areas', topic: USLAM },
+    { cmd: 'patrol/load_patrol_points_from_file/{path}', topic: USLAM },
+    { cmd: 'patrol/set_patrol_number_limit/{n}', topic: USLAM },
+    { cmd: 'patrol/set_patrol_time_limit/{seconds}', topic: USLAM },
+    { cmd: 'patrol/set_total_time_limit/{seconds}', topic: USLAM },
+    { cmd: 'patrol/set_charge_time_limit/{seconds}', topic: USLAM },
+    { cmd: 'patrol/set_bms_soc_limit/{min}/{max}', topic: USLAM },
+    { cmd: 'patrol/clear_user_config', topic: USLAM },
+  ]},
+  { label: 'Autocharge', items: [
+    { cmd: 'autocharge/start', topic: USLAM },
+    { cmd: 'autocharge/stop', topic: USLAM },
+    { cmd: 'autocharge/get_status', topic: USLAM },
+    { cmd: 'autocharge/set_plate_distance/{meters}', topic: USLAM },
+    { cmd: 'autocharge/go_back_charge_and_stop_patrol', topic: USLAM },
+    { cmd: 'autocharge/go_to_charge_and_stop_patrol', topic: USLAM },
+  ]},
+  { label: 'Frontend (LiDAR pipeline)', items: [
+    { cmd: 'frontend/start', topic: USLAM },
+    { cmd: 'frontend/stop', topic: USLAM },
+    { cmd: 'frontend/restart', topic: USLAM },
+    { cmd: 'frontend/get_status', topic: USLAM },
+  ]},
+  { label: 'Control', items: [
+    { cmd: 'control/start', topic: USLAM },
+    { cmd: 'control/stop', topic: USLAM },
+    { cmd: 'control/get_status', topic: USLAM },
+    { cmd: 'control/stand_up', topic: USLAM },
+    { cmd: 'control/stand_down', topic: USLAM },
+    { cmd: 'control/recovery_stand', topic: USLAM },
+    { cmd: 'control/move_velocity/{vx}/{vy}/{vyaw}', topic: USLAM },
+    { cmd: 'control/stop_move', topic: USLAM },
+    { cmd: 'control/recv_cmd/{cmd}', topic: USLAM },
+  ]},
+  { label: 'Common / Map', items: [
+    { cmd: 'common/get_map_id', topic: USLAM },
+    { cmd: 'common/set_map_id/{id}', topic: USLAM },
+    { cmd: 'common/get_map_file', topic: USLAM },
+    { cmd: 'common/enable_log_to_file', topic: USLAM },
+    { cmd: 'common/disable_log_to_file', topic: USLAM },
+    { cmd: 'common/enable_joystick_control', topic: USLAM },
+    { cmd: 'common/disable_joystick_control', topic: USLAM },
+  ]},
+  { label: 'LiDAR hardware', items: [
+    { cmd: 'ON', topic: 'rt/utlidar/switch' },
+    { cmd: 'OFF', topic: 'rt/utlidar/switch' },
+  ]},
+];
 
 // Topics subscribed on entry (mapping + server log)
 const BASE_USLAM_TOPICS = [
@@ -38,8 +123,16 @@ export class MappingPage {
   private slamWorker: Worker | null = null;
   private workerReady = false;
   private requestFile: ((path: string, cb: (data: string | null) => void) => void) | null = null;
+  private pushFile: ((path: string, b64: string, onProgress?: (frac: number) => void) => Promise<void>) | null = null;
   private savedMapsEl!: HTMLElement;
   private currentMapId = '';
+  // The robot's mapping/stop does NOT mint a fresh ID; map_id.txt only changes
+  // on common/set_map_id. So we mint client-side at "New Map" and push it to
+  // the robot via set_map_id after mapping/stop/success. This mirrors the APK's
+  // post-stop set_map_id call (the APK gets its ID from a native bridge instead).
+  private pendingNewMapId = '';
+  private pendingSaveAfterStop = false;
+  private pendingSaveTimer: number | null = null;
 
   // Flow gating state
   private mapLoaded = false;
@@ -77,12 +170,14 @@ export class MappingPage {
     onSubscribe: (topic: string) => void,
     onUnsubscribe: (topic: string) => void,
     onRequestFile?: (path: string, cb: (data: string | null) => void) => void,
+    onPushFile?: (path: string, b64: string, onProgress?: (frac: number) => void) => Promise<void>,
   ) {
     this.onBack = onBack;
     this.publish = onPublish;
     this.subscribe = onSubscribe;
     this.unsubscribe = onUnsubscribe;
     this.requestFile = onRequestFile ?? null;
+    this.pushFile = onPushFile ?? null;
 
     this.container = document.createElement('div');
     this.container.className = 'mapping-page';
@@ -188,6 +283,11 @@ export class MappingPage {
       row.appendChild(this.btn('New Map', 'mapping-btn-start', () => {
         this.slamScene?.clearAll();
         this.slamWorker?.postMessage('clear');
+        this.currentMapId = '';
+        this.pendingNewMapId = MappingPage.generateMapId();
+        this.pendingSaveAfterStop = false;
+        if (this.pendingSaveTimer !== null) { clearTimeout(this.pendingSaveTimer); this.pendingSaveTimer = null; }
+        this.addLog(`New map ID minted: ${this.pendingNewMapId}`);
         this.sendCmd('mapping/start');
         this.setState('mapping');
       }));
@@ -357,8 +457,97 @@ export class MappingPage {
     });
     sidebar.appendChild(this.navSection);
 
+    // ── Send Command (template picker + editable command line) ──
+    sidebar.appendChild(this.buildSection('Send Command', (body) => {
+      const tplLabel = document.createElement('label');
+      tplLabel.className = 'mapping-cmd-label';
+      tplLabel.textContent = 'Template';
+      body.appendChild(tplLabel);
+
+      const tplSelect = document.createElement('select');
+      tplSelect.className = 'mapping-input mapping-cmd-select';
+      // value encodes "<topic>|<command>" so we know which DDS topic to publish on
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '— pick a template —';
+      tplSelect.appendChild(placeholder);
+      for (const group of COMMAND_TEMPLATES) {
+        const og = document.createElement('optgroup');
+        og.label = group.label;
+        for (const tpl of group.items) {
+          const opt = document.createElement('option');
+          opt.value = `${tpl.topic}|${tpl.cmd}`;
+          opt.textContent = tpl.cmd;
+          og.appendChild(opt);
+        }
+        tplSelect.appendChild(og);
+      }
+      body.appendChild(tplSelect);
+
+      const cmdLabel = document.createElement('label');
+      cmdLabel.className = 'mapping-cmd-label';
+      cmdLabel.textContent = 'Command (editable)';
+      body.appendChild(cmdLabel);
+
+      const cmdInput = document.createElement('textarea');
+      cmdInput.className = 'mapping-input mapping-cmd-payload';
+      cmdInput.placeholder = 'mapping/start';
+      cmdInput.rows = 2;
+      body.appendChild(cmdInput);
+
+      let currentTopic: string = RTC_TOPIC.USLAM_CMD;
+      const topicHint = document.createElement('div');
+      topicHint.className = 'mapping-cmd-hint';
+      topicHint.textContent = `→ ${currentTopic}`;
+      body.appendChild(topicHint);
+
+      tplSelect.addEventListener('change', () => {
+        if (!tplSelect.value) return;
+        const [topic, cmd] = tplSelect.value.split('|');
+        currentTopic = topic;
+        cmdInput.value = cmd;
+        topicHint.textContent = `→ ${topic}`;
+      });
+
+      const sendBtn = this.btn('Send', 'mapping-btn-start', () => {
+        const raw = cmdInput.value;
+        if (!raw.trim()) { this.addLog('Send: command is empty'); return; }
+        let payload: unknown = raw;
+        const trimmed = raw.trim();
+        if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+          try { payload = JSON.parse(trimmed); }
+          catch (e) { this.addLog(`Send: invalid JSON — ${(e as Error).message}`); return; }
+        }
+        this.publish(currentTopic, payload);
+        const preview = typeof payload === 'string' ? payload : JSON.stringify(payload);
+        this.addLog(`> ${currentTopic}: ${preview.slice(0, 120)}`);
+        console.log('[slam] Manual send:', currentTopic, payload);
+      });
+      body.appendChild(sendBtn);
+    }));
+
     // ── Server Log ──
     sidebar.appendChild(this.buildSection('Server Log', (body) => {
+      const header = document.createElement('div');
+      header.className = 'mapping-log-header';
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'mapping-log-copy';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', async () => {
+        const text = this.logEl?.innerText ?? '';
+        try {
+          await navigator.clipboard.writeText(text);
+          const prev = copyBtn.textContent;
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => { copyBtn.textContent = prev; }, 1200);
+        } catch {
+          copyBtn.textContent = 'Failed';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
+        }
+      });
+      header.appendChild(copyBtn);
+      body.appendChild(header);
+
       this.logEl = document.createElement('div');
       this.logEl.className = 'mapping-log';
       body.appendChild(this.logEl);
@@ -796,6 +985,8 @@ export class MappingPage {
     if (msg.includes('mapping/stop/success')) {
       this.setState('idle');
       this.mapLoaded = true;
+      // Hide live white laser scan once mapping ends (APK behavior)
+      this.slamScene?.updateLaserCloud(new Float32Array(0));
       this.updateFlowGating();
     }
     if (msg.includes('mapping/start/success')) this.setState('mapping');
@@ -945,7 +1136,7 @@ export class MappingPage {
       this.addLog(`Patrol status: ${status === '1' ? 'active' : 'inactive'}`);
     }
 
-    // ── Map ID response ──
+    // ── Map ID response (manual "Get Current Map ID" only) ──
     if (msg.includes('common/get_map_id/map_id')) {
       const mapId = msg.slice(msg.lastIndexOf('/') + 1);
       if (mapId && mapId !== 'map_id') {
@@ -958,10 +1149,42 @@ export class MappingPage {
       }
     }
 
-    // After mapping stops, get the map ID so user can save it
-    if (msg.includes('mapping/stop/success')) {
-      this.sendCmd('common/get_map_id');
-      setTimeout(() => this.saveCurrentMap(), 1500);
+    // After mapping/stop, push our client-minted ID to the robot via set_map_id.
+    // The robot does not mint IDs, so without this each new session would
+    // collide with the previously-loaded map's ID.
+    if (msg.includes('mapping/stop/success') && this.pendingNewMapId) {
+      this.pendingSaveAfterStop = true;
+      this.sendCmd(`common/set_map_id/${this.pendingNewMapId}`);
+      if (this.pendingSaveTimer !== null) clearTimeout(this.pendingSaveTimer);
+      this.pendingSaveTimer = window.setTimeout(() => {
+        this.pendingSaveTimer = null;
+        if (this.pendingSaveAfterStop) {
+          this.pendingSaveAfterStop = false;
+          this.addLog('Save aborted: set_map_id never confirmed (5s timeout)');
+          this.showNotification('Failed to save: robot did not confirm map ID', '#FF3D3D');
+        }
+      }, 5000);
+    }
+
+    // set_map_id confirmation → trigger save with our minted ID.
+    // The robot's success message is exactly "common/set_map_id/success"; the
+    // word "success" never appears inside a base64 ID, so this match is safe.
+    if (this.pendingSaveAfterStop && msg.includes('common/set_map_id/success')) {
+      this.pendingSaveAfterStop = false;
+      if (this.pendingSaveTimer !== null) { clearTimeout(this.pendingSaveTimer); this.pendingSaveTimer = null; }
+      this.currentMapId = this.pendingNewMapId;
+      this.pendingNewMapId = '';
+      const input = this.container.querySelector('#map-id-input') as HTMLInputElement;
+      if (input) input.value = this.currentMapId;
+      this.saveCurrentMap();
+    }
+    if (this.pendingSaveAfterStop && msg.includes('common/set_map_id/failed')) {
+      this.pendingSaveAfterStop = false;
+      if (this.pendingSaveTimer !== null) { clearTimeout(this.pendingSaveTimer); this.pendingSaveTimer = null; }
+      this.addLog(`set_map_id failed for ${this.pendingNewMapId} — saving locally with this ID anyway`);
+      this.currentMapId = this.pendingNewMapId;
+      this.pendingNewMapId = '';
+      this.saveCurrentMap();
     }
   }
 
@@ -1102,6 +1325,18 @@ export class MappingPage {
 
   private static STORAGE_KEY = 'go2_slam_maps';
 
+  /**
+   * 16 random bytes as URL-safe base64. Format matches the IDs the robot
+   * already accepts (e.g. "ixPTqIMgyu_0HY5q9MxGFw") — 22 chars, A-Z a-z 0-9 - _.
+   */
+  private static generateMapId(): string {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
   private getSavedMaps(): Array<{ id: string; name: string; date: string }> {
     try {
       return JSON.parse(localStorage.getItem(MappingPage.STORAGE_KEY) || '[]');
@@ -1117,57 +1352,140 @@ export class MappingPage {
       this.addLog('No map ID available yet — waiting...');
       return;
     }
+    // Snapshot the id so a later get_map_id response can't shift it under us
+    const idAtPrompt = this.currentMapId;
+    const maps = this.getSavedMaps();
+    const collision = maps.find((m) => m.id === idAtPrompt);
     const now = new Date();
-    const defaultName = `Map ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    this.showInputModal('Save Map', 'Enter map name:', defaultName, (name) => {
+    const defaultName = collision
+      ? collision.name
+      : `Map ${now.toLocaleDateString()} ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const title = collision ? 'Update Existing Map' : 'Save Map';
+    const label = collision
+      ? `This ID already exists as "${collision.name}". Save will overwrite it. New name:`
+      : 'Enter map name:';
+    this.showInputModal(title, label, defaultName, (name) => {
       if (!name) return;
-      const maps = this.getSavedMaps();
-      const existing = maps.findIndex((m) => m.id === this.currentMapId);
-      const entry = { id: this.currentMapId, name, date: new Date().toISOString() };
+      const cur = this.getSavedMaps();
+      const existing = cur.findIndex((m) => m.id === idAtPrompt);
+      const entry = { id: idAtPrompt, name, date: new Date().toISOString() };
       if (existing >= 0) {
-        maps[existing] = entry;
+        cur[existing] = entry;
       } else {
-        maps.push(entry);
+        cur.push(entry);
       }
-      this.saveMapsToStorage(maps);
+      this.saveMapsToStorage(cur);
       this.renderSavedMaps();
-      this.addLog(`Map saved: "${name}" (${this.currentMapId})`);
+      this.addLog(`Map saved: "${name}" (${idAtPrompt})`);
+      // Cache the full file set (.pcd, .pgm, .txt). The robot has one slot,
+      // so we need the full set to re-upload via push_static_file later.
+      void this.cacheBundleFromRobot(idAtPrompt);
     });
   }
 
-  private loadMap(mapId: string): void {
+  private fetchRobotFile(filePath: string): Promise<ArrayBuffer | null> {
+    return new Promise((resolve) => {
+      if (!this.requestFile) { resolve(null); return; }
+      this.requestFile(filePath, (b64) => {
+        if (!b64) { resolve(null); return; }
+        try { resolve(base64ToBytes(b64)); }
+        catch { resolve(null); }
+      });
+    });
+  }
+
+  private async cacheBundleFromRobot(mapId: string): Promise<void> {
+    if (!this.requestFile) {
+      this.addLog('Cannot cache map: requestFile not available');
+      return;
+    }
+    this.addLog('Caching map files locally...');
+    const [pcd, pgm, txt] = await Promise.all([
+      this.fetchRobotFile('map.pcd'),
+      this.fetchRobotFile('map.pgm'),
+      this.fetchRobotFile('map.txt'),
+    ]);
+    if (!pcd) {
+      this.addLog('Cache failed: map.pcd not received from robot');
+      return;
+    }
+    const bundle: MapBundle = { pcd };
+    if (pgm) bundle.pgm = pgm;
+    if (txt) bundle.txt = txt;
+    try {
+      await putBundle(mapId, bundle);
+      const summary = `pcd=${(pcd.byteLength / 1024).toFixed(1)}KB`
+        + (pgm ? ` pgm=${(pgm.byteLength / 1024).toFixed(1)}KB` : ' pgm=missing')
+        + (txt ? ` txt=${txt.byteLength}B` : ' txt=missing');
+      this.addLog(`Map cached locally (${summary})`);
+      this.renderSavedMaps();
+    } catch (err) {
+      this.addLog(`Cache failed: ${err}`);
+    }
+  }
+
+  private async loadMap(mapId: string): Promise<void> {
     this.addLog(`Loading map ${mapId}...`);
-    // Clear all existing visualization before loading new map
     this.slamScene?.clearAll();
     this.slamWorker?.postMessage('clear');
     this.patrolPoints = [];
     this.patrolCount = 0;
-    // Map ID is already base64 from the robot — send as-is
-    this.sendCmd(`common/set_map_id/${mapId}`);
     this.currentMapId = mapId;
 
-    // Fetch PCD file for preview (APK uses "map.pcd" with related_bussiness context)
-    if (this.requestFile) {
-      this.addLog('Requesting PCD file...');
-      this.requestFile('map.pcd', (data) => {
-        if (data) {
-          this.addLog(`PCD received (${(data.length * 0.75 / 1024).toFixed(1)} KB)`);
-          try {
-            // Convert base64 to ArrayBuffer
-            const binary = atob(data);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            this.slamScene?.clearLoadedPcd();
-            this.slamScene?.loadPCD(bytes.buffer);
-            this.addLog('Map loaded in viewer');
-          } catch (err) {
-            this.addLog(`Failed to load PCD: ${err}`);
-            console.error('[slam] PCD error:', err);
-          }
-        } else {
-          this.addLog('Failed to fetch PCD file (timeout or not found)');
-        }
+    let bundle: MapBundle | null;
+    try { bundle = await getBundle(mapId); }
+    catch (err) { this.addLog(`Cache lookup failed: ${err}`); return; }
+
+    // Render the PCD immediately from cache for fast feedback.
+    if (bundle?.pcd) {
+      this.slamScene?.clearLoadedPcd();
+      this.slamScene?.loadPCD(bundle.pcd);
+      this.addLog(`Viewer: rendered cached PCD (${(bundle.pcd.byteLength / 1024).toFixed(1)} KB)`);
+    }
+
+    // Push the full file set to the robot's single slot, then activate it.
+    if (bundle?.pcd && this.pushFile) {
+      try {
+        await this.uploadBundleToRobot(bundle);
+        this.sendCmd(`common/set_map_id/${mapId}`);
+        this.addLog(`Map ${mapId} activated on robot`);
+      } catch (err) {
+        this.addLog(`Upload failed: ${err}. Localization on this map will not work.`);
+      }
+      return;
+    }
+
+    // No cached bundle: fall back to whatever's on the robot right now.
+    if (!bundle?.pcd) {
+      this.addLog('No local cache; falling back to robot');
+      this.sendCmd(`common/set_map_id/${mapId}`);
+      const pcd = await this.fetchRobotFile('map.pcd');
+      if (pcd) {
+        this.slamScene?.clearLoadedPcd();
+        this.slamScene?.loadPCD(pcd);
+        this.addLog(`Viewer: PCD from robot (${(pcd.byteLength / 1024).toFixed(1)} KB)`);
+        // Backfill the cache for next time
+        void this.cacheBundleFromRobot(mapId);
+      } else {
+        this.addLog('Failed to fetch PCD from robot');
+      }
+    }
+  }
+
+  private async uploadBundleToRobot(bundle: MapBundle): Promise<void> {
+    if (!this.pushFile) throw new Error('pushFile not available');
+    const tasks: Array<[string, ArrayBuffer]> = [['map.pcd', bundle.pcd]];
+    if (bundle.pgm) tasks.push(['map.pgm', bundle.pgm]);
+    if (bundle.txt) tasks.push(['map.txt', bundle.txt]);
+    for (const [name, buf] of tasks) {
+      const b64 = bytesToBase64(buf);
+      this.addLog(`Uploading ${name} (${(buf.byteLength / 1024).toFixed(1)} KB)...`);
+      await this.pushFile(name, b64, (frac) => {
+        // Coarse progress in the log, every ~25%
+        const pct = Math.round(frac * 100);
+        if (pct % 25 === 0) this.addLog(`  ${name}: ${pct}%`);
       });
+      this.addLog(`  ${name}: done`);
     }
   }
 
@@ -1190,6 +1508,7 @@ export class MappingPage {
     this.showConfirmModal(`Delete "${map.name}"?`, () => {
       this.saveMapsToStorage(maps.filter((m) => m.id !== mapId));
       this.renderSavedMaps();
+      deleteBundle(mapId).catch(() => { /* non-fatal */ });
       this.addLog(`Map "${map.name}" removed`);
     });
   }
@@ -1237,7 +1556,7 @@ export class MappingPage {
       const loadBtn = document.createElement('button');
       loadBtn.className = 'mapping-btn mapping-btn-sm';
       loadBtn.textContent = 'Load';
-      loadBtn.addEventListener('click', () => this.loadMap(map.id));
+      loadBtn.addEventListener('click', () => { void this.loadMap(map.id); });
       actions.appendChild(loadBtn);
 
       const renameBtn = document.createElement('button');
