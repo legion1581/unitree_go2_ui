@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { PCDLoader } from 'three/examples/jsm/loaders/PCDLoader.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RobotModel } from './robot-model';
+import { theme } from '../theme';
 
 export type ClickMode = 'none' | 'initial_pose' | 'goal' | 'patrol';
 
@@ -78,12 +79,17 @@ export class SlamScene {
   /** Fires (x, y, yaw) after click+drag release for any pose mode */
   onPoseSet: ((mode: ClickMode, x: number, y: number, yaw: number) => void) | null = null;
 
+  // Theme integration: clear color + grid colors react to dark/light toggle.
+  private grid: THREE.GridHelper | null = null;
+  private unsubTheme: (() => void) | null = null;
+
   constructor(canvas: HTMLCanvasElement) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
-    this.renderer.setClearColor(0x1a1d23);
+    this.renderer.setClearColor(theme().colors.background);
 
     this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(theme().colors.background);
 
     // Z-up camera
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 500);
@@ -103,19 +109,29 @@ export class SlamScene {
     dirLight.position.set(5, -5, 10);
     this.scene.add(dirLight);
 
-    // Grid helper (XY plane, Z-up)
-    const grid = new THREE.GridHelper(50, 50, 0x333333, 0x222222);
-    grid.rotation.x = Math.PI / 2;
-    this.scene.add(grid);
+    // Grid helper (XY plane, Z-up). Color comes from theme.
+    this.rebuildGrid(theme().colors.grid);
+
+    // React to theme toggles: re-clear, re-tint background, rebuild grid,
+    // recolor the laser cloud (white on dark bg / blue on light bg).
+    this.unsubTheme = theme().onChange((t, colors) => {
+      this.renderer.setClearColor(colors.background);
+      this.scene.background = new THREE.Color(colors.background);
+      this.rebuildGrid(colors.grid);
+      const laserColor = t === 'light' ? 0x6879e4 : 0xffffff;
+      (this.laserPoints.material as THREE.PointsMaterial).color.setHex(laserColor);
+    });
 
     // Filtered point cloud (accumulated map — height-colored)
     const filteredGeo = new THREE.BufferGeometry();
     this.filteredPoints = new THREE.Points(filteredGeo, createHeightMaterial(0.03));
     this.scene.add(this.filteredPoints);
 
-    // Laser point cloud (current scan — white)
+    // Laser point cloud (current scan). White on dark; blue on light to stay
+    // visible against the near-white background.
     const laserGeo = new THREE.BufferGeometry();
-    const laserMat = new THREE.PointsMaterial({ size: 0.05, color: 0xffffff });
+    const laserColor = theme().theme === 'light' ? 0x6879e4 : 0xffffff;
+    const laserMat = new THREE.PointsMaterial({ size: 0.05, color: laserColor });
     this.laserPoints = new THREE.Points(laserGeo, laserMat);
     this.scene.add(this.laserPoints);
 
@@ -182,33 +198,27 @@ export class SlamScene {
 
   // ── Robot Position ──
 
+  // Pose smoothing — odom updates set a *target*; the animate() loop lerps
+  // toward it every frame so the robot moves continuously between samples
+  // and absorbs the noise inherent in the SLAM pose estimate.
   private firstPose = true;
-  private lastQuaternion = new THREE.Quaternion();
-  private smoothPos = new THREE.Vector3();
-  private static readonly POS_LERP = 0.3;   // Position smoothing factor
-  private static readonly ROT_LERP = 0.3;   // Rotation smoothing factor (matching APK)
+  private targetPos = new THREE.Vector3();
+  private targetQuat = new THREE.Quaternion();
+  // Per-frame interpolation factors. Lower = smoother but more lag.
+  private static readonly POS_LERP_PER_FRAME = 0.15;
+  private static readonly ROT_LERP_PER_FRAME = 0.15;
 
   updateRobotPose(position: { x: number; y: number; z: number }, yaw: number): void {
-    const target = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, yaw));
+    this.targetPos.set(position.x, position.y, position.z);
+    this.targetQuat.setFromEuler(new THREE.Euler(0, 0, yaw));
 
     if (this.firstPose) {
       this.firstPose = false;
-      this.smoothPos.set(position.x, position.y, position.z);
-      this.lastQuaternion.copy(target);
-      this.robotMarker.position.copy(this.smoothPos);
-      this.robotMarker.quaternion.copy(target);
+      this.robotMarker.position.copy(this.targetPos);
+      this.robotMarker.quaternion.copy(this.targetQuat);
       this.controls.target.set(position.x, position.y, 0);
       this.camera.position.set(position.x, position.y - 5, 8);
-      return;
     }
-
-    // EMA position smoothing to reduce odom jitter
-    this.smoothPos.lerp(new THREE.Vector3(position.x, position.y, position.z), SlamScene.POS_LERP);
-    this.robotMarker.position.copy(this.smoothPos);
-
-    // SLERP rotation smoothing (matching APK's lerpQuaternion)
-    this.lastQuaternion.slerpQuaternions(this.lastQuaternion, target, SlamScene.ROT_LERP);
-    this.robotMarker.quaternion.copy(this.lastQuaternion);
   }
 
   showRobot(visible: boolean): void {
@@ -594,13 +604,37 @@ export class SlamScene {
 
   private animate(): void {
     this.animId = requestAnimationFrame(() => this.animate());
+
+    // Smoothly chase the latest odom-driven target every frame. Running this
+    // at render rate (60 Hz) absorbs the per-sample jitter from the SLAM pose
+    // estimate so the robot model glides instead of jittering on each update.
+    if (this.robotMarker.visible && !this.firstPose) {
+      this.robotMarker.position.lerp(this.targetPos, SlamScene.POS_LERP_PER_FRAME);
+      this.robotMarker.quaternion.slerp(this.targetQuat, SlamScene.ROT_LERP_PER_FRAME);
+    }
+
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  private rebuildGrid(color: number): void {
+    if (this.grid) {
+      this.scene.remove(this.grid);
+      const m = this.grid.material as THREE.Material | THREE.Material[];
+      if (Array.isArray(m)) for (const mm of m) mm.dispose(); else m.dispose();
+      this.grid.geometry.dispose();
+    }
+    const g = new THREE.GridHelper(50, 50, color, color);
+    g.rotation.x = Math.PI / 2;
+    this.scene.add(g);
+    this.grid = g;
   }
 
   destroy(): void {
     cancelAnimationFrame(this.animId);
     this.controls.dispose();
     this.renderer.dispose();
+    this.unsubTheme?.();
+    this.unsubTheme = null;
   }
 }

@@ -2,6 +2,16 @@ import { SlamScene, type ClickMode } from '../scene/slam-scene';
 import { RTC_TOPIC } from '../../protocol/topics';
 import SlamWorker from '../../workers/slam-worker?worker';
 import { putBundle, getBundle, deleteBundle, bytesToBase64, base64ToBytes, bundleToZip, zipToBundle, downloadBlob, type MapBundle } from '../../storage/map-pcd-store';
+import { theme } from '../theme';
+import type { BluetoothStatus } from './bt-status-icon';
+import { PipCamera } from './pip-camera';
+
+const BT_SVG = (color: string): string =>
+  `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`;
+const SUN_SVG =
+  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFB74D" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>';
+const MOON_SVG =
+  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#b0b3bb" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
 
 type SlamState = 'idle' | 'mapping' | 'localized' | 'navigating' | 'patrolling';
 
@@ -89,7 +99,10 @@ const COMMAND_TEMPLATES: Array<{ label: string; items: Array<{ cmd: string; topi
   ]},
 ];
 
-// Topics subscribed on entry (mapping + server log)
+// USLAM topics subscribed on enter / unsubscribed on leave (matching APK).
+// LOW_STATE is intentionally NOT here — it's globally subscribed by
+// app.ts::enableVideoAndSubscribe and shared with the NavBar; unsubscribing
+// it on mapping-leave would break the navbar's battery feed.
 const BASE_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_SERVER_LOG,
   RTC_TOPIC.USLAM_CLOUD_WORLD,
@@ -98,7 +111,8 @@ const BASE_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_GRID_MAP,
 ];
 
-// Topics subscribed only after localization succeeds (matching APK)
+// Subscribed only after localization succeeds; unsubscribed when localization
+// stops or the user leaves the page (matches APK's deferred-subscription).
 const LOC_USLAM_TOPICS = [
   RTC_TOPIC.USLAM_LOC_CLOUD,
   RTC_TOPIC.USLAM_LOC_ODOM,
@@ -147,6 +161,24 @@ export class MappingPage {
   private autoChargeOnReach = false;
   private autoChargeRetries = 0;
   private static AUTO_CHARGE_MAX_RETRIES = 5;
+
+  // Patrol limits — patrol/set_*_limit only succeeds when the patrol module
+  // is in INITIALIZE state (i.e. after patrol/start). When the user clicks
+  // Apply outside a patrol session the live send fails, so we also persist
+  // the value here and re-send everything from executePatrol on the next run.
+  private patrolConfig = {
+    // Per-patrol-cycle time. When the robot finishes a cycle within this
+    // window, the binary fires REACH_PATROL_TIME_LIMIT → NEED_CHARGE →
+    // NAVIGATE_TO_CHARGE_BOARD even if the battery is fine. -1 = unlimited
+    // (no trigger), which is what we want for users who don't want auto
+    // docking on a fixed schedule.
+    patrolTime: -1,
+    totalMissionTime: -1,
+    chargeCycleTime: -1,
+    loopCount: -1,
+    bmsSocMin: 10,
+    bmsSocMax: 80,
+  };
   private patrolPaused = false;
   private patrolPauseBtn!: HTMLButtonElement;
   private navMode: 'goal' | 'patrol' = 'goal';
@@ -158,6 +190,17 @@ export class MappingPage {
   // Section references for enabling/disabling
   private locSection!: HTMLElement;
   private navSection!: HTMLElement;
+  private autochargeSection!: HTMLElement;
+  private batteryFill!: HTMLElement;
+  private batteryText!: HTMLElement;
+  private netTypeEl!: HTMLElement;
+  private motorTempEl!: HTMLElement;
+  private wifiIconEl!: HTMLImageElement;
+  private btIconWrap!: HTMLElement;
+  private themeIconWrap!: HTMLElement;
+  private onBtClick: (() => void) | null = null;
+  private unsubTheme: (() => void) | null = null;
+  private pipCamera: PipCamera | null = null;
   private locHint!: HTMLElement;
   private navHint!: HTMLElement;
   private navControlsEl!: HTMLElement;
@@ -178,6 +221,7 @@ export class MappingPage {
     onUnsubscribe: (topic: string) => void,
     onRequestFile?: (path: string, cb: (data: string | null) => void) => void,
     onPushFile?: (path: string, b64: string, onProgress?: (frac: number) => void) => Promise<void>,
+    onBtClick?: () => void,
   ) {
     this.onBack = onBack;
     this.publish = onPublish;
@@ -185,6 +229,7 @@ export class MappingPage {
     this.unsubscribe = onUnsubscribe;
     this.requestFile = onRequestFile ?? null;
     this.pushFile = onPushFile ?? null;
+    this.onBtClick = onBtClick ?? null;
 
     this.container = document.createElement('div');
     this.container.className = 'mapping-page';
@@ -195,14 +240,56 @@ export class MappingPage {
     const backBtn = document.createElement('button');
     backBtn.className = 'page-back-btn';
     backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
-    backBtn.addEventListener('click', () => {
-      this.cleanup();
-      onBack();
-    });
+    // onBack flows through app.ts → goToHub() → mappingPage.destroy(), and
+    // destroy() runs cleanup(). Don't unsubscribe here too or each topic gets
+    // unsubscribed twice.
+    backBtn.addEventListener('click', () => onBack());
     header.appendChild(backBtn);
     const title = document.createElement('h2');
     title.textContent = '3D LiDAR Mapping';
     header.appendChild(title);
+
+    // Right-side cluster — mirrors NavBar exactly: motor temp / divider /
+    // battery / divider / net type / WiFi icon / theme / BT. The persistent
+    // body-mounted icons are hidden by app.ts when this page is active.
+    const cluster = document.createElement('div');
+    cluster.className = 'mapping-header-cluster';
+    cluster.innerHTML = `
+      <span class="motor-temp-label"></span>
+      <div class="nav-divider"></div>
+      <div class="battery-icon">
+        <div class="battery-fill-box">
+          <div class="battery-fill"></div>
+          <span class="battery-text">--%</span>
+        </div>
+      </div>
+      <div class="nav-divider"></div>
+      <span class="net-type-label"></span>
+      <img class="wifi-icon" src="/sprites/icon_wifi.png" alt="WiFi" />
+      <div class="nav-theme-icon" title="Toggle theme"></div>
+      <div class="nav-bt-icon" title="Bluetooth: not connected">${BT_SVG('#b0b3bb')}</div>
+    `;
+    header.appendChild(cluster);
+    this.batteryFill = cluster.querySelector('.battery-fill') as HTMLElement;
+    this.batteryText = cluster.querySelector('.battery-text') as HTMLElement;
+    this.netTypeEl = cluster.querySelector('.net-type-label') as HTMLElement;
+    this.motorTempEl = cluster.querySelector('.motor-temp-label') as HTMLElement;
+    this.wifiIconEl = cluster.querySelector('.wifi-icon') as HTMLImageElement;
+    this.themeIconWrap = cluster.querySelector('.nav-theme-icon') as HTMLElement;
+    this.btIconWrap = cluster.querySelector('.nav-bt-icon') as HTMLElement;
+
+    // Theme toggle — same behaviour as NavBar.
+    this.themeIconWrap.addEventListener('click', () => theme().toggle());
+    const renderTheme = (t: 'dark' | 'light'): void => {
+      this.themeIconWrap.innerHTML = t === 'dark' ? MOON_SVG : SUN_SVG;
+      this.themeIconWrap.title = t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+    };
+    renderTheme(theme().theme);
+    this.unsubTheme = theme().onChange((t) => renderTheme(t));
+
+    // BT icon — hover effect + click forwards to the popover toggle.
+    this.btIconWrap.addEventListener('click', () => this.onBtClick?.());
+
     this.container.appendChild(header);
 
     // Status stepper (horizontal flow under the header)
@@ -232,6 +319,10 @@ export class MappingPage {
     canvas.className = 'mapping-canvas';
     viewport.appendChild(canvas);
     body.appendChild(viewport);
+
+    // Draggable PiP video feed overlaid on the 3D viewport — same component
+    // and styling as the control screen.
+    this.pipCamera = new PipCamera(viewport);
 
     // Right sidebar — controls
     const sidebar = document.createElement('div');
@@ -290,7 +381,7 @@ export class MappingPage {
     // Status is rendered as a horizontal stepper under the header — see ctor.
 
     // ── Step 1: Map ──
-    sidebar.appendChild(this.buildSection('Step 1: Map', (body) => {
+    sidebar.appendChild(this.buildSection('Step 1: Mapping', (body) => {
       // ── Create New ──
       const createLabel = document.createElement('div');
       createLabel.className = 'mapping-subsection-title';
@@ -441,11 +532,6 @@ export class MappingPage {
       this.goalPanel = document.createElement('div');
       this.goalPanel.className = 'mapping-nav-panel';
       this.goalPanel.appendChild(this.clickModeBtn('Set Goal (hold on map, drag to aim)', 'goal'));
-      const chargeRow = document.createElement('div');
-      chargeRow.className = 'mapping-btn-row';
-      chargeRow.appendChild(this.btn('Go to Charging Station', '', () => this.startAutoCharge()));
-      chargeRow.appendChild(this.btn('Cancel Charge', 'mapping-btn-warn', () => this.cancelAutoCharge()));
-      this.goalPanel.appendChild(chargeRow);
       this.navControlsEl.appendChild(this.goalPanel);
 
       // ── Patrol panel ──
@@ -483,32 +569,52 @@ export class MappingPage {
       // Patrol limits sub-panel (per-segment / total / charge time, in seconds)
       const limitsLabel = document.createElement('div');
       limitsLabel.className = 'mapping-subsection-title';
-      limitsLabel.textContent = 'Limits (seconds)';
+      limitsLabel.textContent = 'Limits';
       limitsLabel.style.marginTop = '10px';
       this.patrolPanel.appendChild(limitsLabel);
 
-      const mkLimitRow = (label: string, placeholder: string, cmdPrefix: string): HTMLElement => {
+      // Single-value limit row (number → publish `<cmdPrefix>/{n}`).
+      const mkLimitRow = (
+        label: string,
+        defaultVal: number,
+        cmdPrefix: string,
+        info: string,
+        onSet: (v: number) => void,
+        opts?: { allowMinusOne?: boolean; min?: number },
+      ): HTMLElement => {
         const row = document.createElement('div');
         row.className = 'mapping-cmd-row';
+        const labelLine = document.createElement('div');
+        labelLine.className = 'mapping-cmd-labelline';
         const lbl = document.createElement('label');
         lbl.className = 'mapping-cmd-label';
         lbl.textContent = label;
-        row.appendChild(lbl);
+        labelLine.appendChild(lbl);
+        labelLine.appendChild(this.mkInfoBtn(info));
+        row.appendChild(labelLine);
         const inner = document.createElement('div');
         inner.className = 'mapping-btn-row';
         const input = document.createElement('input');
         input.className = 'mapping-input';
         input.type = 'number';
-        input.min = '1';
-        input.placeholder = placeholder;
+        input.min = String(opts?.min ?? 1);
+        input.placeholder = String(defaultVal);
+        input.value = String(defaultVal);
         inner.appendChild(input);
         const apply = this.btn('Apply', '', () => {
-          const v = parseInt(input.value, 10);
-          if (!Number.isFinite(v) || v <= 0) {
-            this.addLog(`${label}: enter a positive number of seconds`);
+          const raw = input.value.trim() === '' ? String(defaultVal) : input.value;
+          const v = parseInt(raw, 10);
+          if (!Number.isFinite(v)) { this.addLog(`${label}: enter a number`); return; }
+          const minV = opts?.min ?? 1;
+          if (v < minV && !(opts?.allowMinusOne && v === -1)) {
+            this.addLog(`${label}: must be ≥ ${minV}${opts?.allowMinusOne ? ' (or -1 for unlimited)' : ''}`);
             return;
           }
+          // Persist locally — applied on every executePatrol so it sticks
+          // even though the live set fails when the patrol module is idle.
+          onSet(v);
           this.sendCmd(`${cmdPrefix}/${v}`);
+          this.addLog(`${label}: saved (live update only succeeds during patrol; will be re-sent on Execute Patrol)`);
         });
         apply.style.width = 'auto';
         apply.style.minWidth = '64px';
@@ -517,15 +623,196 @@ export class MappingPage {
         return row;
       };
 
-      this.patrolPanel.appendChild(mkLimitRow('Per-segment', 'e.g. 60', 'patrol/set_patrol_time_limit'));
-      this.patrolPanel.appendChild(mkLimitRow('Total mission', 'e.g. 1800', 'patrol/set_total_time_limit'));
-      this.patrolPanel.appendChild(mkLimitRow('Charge cycle', 'e.g. 600', 'patrol/set_charge_time_limit'));
+      // Two-value limit row (publishes `<cmdPrefix>/{a}/{b}`). Inputs on one
+      // line, Apply button on the next so the 380 px sidebar isn't cramped.
+      const mkTwoLimitRow = (
+        label: string,
+        defA: number,
+        defB: number,
+        cmdPrefix: string,
+        info: string,
+        onSet: (a: number, b: number) => void,
+        opts?: { min?: number; max?: number },
+      ): HTMLElement => {
+        const row = document.createElement('div');
+        row.className = 'mapping-cmd-row';
+        const labelLine = document.createElement('div');
+        labelLine.className = 'mapping-cmd-labelline';
+        const lbl = document.createElement('label');
+        lbl.className = 'mapping-cmd-label';
+        lbl.textContent = label;
+        labelLine.appendChild(lbl);
+        labelLine.appendChild(this.mkInfoBtn(info));
+        row.appendChild(labelLine);
+        const inputs = document.createElement('div');
+        inputs.className = 'mapping-btn-row';
+        const a = document.createElement('input');
+        a.className = 'mapping-input';
+        a.type = 'number';
+        if (opts?.min !== undefined) a.min = String(opts.min);
+        if (opts?.max !== undefined) a.max = String(opts.max);
+        a.placeholder = String(defA);
+        a.value = String(defA);
+        const b = document.createElement('input');
+        b.className = 'mapping-input';
+        b.type = 'number';
+        if (opts?.min !== undefined) b.min = String(opts.min);
+        if (opts?.max !== undefined) b.max = String(opts.max);
+        b.placeholder = String(defB);
+        b.value = String(defB);
+        inputs.appendChild(a);
+        inputs.appendChild(b);
+        row.appendChild(inputs);
+        const apply = this.btn('Apply', '', () => {
+          const av = parseInt(a.value.trim() === '' ? String(defA) : a.value, 10);
+          const bv = parseInt(b.value.trim() === '' ? String(defB) : b.value, 10);
+          if (!Number.isFinite(av) || !Number.isFinite(bv)) { this.addLog(`${label}: enter both values`); return; }
+          if (av >= bv) { this.addLog(`${label}: min must be < max`); return; }
+          onSet(av, bv);
+          this.sendCmd(`${cmdPrefix}/${av}/${bv}`);
+          this.addLog(`${label}: saved (live update only succeeds during patrol; will be re-sent on Execute Patrol)`);
+        });
+        row.appendChild(apply);
+        return row;
+      };
+
+      // Defaults below mirror /unitree/.../config.yaml or the executePatrol fallback.
+      this.patrolPanel.appendChild(mkLimitRow(
+        'Patrol cycle time (s)', -1, 'patrol/set_patrol_time_limit',
+        'Maximum seconds for one full patrol cycle (one loop through all waypoints). When the robot finishes a cycle within this time, the firmware fires NEED_CHARGE and navigates to the dock — even if the battery is fine. Set to -1 to disable this trigger entirely.',
+        (v) => { this.patrolConfig.patrolTime = v; },
+        { allowMinusOne: true },
+      ));
+      this.patrolPanel.appendChild(mkLimitRow(
+        'Total mission time (s)', -1, 'patrol/set_total_time_limit',
+        'Total seconds the patrol may run before auto-stopping. -1 = unlimited.',
+        (v) => { this.patrolConfig.totalMissionTime = v; },
+        { allowMinusOne: true },
+      ));
+      this.patrolPanel.appendChild(mkLimitRow(
+        'Charge cycle time (s)', -1, 'patrol/set_charge_time_limit',
+        'Maximum seconds the robot is allowed to sit on the charging dock before resuming patrol. -1 = unlimited; 0 = do not auto-charge during patrol.',
+        (v) => { this.patrolConfig.chargeCycleTime = v; },
+        { min: -1, allowMinusOne: true },
+      ));
+      this.patrolPanel.appendChild(mkLimitRow(
+        'Loop count', -1, 'patrol/set_patrol_number_limit',
+        'How many times to repeat the full waypoint loop. -1 = unlimited (run until total-time-limit or Stop).',
+        (v) => { this.patrolConfig.loopCount = v; },
+        { allowMinusOne: true },
+      ));
+      this.patrolPanel.appendChild(mkTwoLimitRow(
+        'Battery SOC range (%)', 10, 80,
+        'patrol/set_bms_soc_limit',
+        'Battery state-of-charge thresholds. Patrol pauses + heads to dock when SOC drops below MIN; resumes after recharging up to MAX. Firmware defaults: 10 / 80.',
+        (a, b) => { this.patrolConfig.bmsSocMin = a; this.patrolConfig.bmsSocMax = b; },
+        { min: 0, max: 100 },
+      ));
+
+      const clearCfgBtn = this.btn('Reset Patrol Config', 'mapping-btn-warn', () => {
+        this.sendCmd('patrol/clear_user_config');
+        this.addLog('Patrol user config cleared (limits reset to defaults)');
+      });
+      clearCfgBtn.title = 'Reset all patrol-side limits (time / loop / SOC) to firmware defaults.';
+      this.patrolPanel.appendChild(clearCfgBtn);
 
       this.navControlsEl.appendChild(this.patrolPanel);
 
       body.appendChild(this.navControlsEl);
     });
     sidebar.appendChild(this.navSection);
+
+    // ── Autocharge ──
+    this.autochargeSection = this.buildSection('Autocharge', (body) => {
+      const ctrlRow = document.createElement('div');
+      ctrlRow.className = 'mapping-btn-row';
+      ctrlRow.appendChild(this.btn('Go to Charging Station', '', () => this.startAutoCharge()));
+      ctrlRow.appendChild(this.btn('Cancel Charge', 'mapping-btn-stop', () => this.cancelAutoCharge()));
+      body.appendChild(ctrlRow);
+
+      // Plate distance setting (default 0.47 m on the firmware)
+      const plateLabelLine = document.createElement('div');
+      plateLabelLine.className = 'mapping-cmd-labelline';
+      const plateLbl = document.createElement('label');
+      plateLbl.className = 'mapping-cmd-label';
+      plateLbl.textContent = 'Plate distance (m)';
+      plateLabelLine.appendChild(plateLbl);
+      plateLabelLine.appendChild(this.mkInfoBtn(
+        'Detection-distance threshold for the dock plate (default 0.47 m). The autocharge module only attempts plate detection when within this distance of the dock pose. Increase for more tolerant initial alignment, decrease for stricter behaviour.',
+      ));
+      body.appendChild(plateLabelLine);
+
+      const plateRow = document.createElement('div');
+      plateRow.className = 'mapping-btn-row';
+      const plateInput = document.createElement('input');
+      plateInput.className = 'mapping-input';
+      plateInput.type = 'number';
+      plateInput.step = '0.01';
+      plateInput.min = '0.1';
+      plateInput.max = '2';
+      plateInput.placeholder = '0.47';
+      plateInput.value = '0.47';
+      plateRow.appendChild(plateInput);
+      const plateApply = this.btn('Apply', '', () => {
+        const v = parseFloat(plateInput.value);
+        if (!Number.isFinite(v) || v < 0.1 || v > 2) {
+          this.addLog('Plate distance: enter a value between 0.1 and 2 m');
+          return;
+        }
+        this.sendCmd(`autocharge/set_plate_distance/${v.toFixed(2)}`);
+      });
+      plateApply.style.width = 'auto';
+      plateApply.style.minWidth = '64px';
+      plateRow.appendChild(plateApply);
+      body.appendChild(plateRow);
+
+      // Status query (matches the APK's status-query pattern even though
+      // the APK frontend itself doesn't poll it — useful for debugging).
+      const statusBtn = this.btn('Get Status', '', async () => {
+        const status = await this.queryAutoChargeStatus();
+        this.addLog(`Autocharge status: ${status === '1' ? 'active' : status === '0' ? 'inactive' : 'no response'}`);
+      });
+      body.appendChild(statusBtn);
+
+      // One-click: disable auto-charge during patrol. The patrol module
+      // monitors BMS SOC against the configured min/max; setting min=0 and
+      // max=100 ensures it never enters NEED_CHARGE. We also force the
+      // charge_time_limit to 0 (no time allotted for charging cycles) and
+      // abort any in-progress autocharge sequence.
+      const disableLabelLine = document.createElement('div');
+      disableLabelLine.className = 'mapping-cmd-labelline';
+      const disableLbl = document.createElement('label');
+      disableLbl.className = 'mapping-cmd-label';
+      disableLbl.textContent = 'Disable during patrol';
+      disableLabelLine.appendChild(disableLbl);
+      disableLabelLine.appendChild(this.mkInfoBtn(
+        'Stops the patrol module from auto-docking when battery is low. Sends bms_soc_limit/0/100 + charge_time_limit/0 + autocharge/stop. Reset Patrol Config in the Patrol panel restores firmware defaults.',
+      ));
+      body.appendChild(disableLabelLine);
+      const disableBtn = this.btn('Disable Auto-Charge in Patrol', 'mapping-btn-warn', () => {
+        // Persist so the next executePatrol re-sends these (live set fails
+        // when the patrol module is idle). Three triggers can fire NEED_CHARGE:
+        //   1. BMS SOC < bms_soc_limit_min  → set 1/99 (binary rejects 0/100
+        //                                     as out-of-range; 1/99 still
+        //                                     effectively never trips)
+        //   2. patrol cycle time reached    → set patrol_time_limit=-1
+        //   3. charge cycle time reached    → set charge_time_limit=0
+        this.patrolConfig.bmsSocMin = 1;
+        this.patrolConfig.bmsSocMax = 99;
+        this.patrolConfig.patrolTime = -1;
+        this.patrolConfig.chargeCycleTime = 0;
+        this.sendCmd('patrol/set_bms_soc_limit/1/99');
+        this.sendCmd('patrol/set_patrol_time_limit/-1');
+        this.sendCmd('patrol/set_charge_time_limit/0');
+        this.sendCmd('autocharge/stop');
+        this.autoChargeOnReach = false;
+        this.autoChargeRetries = 0;
+        this.addLog('Auto-charge disabled — saved (will be re-applied on Execute Patrol)');
+      });
+      body.appendChild(disableBtn);
+    });
+    sidebar.appendChild(this.autochargeSection);
+
     // Send Command + Server Log live in the LEFT sidebar — see buildLeftSidebar.
   }
 
@@ -653,6 +940,24 @@ export class MappingPage {
     return b;
   }
 
+  /**
+   * Small "i" badge with a hover tooltip + click toggle for touch users.
+   * Uses the native title attribute so it also works for screen readers.
+   */
+  private mkInfoBtn(text: string): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'mapping-info-btn';
+    b.type = 'button';
+    b.textContent = 'i';
+    b.title = text;
+    b.setAttribute('aria-label', text);
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      this.showNotification(text, '#6879e4');
+    });
+    return b;
+  }
+
   private clickModeBtn(label: string, mode: ClickMode): HTMLButtonElement {
     const b = document.createElement('button');
     b.className = 'mapping-btn mapping-btn-click-mode';
@@ -728,36 +1033,51 @@ export class MappingPage {
   // ── Patrol Execution (matches APK flow) ──
 
   private async executePatrol(): Promise<void> {
-    if (this.patrolPoints.length < 2) {
-      this.addLog('Need at least 2 waypoints to start patrol');
-      this.showNotification('Add at least 2 waypoints before executing patrol', '#FCD335');
+    const n = this.patrolPoints.length;
+    if (n < 2) {
+      const msg = `Need at least 2 waypoints to start patrol (have ${n})`;
+      this.addLog(msg);
+      this.showNotification(msg, '#FCD335');
       return;
     }
 
-    this.addLog(`Executing patrol with ${this.patrolPoints.length} waypoints...`);
+    this.addLog(`Executing patrol with ${n} waypoints...`);
 
-    // Step 1: Clear all existing points on robot
+    // APK ordering (handleSureExecutePatrol):
+    //   1. patrol/start  — puts the module in a state that accepts config
+    //                      commands. Without this, after a previous stop the
+    //                      module rejects clear/add/set_*_limit.
+    //   2. 500ms breather (matches the APK's `await setTimeout(500)`).
+    //   3. clear_all_patrol_points
+    //   4. add_patrol_point × N
+    //   5. set_*_time_limit × 3
+    //   6. patrol/go (begin actual patrolling)
+
+    this.sendCmd('patrol/start');
+    await this.delay(500);
+
     this.sendCmd('patrol/clear_all_patrol_points');
     await this.delay(200);
 
-    // Step 2: Re-add all points with yaw - PI adjustment (matches APK)
     for (const pt of this.patrolPoints) {
-      const adjustedYaw = pt.yaw - Math.PI;
-      this.sendCmd(`patrol/add_patrol_point/${pt.x.toFixed(3)}/${pt.y.toFixed(3)}/${adjustedYaw.toFixed(3)}`);
+      this.sendCmd(`patrol/add_patrol_point/${pt.x.toFixed(3)}/${pt.y.toFixed(3)}/${pt.yaw.toFixed(3)}`);
       await this.delay(100);
     }
 
-    // Step 3: Set time limits (default: unlimited total, 30s per point, 0 charge)
-    this.sendCmd('patrol/set_total_time_limit/-1');
-    this.sendCmd('patrol/set_patrol_time_limit/30');
-    this.sendCmd('patrol/set_charge_time_limit/0');
-    await this.delay(100);
-
-    // Step 4: Start patrol
-    this.sendCmd('patrol/start');
+    // Apply stored patrol config — these only succeed during INITIALIZE,
+    // which is why the standalone Apply buttons fail when patrol is idle.
+    const c = this.patrolConfig;
+    this.sendCmd(`patrol/set_total_time_limit/${c.totalMissionTime}`);
+    await this.delay(50);
+    this.sendCmd(`patrol/set_patrol_time_limit/${c.patrolTime}`);
+    await this.delay(50);
+    this.sendCmd(`patrol/set_charge_time_limit/${c.chargeCycleTime}`);
+    await this.delay(50);
+    this.sendCmd(`patrol/set_patrol_number_limit/${c.loopCount}`);
+    await this.delay(50);
+    this.sendCmd(`patrol/set_bms_soc_limit/${c.bmsSocMin}/${c.bmsSocMax}`);
     await this.delay(200);
 
-    // Step 5: Go
     this.sendCmd('patrol/go');
     this.setState('patrolling');
   }
@@ -810,6 +1130,8 @@ export class MappingPage {
     const canNavigate = this.mapLoaded && this.localized;
     this.navSection.classList.toggle('mapping-section-disabled', !canNavigate);
     this.navHint.style.display = canNavigate ? 'none' : '';
+    // Autocharge piggybacks on the same navigation requirements.
+    this.autochargeSection?.classList.toggle('mapping-section-disabled', !canNavigate);
 
     // Reset nav controls when losing localization
     if (!canNavigate) {
@@ -873,6 +1195,59 @@ export class MappingPage {
     this.locStatusEl.style.display = '';
     this.locStatusEl.textContent = msg;
     this.locStatusEl.style.color = color;
+  }
+
+  /** Push battery percent to the header widget (called from app.ts on LOW_STATE). */
+  setBattery(percent: number): void {
+    if (!this.batteryFill || !this.batteryText) return;
+    const p = Math.max(0, Math.min(100, Math.round(percent)));
+    this.batteryText.textContent = `${p}%`;
+    this.batteryFill.style.width = `${p}%`;
+    // Same colour coding as the NavBar: red <=33%, yellow 34–66%, green 67%+
+    const color = p <= 33 ? '#FF3D3D' : p <= 66 ? '#FCD335' : '#42CF55';
+    this.batteryFill.style.backgroundColor = color;
+  }
+
+  /** Set the connection-type label (STA-L / STA-T / AP / etc.) — matches NavBar. */
+  setNetworkType(type: string): void {
+    if (!this.netTypeEl) return;
+    this.netTypeEl.textContent = type;
+    // Match NavBar: swap the WiFi icon based on the actual transport.
+    let src = '/sprites/icon_wifi.png';
+    const upper = type.toUpperCase();
+    if (upper === '4G' || upper === 'LTE') src = '/sprites/icon_net_4g.png';
+    else if (upper === 'AP') src = '/sprites/icon_net_ap.png';
+    else if (upper === 'STA-T' || upper === 'REMOTE') src = '/sprites/icon_net_remote.png';
+    else if (upper === 'STA-L') src = '/sprites/icon_net_sta.png';
+    if (this.wifiIconEl && this.wifiIconEl.getAttribute('src') !== src) {
+      this.wifiIconEl.src = src;
+    }
+  }
+
+  /** Set the max motor temperature label — matches NavBar's color thresholds. */
+  setMotorTemp(maxTemp: number): void {
+    if (!this.motorTempEl) return;
+    const t = Math.round(maxTemp);
+    this.motorTempEl.textContent = `${t}°C`;
+    if (t > 70) this.motorTempEl.style.color = '#FF3D3D';
+    else if (t > 50) this.motorTempEl.style.color = '#FCD335';
+    else this.motorTempEl.style.color = '#aaa';
+  }
+
+  /** Push the live video stream into the PiP overlay. */
+  setStream(stream: MediaStream): void {
+    this.pipCamera?.setStream(stream);
+  }
+
+  /** Forward BT status to the inline icon, mirroring the body-mounted one. */
+  setBtStatus(s: BluetoothStatus): void {
+    if (!this.btIconWrap) return;
+    const connected = s.robotConnected || s.remoteConnected;
+    const color = s.remoteConnected ? '#4FC3F7' : s.robotConnected ? '#42CF55' : '#b0b3bb';
+    this.btIconWrap.innerHTML = BT_SVG(color);
+    this.btIconWrap.dataset.connected = connected ? 'true' : 'false';
+    const label = s.remoteName || s.remoteAddress || s.robotAddress || 'not connected';
+    this.btIconWrap.title = `Bluetooth: ${label}`;
   }
 
   private showNotification(msg: string, color: string): void {
@@ -955,55 +1330,47 @@ export class MappingPage {
     // navigationActive (goal mode) or state === 'patrolling'. Sub-states like
     // WAITING after REACHED don't change this — the user can still dispatch
     // another goal or press Stop without re-pressing Start.
-    let navLabel = 'Navigation';
+    const navLabel = 'Navigation';
     let navStatus: StepStatus = 'idle';
-    if (this.state === 'patrolling') {
+    if (this.state === 'patrolling' || this.navigationActive) {
       navStatus = 'active';
-      navLabel = 'Navigation: Patrol';
-    } else if (this.navigationActive) {
-      navStatus = 'active';
-      navLabel = 'Navigation: Goal';
-    } else if (this.localized) {
-      // Show what the user has selected when nav isn't running yet.
-      navLabel = this.navMode === 'patrol' ? 'Navigation: Patrol' : 'Navigation: Goal';
     }
 
     // Localization is "done" when nav is running on top of it (we've moved on).
     const navRunning = navStatus === 'active';
     const localizationFinal: StepStatus = navRunning ? 'done' : localization;
 
-    const steps: Array<{ key: string; label: string; status: StepStatus; color: string }> = [
-      { key: 'mapping',      label: 'Mapping',      status: mapping,           color: '#42CF55' },
-      { key: 'localization', label: 'Localization', status: localizationFinal, color: '#6879e4' },
-      { key: 'navigation',   label: navLabel,       status: navStatus,         color: this.state === 'patrolling' ? '#66E7BE' : '#FCD335' },
+    const steps: Array<{ key: string; label: string; status: StepStatus }> = [
+      { key: 'mapping',      label: 'Step 1: Mapping',      status: mapping },
+      { key: 'localization', label: 'Step 2: Localization', status: localizationFinal },
+      { key: 'navigation',   label: `Step 3: ${navLabel}`,  status: navStatus },
     ];
+
+    // Uniform colour scheme across steps: green = passed, yellow = current,
+    // grey = not reached. Keeps the eye trained on a single colour for state.
+    const COLOR = { done: '#42CF55', active: '#FCD335', idle: '#3a3d45' } as const;
 
     this.stateEl.innerHTML = '';
     steps.forEach((step, i) => {
       if (i > 0) {
         const arrow = document.createElement('span');
         arrow.className = 'mapping-stepper-arrow';
-        arrow.textContent = '→';
+        arrow.textContent = '➜';
         this.stateEl.appendChild(arrow);
       }
       const cell = document.createElement('div');
       cell.className = `mapping-stepper-step mapping-stepper-${step.status}`;
       const dot = document.createElement('span');
       dot.className = 'mapping-stepper-dot';
-      if (step.status === 'active') {
-        dot.style.background = step.color;
-        dot.style.boxShadow = `0 0 6px ${step.color}`;
-      } else if (step.status === 'done') {
-        dot.style.background = step.color;
-        dot.style.opacity = '0.55';
-      } else {
-        dot.style.background = '#3a3d45';
-      }
+      const color = COLOR[step.status];
+      dot.style.background = color;
+      if (step.status === 'active') dot.style.boxShadow = `0 0 6px ${color}`;
       cell.appendChild(dot);
       const lbl = document.createElement('span');
       lbl.className = 'mapping-stepper-label';
       lbl.textContent = step.label;
-      if (step.status === 'active') lbl.style.color = step.color;
+      if (step.status === 'active') lbl.style.color = color;
+      else if (step.status === 'done') lbl.style.color = color;
       cell.appendChild(lbl);
       this.stateEl.appendChild(cell);
     });
@@ -1073,7 +1440,21 @@ export class MappingPage {
   private navStatusResolver: ((status: string) => void) | null = null;
   private patrolStatusResolver: ((status: string) => void) | null = null;
   private mappingStatusResolver: ((status: string) => void) | null = null;
+  private autoChargeStatusResolver: ((status: string) => void) | null = null;
   private mapIdResolver: ((id: string) => void) | null = null;
+
+  queryAutoChargeStatus(): Promise<string> {
+    return new Promise((resolve) => {
+      this.autoChargeStatusResolver = resolve;
+      window.setTimeout(() => {
+        if (this.autoChargeStatusResolver === resolve) {
+          this.autoChargeStatusResolver = null;
+          resolve('-1');
+        }
+      }, 2000);
+      this.sendCmd('autocharge/get_status');
+    });
+  }
 
   /**
    * Ask the robot for its currently-active map id. Resolves with the id or
@@ -1161,13 +1542,15 @@ export class MappingPage {
    */
   private async preloadRobotState(): Promise<void> {
     try {
-      const [mapping, loc, patrol, nav] = await Promise.all([
+      const [mapping, loc, patrol, nav, autocharge] = await Promise.all([
         this.queryMappingStatus(),
         this.queryLocalizationStatus(),
         this.queryPatrolStatus(),
         this.queryNavigationStatus(),
+        this.queryAutoChargeStatus(),
       ]);
-      this.addLog(`Preload: mapping=${mapping} loc=${loc} patrol=${patrol} nav=${nav}`);
+      if (autocharge === '1') this.addLog('Preload: autocharge already running');
+      this.addLog(`Preload: mapping=${mapping} loc=${loc} patrol=${patrol} nav=${nav} autocharge=${autocharge}`);
 
       if (mapping === '1') {
         // A mapping session is already in progress.
@@ -1413,21 +1796,46 @@ export class MappingPage {
       this.slamScene?.clearNavPath();
       this.slamScene?.clearGoalMarker();
     }
+    if (msg.includes('navigation/state_transition/GOAL_CANCELLED')) {
+      // Robot dropped the current goal (e.g. on receiving a new one) —
+      // informational only, the path is about to be replanned.
+      this.slamScene?.clearNavPath();
+    }
     // Auto-charge success/failure
+    // Autocharge sub-state machine (visible to the user, since the flow has
+    // multiple steps and silent failures otherwise look like the UI froze).
+    if (msg.includes('autocharge/state_transition/GO_TO_CHARGE_BOARD')) {
+      this.showNotification('Auto-charge: approaching dock plate…', '#FCD335');
+    }
+    if (msg.includes('autocharge/state_transition/CONNECTING')) {
+      this.showNotification('Auto-charge: connecting to dock contacts…', '#FCD335');
+    }
+    if (msg.includes('autocharge/state_transition/TIMEOUT_DETECT')) {
+      this.showNotification('Auto-charge: dock plate not detected (try autocharge/set_plate_distance)', '#FF3D3D');
+    }
+    if (msg.includes('autocharge/state_transition/TIMEOUT_CONNECT_POWER')) {
+      this.showNotification('Auto-charge: power did not connect (mechanical alignment off)', '#FF3D3D');
+    }
+    if (msg.includes('autocharge/state_transition/EXIT')) {
+      this.addLog('Auto-charge module exited');
+    }
     if (msg.includes('autocharge/state_transition/SUCCESS')) {
       this.showNotification('Auto-charge complete', '#42CF55');
       this.autoChargeRetries = 0;
+      this.autoChargeOnReach = false;
       this.setState('localized');
     }
     if (msg.includes('autocharge/state_transition/FAILURE')) {
-      // APK retries up to 5 times before giving up.
+      // The robot's autocharge module gave up — re-driving to the same dock
+      // pose rarely fixes it (the cause is plate detection / contact, not
+      // navigation), but we mirror the APK's retry-up-to-5x behaviour.
       if (this.autoChargeRetries < MappingPage.AUTO_CHARGE_MAX_RETRIES) {
         this.autoChargeRetries++;
-        this.showNotification(`Auto-charge failed — retry ${this.autoChargeRetries}/${MappingPage.AUTO_CHARGE_MAX_RETRIES}`, '#FF3D3D');
+        this.showNotification(`Auto-charge failed — retry ${this.autoChargeRetries}/${MappingPage.AUTO_CHARGE_MAX_RETRIES} (re-approaching dock)`, '#FF3D3D');
         this.sendCmd('navigation/set_goal_pose/-0.150/0.000/0.000');
         this.autoChargeOnReach = true;
       } else {
-        this.showNotification('Auto-charge failed — giving up after 5 retries', '#FF3D3D');
+        this.showNotification('Auto-charge failed after 5 retries — check dock alignment & plate-distance setting', '#FF3D3D');
         this.autoChargeRetries = 0;
         this.autoChargeOnReach = false;
       }
@@ -1436,7 +1844,7 @@ export class MappingPage {
 
     // ── Patrol state transitions (driven by server log) ──
     // Patrol time-limit ack toasts.
-    const limitMatch = msg.match(/patrol\/(set_patrol_time_limit|set_total_time_limit|set_charge_time_limit)\/(success|failed)/);
+    const limitMatch = msg.match(/patrol\/(set_patrol_time_limit|set_total_time_limit|set_charge_time_limit|set_patrol_number_limit|set_bms_soc_limit|clear_user_config)\/(success|failed)/);
     if (limitMatch) {
       const [, which, result] = limitMatch;
       const human = which.replace('set_', '').replace(/_/g, ' ');
@@ -1515,6 +1923,22 @@ export class MappingPage {
         this.mappingStatusResolver = null;
         r(status);
       }
+    }
+    const autoChargeStatusMatch = msg.match(/autocharge\/get_status\/status\/(\w+)/);
+    if (autoChargeStatusMatch) {
+      const status = autoChargeStatusMatch[1];
+      this.addLog(`Autocharge status: ${status === '1' ? 'active' : 'inactive'} (${status})`);
+      if (this.autoChargeStatusResolver) {
+        const r = this.autoChargeStatusResolver;
+        this.autoChargeStatusResolver = null;
+        r(status);
+      }
+    }
+    if (msg.includes('autocharge/set_plate_distance/success')) {
+      this.showNotification('Plate distance updated', '#42CF55');
+    }
+    if (msg.includes('autocharge/set_plate_distance/failed')) {
+      this.showNotification('Plate distance: failed', '#FF3D3D');
     }
     const locStatusMatch = msg.match(/localization\/get_status\/status\/(\w+)/);
     if (locStatusMatch) {
@@ -1645,7 +2069,10 @@ export class MappingPage {
 
     // Throttle to 200ms (matching APK)
     const now = performance.now();
-    if (now - this.lastOdomTime < 200) return;
+    // 50ms throttle matches the APK (20Hz). Lower throttle would let render-side
+    // interpolation handle the rest, but the APK relies on the high source rate
+    // for visual smoothness, so we mirror that.
+    if (now - this.lastOdomTime < 50) return;
     this.lastOdomTime = now;
 
     const d = data as {
@@ -2136,5 +2563,9 @@ export class MappingPage {
     this.slamWorker = null;
     this.slamScene?.destroy();
     this.slamScene = null;
+    this.unsubTheme?.();
+    this.unsubTheme = null;
+    this.pipCamera?.destroy();
+    this.pipCamera = null;
   }
 }

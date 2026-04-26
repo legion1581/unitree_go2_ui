@@ -115,6 +115,8 @@ export class App {
       this.btStatus = s;
       // Update nav-bar BT icon (control view)
       this.updateNavBarBtIcon();
+      // Update mapping page's inline BT icon if present.
+      this.mappingPage?.setBtStatus(s);
       if (this.currentScreen === 'control') {
         const label = s.remoteName || s.remoteAddress;
         this.settingBar?.setRelayAvailable(s.remoteConnected, label);
@@ -467,6 +469,10 @@ export class App {
     this.currentScreen = 'mapping';
     this.root.innerHTML = '';
     this.root.className = 'app-root mapping-screen';
+    // The mapping page-header has its own inline BT + theme + battery cluster
+    // (same shape as NavBar) — hide the body-mounted persistent icons so they
+    // don't overlap.
+    this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
 
     this.mappingPage = new MappingPage(
       this.root,
@@ -479,7 +485,34 @@ export class App {
         this.dataHandler
           ? this.dataHandler.pushFile(path, b64, 'uslam_final_pcd', 30 * 1024, onProgress)
           : Promise.reject(new Error('Data channel not ready')),
+      () => this.toggleBtPopover(),
     );
+    // Seed the battery widget with the last-known value so it's not blank
+    // until the next LOW_STATE message arrives.
+    if (this.robotState.batteryPercent > 0) {
+      this.mappingPage.setBattery(this.robotState.batteryPercent);
+    }
+    // Seed network type so the header shows it on entry.
+    if (this.connectionConfig?.mode) {
+      this.mappingPage.setNetworkType(this.connectionConfig.mode);
+    }
+    // Seed motor temp from cached state.
+    if (this.robotState.motorStates.length > 0) {
+      const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
+      this.mappingPage.setMotorTemp(maxTemp);
+    }
+    // Forward BT status changes so the inline BT icon stays in sync.
+    this.mappingPage.setBtStatus(this.btStatus);
+
+    // Re-send VID enable on the data channel so the video track stays alive
+    // when entering the mapping page (it's already on after connection
+    // validation, but a duplicate is harmless and keeps the contract obvious).
+    this.dataHandler?.publishTyped('', 'on', DATA_CHANNEL_TYPE.VID);
+
+    // Attach the existing video stream to the page's PiP overlay.
+    if (this.videoStream) {
+      this.mappingPage.setStream(this.videoStream);
+    }
   }
 
   /** Connect WebRTC from the hub screen (Remote mode only). */
@@ -501,6 +534,7 @@ export class App {
       onVideoTrack: (stream: MediaStream) => {
         this.videoStream = stream;
         this.pipCamera?.setStream(stream);
+        this.mappingPage?.setStream(stream);
         if (this.viewMode === 'video' && this.videoBg) {
           this.videoBg.srcObject = stream;
           this.videoBg.style.display = 'block';
@@ -858,12 +892,14 @@ export class App {
       // Update nav bar max motor temp
       const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
       this.navBar?.setMotorTemp(maxTemp);
+      this.mappingPage?.setMotorTemp(maxTemp);
     }
 
     if (d.bms_state) {
       if (d.bms_state.soc !== undefined) {
         this.robotState.batteryPercent = d.bms_state.soc;
         this.navBar?.setBattery(d.bms_state.soc);
+        this.mappingPage?.setBattery(d.bms_state.soc);
       }
       if (d.bms_state.current !== undefined) this.robotState.batteryCurrent = d.bms_state.current;
       if (d.bms_state.voltage !== undefined) this.robotState.batteryVoltage = d.bms_state.voltage;
@@ -970,6 +1006,7 @@ export class App {
     }
     this.robotState.networkType = type;
     this.navBar?.setNetworkType(type);
+    this.mappingPage?.setNetworkType(type);
   }
 
   private handleMultipleState(_data: unknown): void {
@@ -1169,6 +1206,7 @@ export class App {
       onVideoTrack: (stream: MediaStream) => {
         this.videoStream = stream;
         this.pipCamera?.setStream(stream);
+        this.mappingPage?.setStream(stream);
         if (this.viewMode === 'video' && this.videoBg) {
           this.videoBg.srcObject = stream;
           this.videoBg.style.display = 'block';
