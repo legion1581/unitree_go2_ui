@@ -1420,12 +1420,20 @@ body {
 
 .mapping-sidebar {
   width: 380px;
+  flex-shrink: 0;
   overflow-y: auto;
   background: #12141a;
-  border-left: 1px solid #1f2229;
   padding: 12px;
   scrollbar-width: thin;
   scrollbar-color: #2a2d35 transparent;
+}
+
+.mapping-sidebar-left {
+  border-right: 1px solid #1f2229;
+}
+
+.mapping-sidebar-right {
+  border-left: 1px solid #1f2229;
 }
 
 .mapping-section {
@@ -1535,29 +1543,69 @@ body {
   border-color: #6879e4;
 }
 
-/* State indicator */
-.mapping-state {
+/* Status stepper — horizontal flow under the page header */
+.mapping-stepper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 10px 18px;
+  background: #12141a;
+  border-bottom: 1px solid #1f2229;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.mapping-stepper-step {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  font-weight: 500;
+  color: #666;
+  transition: color 0.2s;
 }
 
-.mapping-state-dot {
-  width: 8px;
-  height: 8px;
+.mapping-stepper-active .mapping-stepper-label {
+  font-weight: 600;
+}
+
+.mapping-stepper-done {
+  color: #aaa;
+}
+
+.mapping-stepper-dot {
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.mapping-stepper-arrow {
+  color: #3a3d45;
+  font-size: 14px;
 }
 
 .mapping-substate {
   font-size: 11px;
   color: #888;
-  padding-left: 16px;
-  margin-top: 2px;
+  padding: 4px 18px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   transition: color 0.2s;
+  background: #0f1114;
+  border-bottom: 1px solid #1f2229;
+}
+
+html[data-theme="light"] .mapping-stepper {
+  background: #f4f6fa;
+  border-bottom-color: #e2e6ee;
+}
+html[data-theme="light"] .mapping-stepper-step { color: #999; }
+html[data-theme="light"] .mapping-stepper-done { color: #555; }
+html[data-theme="light"] .mapping-stepper-arrow { color: #c8ccd6; }
+html[data-theme="light"] .mapping-substate {
+  background: #ffffff;
+  border-bottom-color: #e2e6ee;
 }
 
 /* Server log */
@@ -1584,6 +1632,11 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 4px;
+}
+
+.mapping-log-topic {
+  margin: 0;
+  flex: 1;
 }
 
 .mapping-log-copy {
@@ -1815,6 +1868,27 @@ body {
   font-size: 12px;
   font-weight: 500;
   padding: 4px 0;
+}
+
+/* Saved-maps header row: title on left, Import button on right */
+.mapping-saved-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid #1f2229;
+  margin-bottom: 4px;
+}
+
+.mapping-saved-header .mapping-subsection-title {
+  border-bottom: none;
+  margin: 0;
+  padding-bottom: 0;
+}
+
+.mapping-saved-header .mapping-btn {
+  width: auto;
+  padding: 4px 10px;
 }
 
 /* Sub-section label inside a section */
