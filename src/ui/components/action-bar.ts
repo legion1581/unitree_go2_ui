@@ -24,18 +24,19 @@ export const ALL_ACTIONS: RobotAction[] = [
   { apiId: SPORT_CMD.FrontFlip, name: 'Front Flip', icon: '/sprites/icon_flip_forward.png', param: DATA_TRUE },
   { apiId: SPORT_CMD.BackFlip, name: 'Back Flip', icon: '/icons/hand_stand.svg', param: DATA_TRUE },
   { apiId: SPORT_CMD.LeftFlip, name: 'Left Flip', icon: '/icons/mode_bound.svg', param: DATA_TRUE },
+  // Moved from modes: these are one-shot postures, not persistent modes
+  { apiId: SPORT_CMD.Damp, name: 'Damping', icon: '/icons/mode_damping.svg' },
+  { apiId: SPORT_CMD.Sit, name: 'Sit Down', icon: '/icons/sitDown.svg' },
+  { apiId: SPORT_CMD.StandDown, name: 'Crouch', icon: '/icons/lieDown.svg' },
+  { apiId: SPORT_CMD.StandUp, name: 'Lock On', icon: '/icons/mode_locking.svg' },
 ];
 
 /** All available modes */
 export const ALL_MODES: RobotAction[] = [
-  { apiId: SPORT_CMD.Damp, name: 'Damping', icon: '/icons/mode_damping.svg' },
   { apiId: SPORT_CMD.FreeWalk, name: 'Free Walk', icon: '/icons/mode_freeWalk.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.Sit, name: 'Sit Down', icon: '/icons/sitDown.svg' },
   { apiId: SPORT_CMD.Pose, name: 'Pose', icon: '/icons/mode_pose.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.StandDown, name: 'Crouch', icon: '/icons/lieDown.svg' },
   { apiId: SPORT_CMD.SwitchGait, name: 'Run', icon: '/icons/mode_run.svg', param: '{"data":1}' },
   { apiId: SPORT_CMD.WalkStair, name: 'Walk Stair', icon: '/icons/mode_climbingStairs.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.StandUp, name: 'Lock On', icon: '/icons/mode_locking.svg' },
   { apiId: SPORT_CMD.StaticWalk, name: 'Static Walk', icon: '/icons/mode_walk.svg', param: DATA_TRUE },
   { apiId: SPORT_CMD.EconomicGait, name: 'Endurance', icon: '/icons/mode_batteryLife.svg', param: DATA_TRUE },
   { apiId: SPORT_CMD.LeadFollow, name: 'Leash', icon: '/icons/mode_traction.svg', param: DATA_TRUE },
@@ -45,6 +46,9 @@ export const ALL_MODES: RobotAction[] = [
   { apiId: SPORT_CMD.FreeJump, name: 'Jump', icon: '/icons/mode_bound.svg', param: DATA_TRUE },
   { apiId: SPORT_CMD.RecoveryStand, name: 'Stand', icon: '/icons/mode_stand.svg' },
   { apiId: SPORT_CMD.CrossStep, name: 'Cross Step', icon: '/icons/mode_crossStep.svg', param: DATA_TRUE },
+  // Moved from actions: these are persistent postures (remain active until next command)
+  { apiId: SPORT_CMD.BackStand, name: 'Rear Stand', icon: '/icons/mode_ai_stand.svg', param: DATA_TRUE },
+  { apiId: SPORT_CMD.RageMode, name: 'Rage', icon: '/icons/mode_runaway.svg', param: DATA_TRUE },
 ];
 
 export type ActionCallback = (action: RobotAction) => void;

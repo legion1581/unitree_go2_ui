@@ -8,6 +8,12 @@ import { SettingBar, EmergencyStop } from './components/side-buttons';
 import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { MappingPage } from './components/mapping-page';
+import { AccountPage } from './components/account-page';
+import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
+import { BtPopover } from './components/bt-popover';
+import { ThemeToggle } from './components/theme-toggle';
+import { btBackend } from '../api/bt-backend';
+import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
@@ -15,7 +21,7 @@ import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping';
+type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account';
 
 export class App {
   private root: HTMLElement;
@@ -42,12 +48,28 @@ export class App {
   // Services page
   private servicesPage: ServicesPage | null = null;
   private mappingPage: MappingPage | null = null;
+  private accountPage: AccountPage | null = null;
   private serviceEntries: ServiceEntry[] = [];
   private serviceReportTimer: ReturnType<typeof setInterval> | null = null;
 
   // Joystick state
   private joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
   private joystickTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Bluetooth status (persistent across screens)
+  private btStatusIcon: BtStatusIcon | null = null;
+  private themeToggle: ThemeToggle | null = null;
+  private btStatus: BluetoothStatus = {
+    robotConnected: false, robotAddress: '',
+    remoteConnected: false, remoteName: '', remoteAddress: '',
+  };
+
+  // BT remote relay state
+  private relayOn = false;
+  private relayUnsub: (() => void) | null = null;
+  private leftJoystickWrap: HTMLElement | null = null;
+  private rightJoystickWrap: HTMLElement | null = null;
+  private btPopover: BtPopover | null = null;
 
   // Robot state (accumulated from topic messages)
   private robotState = {
@@ -78,6 +100,28 @@ export class App {
     this.root = root;
     root.innerHTML = '';
     root.className = 'app-root';
+
+    // Eager theme init — applies data-theme attribute to <html> so CSS picks it up
+    theme();
+
+    // Persistent theme toggle (sun/moon) next to the BT icon
+    this.themeToggle = new ThemeToggle(document.body);
+
+    // Persistent Bluetooth status icon (mounted on document.body so it survives
+    // screen changes). Hidden on the control view where the relay icon takes over.
+    this.btStatusIcon = new BtStatusIcon(document.body);
+    this.btStatusIcon.setClickHandler(() => this.toggleBtPopover());
+    this.btStatusIcon.onStatusChange((s) => {
+      this.btStatus = s;
+      // Update nav-bar BT icon (control view)
+      this.updateNavBarBtIcon();
+      if (this.currentScreen === 'control') {
+        const label = s.remoteName || s.remoteAddress;
+        this.settingBar?.setRelayAvailable(s.remoteConnected, label);
+        if (!s.remoteConnected && this.relayOn) this.setRelay(false);
+      }
+    });
+
     this.showConnectionScreen();
   }
 
@@ -87,6 +131,7 @@ export class App {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
     this.root.className = 'app-root connection-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -99,62 +144,199 @@ export class App {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
 
-    // Title
+    const isConnected = !!this.webrtc;
+    const isRemoteMode = this.connectionConfig?.mode === 'STA-T';
+
+    // Title + connection info — refreshed whenever the Remote-mode picker
+    // changes so the header follows the currently selected robot.
     const title = document.createElement('h2');
     title.className = 'hub-title';
-    title.textContent = 'Go2 Connected';
     hub.appendChild(title);
 
-    // Connection info
     const info = document.createElement('div');
     info.className = 'hub-info';
-    info.textContent = `IP: ${this.connectionConfig?.ip || 'N/A'} | Mode: ${this.connectionConfig?.mode || 'N/A'}`;
     hub.appendChild(info);
 
-    // Buttons
+    const cachedDevicesForHeader = (() => {
+      try {
+        const c = localStorage.getItem('unitree_devices_cache');
+        return c ? JSON.parse(c) as Array<{ sn: string; alias: string }> : [];
+      } catch { return []; }
+    })();
+
+    const renderHeader = (): void => {
+      const sn = this.connectionConfig?.serialNumber || '';
+      let robotName = isConnected ? 'Go2 Connected' : 'Go2 Dashboard';
+      if (sn) {
+        const dev = cachedDevicesForHeader.find(d => d.sn === sn);
+        robotName = dev?.alias || sn;
+      }
+      title.textContent = robotName;
+
+      const infoItems: string[] = [];
+      if (sn) infoItems.push(`SN: ${sn}`);
+      if (this.connectionConfig?.ip) infoItems.push(`IP: ${this.connectionConfig.ip}`);
+      infoItems.push(`Mode: ${this.connectionConfig?.mode || 'N/A'}`);
+      if (isConnected) infoItems.push('WebRTC: Connected');
+      else if (isRemoteMode) infoItems.push('WebRTC: Not connected');
+      info.textContent = infoItems.join(' | ');
+    };
+    renderHeader();
+
+    // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
+    if (isRemoteMode) {
+      const remoteSection = document.createElement('div');
+      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;background:rgba(26,29,35,0.5);border-radius:10px;border:1px solid #1f2229;';
+
+      // Robot select (only if multiple robots)
+      let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
+      try {
+        const c = localStorage.getItem('unitree_devices_cache');
+        if (c) cachedDevices = JSON.parse(c);
+      } catch { /* ignore */ }
+
+      if (cachedDevices.length > 1) {
+        const robotSel = document.createElement('select');
+        robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
+        const currentSn = this.connectionConfig?.serialNumber || '';
+        for (const d of cachedDevices) {
+          const opt = document.createElement('option');
+          opt.value = d.sn;
+          opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
+          if (d.sn === currentSn) opt.selected = true;
+          robotSel.appendChild(opt);
+        }
+        robotSel.addEventListener('change', () => {
+          if (this.connectionConfig) this.connectionConfig.serialNumber = robotSel.value;
+          renderHeader();
+        });
+        remoteSection.appendChild(robotSel);
+      }
+
+      // Single row: button + status
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;';
+
+      const statusEl = document.createElement('span');
+      statusEl.style.cssText = 'font-size:12px;color:#888;flex:1;';
+
+      if (!isConnected) {
+        const connectBtn = document.createElement('button');
+        connectBtn.style.cssText = 'padding:8px 20px;background:#4fc3f7;color:#000;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
+        connectBtn.textContent = 'WebRTC Connect';
+        connectBtn.addEventListener('click', async () => {
+          connectBtn.disabled = true;
+          connectBtn.textContent = 'Connecting...';
+          connectBtn.style.opacity = '0.6';
+          statusEl.style.color = '#4fc3f7';
+          try {
+            await this.connectWebRTCFromHub((msg) => { statusEl.textContent = msg; });
+          } catch (e) {
+            statusEl.textContent = `${e instanceof Error ? e.message : String(e)}`;
+            statusEl.style.color = '#ef5350';
+            connectBtn.disabled = false;
+            connectBtn.textContent = 'WebRTC Connect';
+            connectBtn.style.opacity = '1';
+          }
+        });
+        row.appendChild(connectBtn);
+      } else {
+        const disconnectBtn = document.createElement('button');
+        disconnectBtn.style.cssText = 'padding:8px 20px;background:transparent;color:#ef5350;border:1px solid #ef5350;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
+        disconnectBtn.textContent = 'Disconnect';
+        disconnectBtn.addEventListener('click', () => this.disconnect());
+        row.appendChild(disconnectBtn);
+        statusEl.textContent = 'WebRTC connected';
+        statusEl.style.color = '#66bb6a';
+      }
+
+      row.appendChild(statusEl);
+      remoteSection.appendChild(row);
+      hub.appendChild(remoteSection);
+    }
+
+    // ── Feature buttons ──
     const btnRow = document.createElement('div');
     btnRow.className = 'hub-buttons';
+    const needsWebRTC = isRemoteMode && !isConnected;
 
-    // WebView (Control UI) button
+    // WebView
     const controlBtn = document.createElement('button');
-    controlBtn.className = 'hub-btn hub-btn-primary';
+    controlBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-primary'}`;
     controlBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><span>WebView</span>`;
-    controlBtn.addEventListener('click', () => this.showControlUi());
+    if (!needsWebRTC) controlBtn.addEventListener('click', () => this.showControlUi());
+    else controlBtn.disabled = true;
     btnRow.appendChild(controlBtn);
 
-    // Status button
+    // Status
     const statusBtn = document.createElement('button');
-    statusBtn.className = 'hub-btn hub-btn-secondary';
+    statusBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
     statusBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg><span>Status</span>`;
-    statusBtn.addEventListener('click', () => this.showStatusScreen());
+    if (!needsWebRTC) statusBtn.addEventListener('click', () => this.showStatusScreen());
+    else statusBtn.disabled = true;
     btnRow.appendChild(statusBtn);
 
-    // Services button
+    // Services
     const svcBtn = document.createElement('button');
-    svcBtn.className = 'hub-btn hub-btn-secondary';
+    svcBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
     svcBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg><span>Services</span>`;
-    svcBtn.addEventListener('click', () => this.showServicesScreen());
+    if (!needsWebRTC) svcBtn.addEventListener('click', () => this.showServicesScreen());
+    else svcBtn.disabled = true;
     btnRow.appendChild(svcBtn);
 
     // 3D LiDAR Mapping button
     const mapBtn = document.createElement('button');
-    mapBtn.className = 'hub-btn hub-btn-secondary';
+    mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
     mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
-    mapBtn.addEventListener('click', () => this.showMappingScreen());
+    if (!needsWebRTC) mapBtn.addEventListener('click', () => this.showMappingScreen());
+    else mapBtn.disabled = true;
     btnRow.appendChild(mapBtn);
+
+    // Account Management — only in Remote mode
+    if (isRemoteMode) {
+      const acctBtn = document.createElement('button');
+      acctBtn.className = 'hub-btn hub-btn-secondary';
+      acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Management</span>`;
+      acctBtn.addEventListener('click', () => this.showAccountScreen());
+      btnRow.appendChild(acctBtn);
+    }
 
     hub.appendChild(btnRow);
 
-    // Disconnect button
-    const disconnectBtn = document.createElement('button');
-    disconnectBtn.className = 'hub-btn-disconnect';
-    disconnectBtn.textContent = 'Disconnect';
-    disconnectBtn.addEventListener('click', () => this.disconnect());
-    hub.appendChild(disconnectBtn);
+    // Disconnect / Back button
+    if (!isRemoteMode) {
+      // Local mode: always show disconnect
+      const disconnectBtn = document.createElement('button');
+      disconnectBtn.className = 'hub-btn-disconnect';
+      disconnectBtn.textContent = 'Disconnect';
+      disconnectBtn.addEventListener('click', () => this.disconnect());
+      hub.appendChild(disconnectBtn);
+    } else if (!isConnected) {
+      // Remote mode, not connected: show "Back to login"
+      const backBtn = document.createElement('button');
+      backBtn.className = 'hub-btn-disconnect';
+      backBtn.style.background = 'transparent';
+      backBtn.style.border = '1px solid #333';
+      backBtn.style.color = '#888';
+      backBtn.textContent = 'Back to Login';
+      backBtn.addEventListener('click', () => {
+        this.disconnect();
+        this.showConnectionScreen();
+      });
+      hub.appendChild(backBtn);
+    } else {
+      // Remote mode, connected: disconnect both WebRTC and session
+      const disconnectBtn = document.createElement('button');
+      disconnectBtn.className = 'hub-btn-disconnect';
+      disconnectBtn.textContent = 'Disconnect';
+      disconnectBtn.addEventListener('click', () => this.disconnect());
+      hub.appendChild(disconnectBtn);
+    }
 
     this.root.appendChild(hub);
   }
@@ -163,6 +345,7 @@ export class App {
     this.currentScreen = 'control';
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
+    this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -173,6 +356,8 @@ export class App {
 
     // Nav bar (top) — back goes to hub, not disconnect
     this.navBar = new NavBar(this.controlUi, () => this.goToHub());
+    this.navBar.setBtIconClick(() => this.toggleBtPopover());
+    this.updateNavBarBtIcon();
 
     // PIP camera
     this.pipCamera = new PipCamera(this.controlUi);
@@ -187,7 +372,9 @@ export class App {
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
+      onRelayToggle: (enabled) => this.setRelay(enabled),
     });
+    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
 
     // Emergency stop
     new EmergencyStop(this.controlUi, (active) => this.sendStop(active));
@@ -206,10 +393,12 @@ export class App {
       this.joystickState.ly = 0;
     });
     opWrapper.appendChild(w1);
+    this.leftJoystickWrap = w1;
 
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
     this.actionBar = new ActionBar(w2, (action) => {
+      console.log(`[go2:action] REQ → ${action.name} (api_id=${action.apiId}, param=${action.param ?? '{}'})`);
       this.dataHandler?.publishRequest(RTC_TOPIC.SPORT_MOD, action.apiId, action.param);
     });
     opWrapper.appendChild(w2);
@@ -224,6 +413,7 @@ export class App {
       this.joystickState.ry = 0;
     });
     opWrapper.appendChild(w3);
+    this.rightJoystickWrap = w3;
 
     this.controlUi.appendChild(opWrapper);
 
@@ -247,6 +437,7 @@ export class App {
     this.currentScreen = 'status';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
   }
@@ -255,6 +446,7 @@ export class App {
     this.currentScreen = 'services';
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -290,9 +482,53 @@ export class App {
     );
   }
 
+  /** Connect WebRTC from the hub screen (Remote mode only). */
+  private async connectWebRTCFromHub(onStep: (msg: string) => void): Promise<void> {
+    const config = this.connectionConfig;
+    if (!config || config.mode !== 'STA-T') throw new Error('Not in Remote mode');
+    if (!config.token) throw new Error('Not logged in');
+    if (!config.serialNumber) throw new Error('No robot selected');
+
+    const callbacks: ConnectionCallbacks = {
+      onStateChange: (state: ConnectionState) => this.onStateChange(state),
+      onValidated: () => {
+        this.enableVideoAndSubscribe();
+        this.showHubScreen(); // Re-render hub with connected state
+      },
+      onMessage: (msg: DataChannelMessage) => {
+        if (this.dataHandler) this.dataHandler.handleMessage(msg);
+      },
+      onVideoTrack: (stream: MediaStream) => {
+        this.videoStream = stream;
+        this.pipCamera?.setStream(stream);
+        if (this.viewMode === 'video' && this.videoBg) {
+          this.videoBg.srcObject = stream;
+          this.videoBg.style.display = 'block';
+          if (this.noiseBgCanvas) this.noiseBgCanvas.style.display = 'none';
+          this.stopBgNoise();
+        }
+      },
+      onAudioTrack: () => {},
+    };
+
+    this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
+    this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
+  }
+
+  private showAccountScreen(): void {
+    this.currentScreen = 'account';
+    this.root.innerHTML = '';
+    this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountPage = new AccountPage(this.root, () => this.goToHub());
+  }
+
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
+    this.setRelay(false);
+    this.btPopover?.close();
+    this.btPopover = null;
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -305,6 +541,8 @@ export class App {
     this.servicesPage = null;
     this.mappingPage?.destroy();
     this.mappingPage = null;
+    this.accountPage?.destroy();
+    this.accountPage = null;
     this.viewMode = 'three';
     this.showHubScreen();
   }
@@ -423,6 +661,60 @@ export class App {
     }
   }
 
+  // ── Nav-bar BT icon & popover ──
+
+  private updateNavBarBtIcon(): void {
+    if (!this.navBar) return;
+    const s = this.btStatus;
+    const connected = s.robotConnected || s.remoteConnected;
+    const parts: string[] = [];
+    if (s.robotConnected) parts.push(`Robot: ${s.robotAddress}`);
+    if (s.remoteConnected) parts.push(`Remote: ${s.remoteName || s.remoteAddress}`);
+    const tooltip = connected ? parts.join(' · ') : 'Bluetooth: not connected';
+    this.navBar.setBluetoothStatus(connected, tooltip);
+  }
+
+  private toggleBtPopover(): void {
+    if (this.btPopover) {
+      this.btPopover.close();
+      this.btPopover = null;
+    } else {
+      this.btPopover = new BtPopover(() => { this.btPopover = null; });
+    }
+  }
+
+  // ── BT Remote Relay Loop ──
+
+  private setRelay(enabled: boolean): void {
+    if (enabled) {
+      if (this.relayUnsub) return;
+      this.relayOn = true;
+      // Zero virtual joystick state and hide them — BT remote is in charge
+      this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
+
+      // Subscribe to BT backend remote_state → publish to robot on every packet (~20 Hz)
+      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
+      this.relayUnsub = btBackend().subscribe('remote_state', (s: { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> }) => {
+        if (!this.dataHandler) return;
+        let keys = 0;
+        for (let i = 0; i < order.length; i++) {
+          if (s.buttons[order[i]]) keys |= (1 << i);
+        }
+        this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
+          lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
+        });
+      });
+    } else {
+      this.relayOn = false;
+      this.relayUnsub?.();
+      this.relayUnsub = null;
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
+    }
+  }
+
   // ── Video & Topic Subscriptions ──
 
   private enableVideoAndSubscribe(): void {
@@ -487,6 +779,14 @@ export class App {
       if (msg.topic === 'rt/api/bashrunner/response') { this.handleBashrunnerResponse(msg.data); return; }
       if (msg.topic === 'rt/api/motion_switcher/response') { this.handleMotionSwitcherResponse(msg.data); return; }
       if (msg.topic === 'rt/api/robot_state/response') { this.handleRobotStateResponse(msg.data); return; }
+      if (msg.topic === 'rt/api/sport/response') {
+        const d = msg.data as { header?: { identity?: { api_id?: number }; status?: { code?: number } }; data?: unknown };
+        const apiId = d?.header?.identity?.api_id;
+        const code = d?.header?.status?.code;
+        const ok = code === 0;
+        console.log(`[go2:action] ${ok ? 'RES ←' : 'ERR ←'} api_id=${apiId} code=${code}${d?.data !== undefined ? ' data=' + JSON.stringify(d.data) : ''}`);
+        return;
+      }
     }
 
     if (!msg.topic || !msg.data) return;
@@ -883,15 +1183,9 @@ export class App {
 
     try {
       if (config.mode === 'STA-T') {
-        let token = config.token;
-        if (!token) {
-          if (!config.email || !config.password) throw new Error('Email and password required');
-          onStep('Logging in...');
-          token = await loginWithEmail(config.email, config.password);
-          onStep('Login successful');
-        }
-        if (!config.serialNumber) throw new Error('Serial number required');
-        this.webrtc = await connectRemote(config.serialNumber, token, callbacks, onStep);
+        // Remote mode: go straight to hub — WebRTC connect happens from there
+        this.showHubScreen();
+        return;
       } else {
         if (!config.ip) throw new Error('IP address required');
         this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep);
@@ -964,7 +1258,10 @@ export class App {
   }
 
   private disconnect(): void {
+    const wasRemote = this.connectionConfig?.mode === 'STA-T';
+
     this.stopJoystickLoop();
+    this.setRelay(false);
     this.stopBgNoise();
     this.dataHandler?.destroy();
     this.dataHandler = null;
@@ -973,7 +1270,6 @@ export class App {
     this.videoStream = null;
     this.videoBg = null;
     this.noiseBgCanvas = null;
-    this.connectionConfig = null;
     this.pipCamera?.destroy();
     this.pipCamera = null;
     this.navBar = null;
@@ -983,6 +1279,8 @@ export class App {
     this.servicesPage = null;
     this.mappingPage?.destroy();
     this.mappingPage = null;
+    this.accountPage?.destroy();
+    this.accountPage = null;
     this.serviceEntries = [];
     if (this.serviceReportTimer) {
       clearInterval(this.serviceReportTimer);
@@ -991,6 +1289,13 @@ export class App {
     this.scene3d?.destroy();
     this.scene3d = null;
     this.viewMode = 'three';
-    this.showConnectionScreen();
+
+    if (wasRemote && this.connectionConfig) {
+      // Stay on hub — keep config, just clear WebRTC
+      this.showHubScreen();
+    } else {
+      this.connectionConfig = null;
+      this.showConnectionScreen();
+    }
   }
 }

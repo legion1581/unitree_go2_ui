@@ -256,23 +256,26 @@ body {
 }
 
 .battery-icon .battery-fill-box {
-  width: 32px;
-  height: 18px;
-  border-radius: 2px;
-  border: 1.5px solid #fff;
+  width: 48px;
+  height: 27px;
+  border-radius: 3px;
+  border: 2px solid #fff;
   box-sizing: border-box;
   position: relative;
-  padding: 2px;
+  padding: 3px;
+  /* Light inner background so the empty portion stays visible and the
+     dark percentage text remains readable over it */
+  background: rgba(255, 255, 255, 0.35);
 }
 
 .battery-icon .battery-fill-box::after {
   content: '';
-  width: 3px;
-  height: 7px;
+  width: 4px;
+  height: 11px;
   background-color: #fff;
   border-radius: 2px;
   position: absolute;
-  right: -4px;
+  right: -5px;
   top: 0;
   bottom: 0;
   margin: auto;
@@ -286,8 +289,12 @@ body {
 }
 
 .battery-text {
-  font-size: 12px;
-  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  /* Dark text with a white halo so it stays readable over green / yellow /
+     red fill regardless of level */
+  color: #1a1d23;
+  text-shadow: 0 0 2px #fff, 0 0 3px rgba(255, 255, 255, 0.8);
   position: absolute;
   top: 50%;
   left: 50%;
@@ -296,26 +303,26 @@ body {
 }
 
 .motor-temp-label {
-  font-size: 12px;
+  font-size: 18px;
   font-weight: 500;
   color: #aaa;
 }
 
 .nav-divider {
   width: 1px;
-  height: 16px;
+  height: 24px;
   background: rgba(255, 255, 255, 0.15);
 }
 
 .net-type-label {
-  font-size: 12px;
+  font-size: 18px;
   font-weight: 600;
   color: #aaa;
 }
 
 .wifi-icon {
-  width: 20px;
-  height: 20px;
+  width: 40px;
+  height: 40px;
   opacity: 0.8;
 }
 
@@ -941,6 +948,15 @@ body {
   50% { opacity: 1; }
 }
 
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes bt-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Slider Control (Volume/Brightness) ── */
 .slider-popup {
   position: absolute;
@@ -1046,6 +1062,12 @@ body {
   background: #252830;
   border-color: #555;
   color: #fff;
+}
+
+.hub-btn-disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .hub-btn-disconnect {
@@ -1833,3 +1855,468 @@ body {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* ── Account Manager ── */
+.acct-tab-bar {
+  display: flex;
+  border-bottom: 1px solid #1a1d23;
+  background: rgba(15, 17, 20, 0.95);
+  flex-shrink: 0;
+}
+.acct-tab-btn {
+  flex: 1;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  color: #666;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+}
+.acct-tab-btn:hover { color: #aaa; }
+.acct-tab-btn.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
+.acct-form { display: flex; flex-direction: column; gap: 0; }
+.acct-btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  margin-top: 8px;
+}
+.acct-btn-primary { background: #4fc3f7; color: #000; }
+.acct-btn-primary:hover { background: #29b6f6; }
+.acct-btn-danger { background: #c62828; color: #fff; }
+.acct-btn-danger:hover { background: #e53935; }
+
+/* BT popover adapter rows (dark defaults) */
+.bt-adapter-row {
+  border: 1px solid #2a2d35;
+  background: #0a0c10;
+  color: #aaa;
+}
+.bt-adapter-row-down { color: #555; }
+.bt-adapter-row-active {
+  border-color: #4fc3f7 !important;
+  background: rgba(79, 195, 247, 0.1) !important;
+  color: #4fc3f7 !important;
+}
+
+/* BT popover panel (dark default) */
+.bt-popover-panel {
+  background: #0f1114;
+  border: 1px solid #1f2229;
+  color: #ccc;
+}
+html[data-theme="light"] .bt-popover-panel {
+  background: #ffffff;
+  border: 1px solid #d4d9e4;
+  color: #1a1d23;
+  box-shadow: 0 8px 28px rgba(60, 75, 120, 0.2);
+}
+/* Device rows + scan item inline backgrounds in the popover */
+html[data-theme="light"] .bt-popover-panel [style*="background:#0a0c10"],
+html[data-theme="light"] .bt-popover-panel [style*="background: #0a0c10"] {
+  background: #f5f7fb !important;
+  border-color: #d4d9e4 !important;
+}
+/* Controller body + button cells (setBtn dark backgrounds) */
+html[data-theme="light"] .bt-popover-panel [style*="background:#111318"],
+html[data-theme="light"] .bt-popover-panel [style*="background: #111318"] {
+  background: #ffffff !important;
+  border-color: #d4d9e4 !important;
+}
+html[data-theme="light"] .bt-popover-panel [style*="background:#080a0e"] {
+  background: #eef1f7 !important;
+  border-color: #d4d9e4 !important;
+}
+
+/* BT popover inputs / selects (dark defaults) */
+.bt-field {
+  background: #0a0c10;
+  border: 1px solid #2a2d35;
+  color: #e0e0e0;
+}
+.bt-field:focus {
+  outline: none;
+  border-color: #4fc3f7;
+}
+
+/* BT popover device rows (dark defaults) */
+.bt-device-row {
+  background: #0a0c10;
+  border: 1px solid #1f2229;
+  color: #e0e0e0;
+}
+
+/* BT popover STA/AP mode toggle (dark defaults) */
+.bt-mode-wrap { border: 1px solid #2a2d35; }
+.bt-mode-btn { background: #0a0c10; color: #666; }
+.bt-mode-btn-active { background: #4fc3f7; color: #000; }
+
+/* BT popover buttons (dark theme defaults) */
+.bt-btn-primary { background: #4fc3f7; color: #000; border: none; }
+.bt-btn-primary:hover:not(:disabled) { background: #29b6f6; }
+.bt-btn-danger { background: #ef5350; color: #fff; border: none; }
+.bt-btn-danger:hover:not(:disabled) { background: #e53935; }
+.bt-btn-secondary { background: #2a2d35; color: #ccc; border: 1px solid #3a3d45; }
+.bt-btn-secondary:hover:not(:disabled) { background: #353942; color: #fff; }
+
+/* ─────────────────────────────────────────────────────────────
+   Light theme overrides
+   Applied via <html data-theme="light"> by ThemeManager
+   ─────────────────────────────────────────────────────────── */
+
+html[data-theme="light"] body {
+  background: #eef1f7;
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .app-root.connection-screen,
+html[data-theme="light"] .app-root.hub-screen,
+html[data-theme="light"] .app-root.status-screen,
+html[data-theme="light"] .app-root.services-screen {
+  background: #eef1f7;
+}
+
+/* Connection modal + hub container */
+html[data-theme="light"] .connection-modal,
+html[data-theme="light"] .hub-container {
+  background: #ffffff;
+  border: 1px solid #d4d9e4;
+  color: #1a1d23;
+  box-shadow: 0 4px 16px rgba(60, 75, 120, 0.08);
+}
+
+html[data-theme="light"] .hub-title,
+html[data-theme="light"] .nav-bar-title,
+html[data-theme="light"] .page-header h2 {
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .hub-info {
+  color: #5a6170;
+}
+
+/* Hub / page sections */
+html[data-theme="light"] .status-section,
+html[data-theme="light"] .acct-card {
+  background: #ffffff;
+  border-color: #d4d9e4;
+}
+html[data-theme="light"] .status-section-title {
+  color: #3d4c8c;
+  border-bottom-color: rgba(104, 121, 228, 0.25);
+}
+
+/* Inputs */
+html[data-theme="light"] input[type="text"],
+html[data-theme="light"] input[type="password"],
+html[data-theme="light"] input[type="number"],
+html[data-theme="light"] select,
+html[data-theme="light"] textarea {
+  background: #ffffff;
+  border-color: #c4cbd6;
+  color: #1a1d23;
+}
+
+/* Nav / Page headers */
+html[data-theme="light"] .nav-bar,
+html[data-theme="light"] .page-header {
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid #d4d9e4;
+}
+html[data-theme="light"] .nav-divider {
+  background: #c4cbd6;
+}
+
+/* BT icon + theme toggle: lighter circle in light mode */
+html[data-theme="light"] .bt-status-icon > div,
+html[data-theme="light"] .theme-toggle-icon > div,
+html[data-theme="light"] .nav-bt-icon,
+html[data-theme="light"] .nav-theme-icon {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-color: #c4cbd6 !important;
+  box-shadow: 0 2px 6px rgba(60, 75, 120, 0.15);
+}
+
+/* Account page / status page text */
+html[data-theme="light"] .acct-page,
+html[data-theme="light"] .status-page,
+html[data-theme="light"] .services-page {
+  color: #1a1d23;
+}
+
+/* BT popover inputs / selects / device rows (light) */
+html[data-theme="light"] .bt-field {
+  background: #ffffff;
+  border-color: #c4cbd6;
+  color: #1a1d23;
+}
+html[data-theme="light"] .bt-field:focus {
+  border-color: #4fc3f7;
+}
+html[data-theme="light"] .bt-device-row {
+  background: #ffffff;
+  border-color: #d4d9e4;
+  color: #1a1d23;
+}
+
+/* STA/AP mode toggle in light theme */
+html[data-theme="light"] .bt-mode-wrap { border-color: #c4cbd6; }
+html[data-theme="light"] .bt-mode-btn { background: #ffffff; color: #5a6170; }
+html[data-theme="light"] .bt-mode-btn-active { background: #4fc3f7; color: #000; }
+
+/* Joystick base in light theme — match the action-bar's translucent dark
+   pill exactly (rgba(17,17,39,0.6) + blur). Apply directly to the box
+   so backdrop-filter renders correctly (pseudo-elements don't always
+   support it). The original joystick_bg.png is opaque dark-navy, so we
+   hide it and draw light grey chevrons via ::after to keep direction
+   arrows visible on our translucent backdrop. */
+html[data-theme="light"] .joystick-box {
+  background: rgba(17, 17, 39, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 50%;
+}
+html[data-theme="light"] .joystick-box::before {
+  display: none;
+}
+html[data-theme="light"] .joystick-bg {
+  display: none;
+}
+html[data-theme="light"] .joystick-box::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100' fill='none' stroke='%23b0b3bb' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='45,14 50,8 55,14'/><polyline points='45,92 50,86 55,92'/><polyline points='14,45 8,50 14,55'/><polyline points='86,45 92,50 86,55'/></svg>");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+
+/* Nav-bar back button + wifi icon: hardcoded white/grey sprites look faded
+   on the light nav-bar. Invert them so they become dark grey. */
+html[data-theme="light"] .back-btn img,
+html[data-theme="light"] .page-back-btn img,
+html[data-theme="light"] .wifi-icon {
+  filter: brightness(0) opacity(0.7);
+}
+
+/* Scan button (bt-btn-secondary) — force the light styling with !important
+   in case any inline style leaks through */
+html[data-theme="light"] .bt-btn-secondary {
+  background: #ffffff !important;
+  color: #1a1d23 !important;
+  border: 1px solid #c4cbd6 !important;
+}
+
+/* Connection mode hero illustration (APK icons) */
+.mode-hero {
+  position: relative;
+  margin-top: 8px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
+}
+.mode-hero img {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.mode-hero-badge {
+  position: absolute;
+  top: -4px;
+  right: 20%;
+  width: 26px;
+  height: 26px;
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  padding: 3px;
+  box-sizing: border-box;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
+}
+/* In dark mode, the blueish hero PNG is already readable; in light it's fine too */
+html[data-theme="dark"] .mode-hero {
+  opacity: 0.95;
+}
+
+/* Connection-panel Scan button (the IP-row scan on the Local Network tab) */
+html[data-theme="light"] .btn-scan {
+  background: #ffffff;
+  border-color: #c4cbd6;
+  color: #4a5ccf;
+}
+html[data-theme="light"] .btn-scan:hover:not(:disabled) {
+  background: #eef1f7;
+  border-color: #6879e4;
+}
+
+/* BT popover adapter rows (light) */
+html[data-theme="light"] .bt-adapter-row {
+  background: #ffffff;
+  border-color: #d4d9e4;
+  color: #1a1d23;
+}
+html[data-theme="light"] .bt-adapter-row-down {
+  color: #8b92a0;
+}
+html[data-theme="light"] .bt-adapter-row-active {
+  border-color: #4fc3f7 !important;
+  background: rgba(79, 195, 247, 0.12) !important;
+  color: #1d5aa0 !important;
+}
+
+/* Status page (charge bar + greys) */
+html[data-theme="light"] .status-bar-track {
+  background: #d4d9e4;
+}
+html[data-theme="light"] .status-label {
+  color: #5a6170;
+}
+html[data-theme="light"] .status-value {
+  color: #1a1d23;
+}
+html[data-theme="light"] .status-motor-header {
+  color: #5a6170;
+  border-bottom-color: #d4d9e4;
+}
+html[data-theme="light"] .status-motor-row {
+  color: #2a2d35;
+  border-bottom-color: #e4e7ef;
+}
+html[data-theme="light"] .motor-name {
+  color: #1a1d23;
+}
+
+/* Services page */
+html[data-theme="light"] .app-root.services-screen {
+  background: #eef1f7;
+}
+html[data-theme="light"] .services-loading {
+  color: #8b92a0;
+}
+html[data-theme="light"] .svc-row {
+  background: #ffffff;
+  border-color: #d4d9e4;
+  box-shadow: 0 1px 3px rgba(60, 75, 120, 0.05);
+}
+html[data-theme="light"] .svc-name {
+  color: #1a1d23;
+}
+html[data-theme="light"] .svc-meta {
+  color: #5a6170;
+}
+html[data-theme="light"] .svc-status-stopped {
+  color: #8b92a0;
+}
+html[data-theme="light"] .svc-version {
+  color: #8b92a0;
+}
+html[data-theme="light"] .svc-status-dot.svc-status-stopped {
+  background: #b0b5c0;
+}
+html[data-theme="light"] .svc-btn-waiting {
+  background: #eef1f7;
+  color: #8b92a0;
+  border-color: #d4d9e4;
+}
+
+/* Push the page-header badge away from the floating theme + BT icons
+   (they sit at the top-right corner, so reserve ~90px of space) */
+.page-header-badge {
+  margin-right: 90px;
+}
+
+/* Battery text is hardcoded white — force a readable color on light bg
+   with a subtle shadow so it remains legible over any fill color */
+html[data-theme="light"] .battery-text {
+  color: #1a1d23;
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.8);
+}
+/* Battery fill-box border also needs to be visible on light bg */
+html[data-theme="light"] .battery-icon .battery-fill-box {
+  border-color: #5a6170;
+  background: rgba(90, 97, 112, 0.15);
+}
+html[data-theme="light"] .battery-icon .battery-fill-box::after {
+  background: #5a6170;
+}
+/* Motor-temp & network labels (use hardcoded grey that's too light on white) */
+html[data-theme="light"] .motor-temp-label,
+html[data-theme="light"] .net-type-label {
+  color: #1a1d23 !important;
+}
+
+/* Plain text elements previously on dark bg */
+html[data-theme="light"] .page-content {
+  color: #1a1d23;
+}
+
+/* Hub buttons (Webview, Status, Services, Connect) */
+html[data-theme="light"] .hub-btn {
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .hub-btn-primary {
+  background: linear-gradient(135deg, #ffffff, #e8ecf5);
+  color: #4a5ccf;
+  border-color: #a8b4e0;
+}
+html[data-theme="light"] .hub-btn-primary:hover {
+  background: linear-gradient(135deg, #e8ecf5, #d4dbf0);
+  border-color: #6879e4;
+}
+html[data-theme="light"] .hub-btn-secondary {
+  background: #ffffff;
+  color: #5a6170;
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .hub-btn-secondary:hover {
+  background: #f5f7fb;
+  color: #1a1d23;
+  border-color: #8090b0;
+}
+
+/* Joystick base shadow — very light tint in light mode */
+html[data-theme="light"] .joystick-box::before {
+  background: linear-gradient(179deg, #8090b0, rgba(128, 144, 176, 0));
+  opacity: 0.15;
+}
+
+/* Setting bar (Radar / LiDAR / Volume / Light / Relay) */
+html[data-theme="light"] .setting-bar {
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 8px rgba(60, 75, 120, 0.15);
+  border: 1px solid #c4cbd6;
+}
+html[data-theme="light"] .setting-btn:active {
+  background: rgba(104, 121, 228, 0.15);
+}
+/* Setting-bar icons (lamp, volume, radar, relay SVG) are designed for dark bg.
+   Darken them in light mode so they stay readable. */
+html[data-theme="light"] .setting-btn img {
+  filter: brightness(0) opacity(0.7);
+}
+html[data-theme="light"] .setting-btn svg {
+  stroke: #1a1d23 !important;
+}
+html[data-theme="light"] .setting-btn svg circle[fill] {
+  fill: #1a1d23 !important;
+}
+
+html[data-theme="light"] .bt-btn-secondary:hover:not(:disabled) {
+  background: #eef1f7 !important;
+  border-color: #6879e4 !important;
+  color: #1a1d23 !important;
+}
+
+/* Emergency stop stays red in both themes — it's a hazard indicator */
+

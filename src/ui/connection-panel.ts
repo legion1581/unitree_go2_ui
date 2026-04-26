@@ -1,14 +1,20 @@
 import type { ConnectionMode, ConnectionConfig } from '../types';
 import { MODE_LABELS, DEFAULT_AP_IP } from '../connection/modes';
 import { scanForRobots } from '../connection/network-scan';
+import { cloudApi, type RobotDevice } from '../api/unitree-cloud';
 
 export type ConnectHandler = (config: ConnectionConfig) => void;
 
+/**
+ * Remote mode flow:
+ *   1. Show email/password (or token) → Login button
+ *   2. On login success → fetch device list → show robot picker
+ *   3. Auto-select if single robot → Connect button
+ */
 export class ConnectionPanel {
   private container: HTMLElement;
   private modeSelect!: HTMLSelectElement;
   private ipInput!: HTMLInputElement;
-  private snInput!: HTMLInputElement;
   private emailInput!: HTMLInputElement;
   private passwordInput!: HTMLInputElement;
   private tokenInput!: HTMLInputElement;
@@ -16,7 +22,12 @@ export class ConnectionPanel {
   private scanBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
   private authToggle!: HTMLElement;
+  private robotPickerGroup!: HTMLElement;
+  private robotSelect!: HTMLSelectElement;
+  private loginBtn!: HTMLButtonElement;
   private useToken = false;
+  private remoteLoggedIn = false;
+  private selectedSn = '';
   private onConnect: ConnectHandler;
 
   constructor(parent: HTMLElement, onConnect: ConnectHandler) {
@@ -33,6 +44,10 @@ export class ConnectionPanel {
       <div class="form-group">
         <label for="mode-select">Connection Mode</label>
         <select id="mode-select"></select>
+        <div class="mode-hero" id="mode-hero">
+          <img id="mode-hero-img" src="/sprites/mode_sta_hero.png" alt="" />
+          <img class="mode-hero-badge" id="mode-hero-badge" src="/sprites/mode_cloud.png" alt="" />
+        </div>
       </div>
       <div class="form-group" id="ip-group">
         <label for="ip-input">Robot IP Address</label>
@@ -41,27 +56,35 @@ export class ConnectionPanel {
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
       </div>
-      <div class="form-group" id="sn-group">
-        <label for="sn-input">Serial Number</label>
-        <input type="text" id="sn-input" placeholder="Device serial number" />
-      </div>
       <div id="auth-toggle" class="form-group" style="display:none">
         <div class="auth-toggle-row">
           <button class="auth-tab active" data-auth="credentials">Email / Password</button>
           <button class="auth-tab" data-auth="token">Token</button>
         </div>
       </div>
-      <div class="form-group" id="email-group">
-        <label for="email-input">Email</label>
-        <input type="email" id="email-input" placeholder="Unitree account email" />
-      </div>
-      <div class="form-group" id="password-group">
-        <label for="password-input">Password</label>
-        <input type="password" id="password-input" placeholder="Account password" />
-      </div>
+      <form id="credentials-form" autocomplete="on" onsubmit="return false;">
+        <div class="form-group" id="email-group">
+          <label for="email-input">Email</label>
+          <input type="email" id="email-input" placeholder="Unitree account email" autocomplete="username" />
+        </div>
+        <div class="form-group" id="password-group">
+          <label for="password-input">Password</label>
+          <input type="password" id="password-input" placeholder="Account password" autocomplete="current-password" />
+        </div>
+      </form>
       <div class="form-group" id="token-group">
-        <label for="token-input">Access Token</label>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label for="token-input" style="margin:0;">Access Token</label>
+          <button type="button" id="token-info-btn" title="Show token details"
+            style="background:none;border:1px solid var(--border-color,#555);color:inherit;width:18px;height:18px;border-radius:50%;cursor:pointer;padding:0;font-size:11px;line-height:1;display:inline-flex;align-items:center;justify-content:center;opacity:0.7;">i</button>
+        </div>
         <input type="text" id="token-input" placeholder="Paste access token" />
+        <div id="token-info-panel" style="display:none;margin-top:6px;padding:8px 10px;border:1px solid var(--border-color,#444);border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;background:rgba(255,255,255,0.03);"></div>
+      </div>
+      <button id="login-btn" class="btn-connect" style="display:none">Login</button>
+      <div class="form-group" id="robot-picker-group" style="display:none">
+        <label>Choose Robot for WebView</label>
+        <select id="robot-select"><option value="">-- Select robot --</option></select>
       </div>
       <button id="connect-btn" class="btn-connect">Connect</button>
       <div id="connection-status" class="status"></div>
@@ -69,16 +92,17 @@ export class ConnectionPanel {
 
     this.modeSelect = this.container.querySelector('#mode-select')!;
     this.ipInput = this.container.querySelector('#ip-input')!;
-    this.snInput = this.container.querySelector('#sn-input')!;
     this.emailInput = this.container.querySelector('#email-input')!;
     this.passwordInput = this.container.querySelector('#password-input')!;
     this.tokenInput = this.container.querySelector('#token-input')!;
     this.connectBtn = this.container.querySelector('#connect-btn')!;
+    this.loginBtn = this.container.querySelector('#login-btn')!;
     this.scanBtn = this.container.querySelector('#scan-btn')!;
     this.statusEl = this.container.querySelector('#connection-status')!;
     this.authToggle = this.container.querySelector('#auth-toggle')!;
+    this.robotPickerGroup = this.container.querySelector('#robot-picker-group')!;
+    this.robotSelect = this.container.querySelector('#robot-select')!;
 
-    // Populate mode selector
     for (const [mode, label] of Object.entries(MODE_LABELS)) {
       const option = document.createElement('option');
       option.value = mode;
@@ -86,7 +110,6 @@ export class ConnectionPanel {
       this.modeSelect.appendChild(option);
     }
 
-    // Auth toggle tabs
     this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
         this.useToken = (tab as HTMLElement).dataset.auth === 'token';
@@ -94,44 +117,102 @@ export class ConnectionPanel {
       });
     });
 
-    this.modeSelect.addEventListener('change', () => this.updateVisibility());
+    this.modeSelect.addEventListener('change', () => {
+      this.remoteLoggedIn = false;
+      this.updateVisibility();
+    });
     this.connectBtn.addEventListener('click', () => this.handleConnect());
+    this.loginBtn.addEventListener('click', () => this.handleRemoteLogin());
+
+    // Enter key triggers login/connect
+    const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.loginBtn.style.display !== 'none' ? this.handleRemoteLogin() : this.handleConnect(); } };
+    this.container.addEventListener('keydown', handleEnter);
     this.scanBtn.addEventListener('click', () => this.handleScan());
+    this.robotSelect.addEventListener('change', () => {
+      this.selectedSn = this.robotSelect.value;
+    });
+
+    const infoBtn = this.container.querySelector('#token-info-btn') as HTMLButtonElement;
+    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement;
+    infoBtn.addEventListener('click', () => {
+      const showing = infoPanel.style.display !== 'none';
+      if (showing) { infoPanel.style.display = 'none'; return; }
+      this.renderTokenInfo();
+      infoPanel.style.display = '';
+    });
+    this.tokenInput.addEventListener('input', () => {
+      if (infoPanel.style.display !== 'none') this.renderTokenInfo();
+    });
 
     this.modeSelect.value = 'STA-L';
-    this.ipInput.value = '';
-    this.ipInput.placeholder = 'Robot IP on local network';
+
+    // If a previous session saved a token, pre-fill the Token field and default
+    // to the Token tab in Remote mode — user just hits Login.
+    if (cloudApi.loadSession() && cloudApi.isLoggedIn) {
+      this.tokenInput.value = cloudApi.accessToken;
+      this.useToken = true;
+      void this.ensureFreshAndUpdate();
+    }
+
     this.updateVisibility();
+  }
+
+  private async ensureFreshAndUpdate(): Promise<void> {
+    const ok = await cloudApi.ensureFreshToken();
+    this.tokenInput.value = ok ? cloudApi.accessToken : '';
+    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement | null;
+    if (infoPanel && infoPanel.style.display !== 'none') this.renderTokenInfo();
   }
 
   private updateVisibility(): void {
     const mode = this.modeSelect.value as ConnectionMode;
     const isRemote = mode === 'STA-T';
 
+    // Swap the connection-mode hero illustration (APK icons)
+    const heroImg = this.container.querySelector('#mode-hero-img') as HTMLImageElement;
+    const heroBadge = this.container.querySelector('#mode-hero-badge') as HTMLImageElement;
+    if (heroImg && heroBadge) {
+      if (mode === 'AP') {
+        heroImg.src = '/sprites/mode_ap_hero.png';
+        heroBadge.style.display = 'none';
+      } else {
+        heroImg.src = '/sprites/mode_sta_hero.png';
+        // STA-T = STA + cloud badge (remote connection via Unitree cloud)
+        heroBadge.style.display = isRemote ? '' : 'none';
+      }
+    }
+
     const ipGroup = this.container.querySelector('#ip-group') as HTMLElement;
-    const snGroup = this.container.querySelector('#sn-group') as HTMLElement;
     const emailGroup = this.container.querySelector('#email-group') as HTMLElement;
     const passwordGroup = this.container.querySelector('#password-group') as HTMLElement;
     const tokenGroup = this.container.querySelector('#token-group') as HTMLElement;
 
+    // Local modes: show IP input
     ipGroup.style.display = isRemote ? 'none' : '';
-    snGroup.style.display = isRemote ? '' : 'none';
-    this.authToggle.style.display = isRemote ? '' : 'none';
 
-    if (isRemote) {
-      // Update tab active state
+    // Remote mode: show auth OR robot picker (depending on login state)
+    this.authToggle.style.display = isRemote && !this.remoteLoggedIn ? '' : 'none';
+
+    if (isRemote && !this.remoteLoggedIn) {
+      // Show login form
       this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
         const isTokenTab = (tab as HTMLElement).dataset.auth === 'token';
         tab.classList.toggle('active', this.useToken ? isTokenTab : !isTokenTab);
       });
-
       emailGroup.style.display = this.useToken ? 'none' : '';
       passwordGroup.style.display = this.useToken ? 'none' : '';
       tokenGroup.style.display = this.useToken ? '' : 'none';
+      this.loginBtn.style.display = '';
+      this.connectBtn.style.display = 'none';
+      this.robotPickerGroup.style.display = 'none';
     } else {
+      // Local mode
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       tokenGroup.style.display = 'none';
+      this.loginBtn.style.display = 'none';
+      this.connectBtn.style.display = '';
+      this.robotPickerGroup.style.display = 'none';
     }
 
     if (mode === 'AP') {
@@ -146,18 +227,129 @@ export class ConnectionPanel {
     }
   }
 
+  private decodeJwt(tok: string): { header: Record<string, unknown>; payload: Record<string, unknown> } | null {
+    try {
+      const [h, p] = tok.split('.');
+      if (!h || !p) return null;
+      const dec = (s: string): Record<string, unknown> => {
+        s = s.replace(/-/g, '+').replace(/_/g, '/');
+        while (s.length % 4) s += '=';
+        return JSON.parse(atob(s));
+      };
+      return { header: dec(h), payload: dec(p) };
+    } catch { return null; }
+  }
+
+  private renderTokenInfo(): void {
+    const panel = this.container.querySelector('#token-info-panel') as HTMLElement;
+    const tok = this.tokenInput.value.trim();
+    if (!tok) { panel.innerHTML = '<em style="opacity:0.6">No token</em>'; return; }
+    const parts = this.decodeJwt(tok);
+    if (!parts) { panel.innerHTML = '<em style="color:#e84855">Not a valid JWT</em>'; return; }
+    const p = parts.payload as { uid?: number; sub?: string; iss?: string; type?: string; ct?: number; exp?: number };
+    const h = parts.header as { alg?: string; typ?: string };
+    const fmt = (ts?: number) => ts ? new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—';
+    const now = Math.floor(Date.now() / 1000);
+    const remaining = p.exp ? p.exp - now : 0;
+    const days = Math.floor(Math.abs(remaining) / 86400);
+    const hours = Math.floor((Math.abs(remaining) % 86400) / 3600);
+    let status: string;
+    if (!p.exp) status = '—';
+    else if (remaining <= 0) status = `<span style="color:#e84855">expired ${days}d ${hours}h ago</span>`;
+    else if (remaining < 86400) status = `<span style="color:#f5a623">${hours}h left</span>`;
+    else status = `<span style="color:#6cc04a">${days}d ${hours}h left</span>`;
+    // Only surface lastRefreshedAt when the pasted token matches the stored
+    // session — otherwise the value is for an unrelated token.
+    const refreshedAt = (tok === cloudApi.accessToken) ? cloudApi.lastRefreshedAt : null;
+    const row = (k: string, v: string) => `<div><span style="opacity:0.6">${k}:</span> ${v}</div>`;
+    panel.innerHTML =
+      row('UID', String(p.uid ?? '—')) +
+      row('Type', `${p.type ?? '—'} · sub=${p.sub ?? '—'}`) +
+      row('Issuer', String(p.iss ?? '—')) +
+      row('Issued', fmt(p.ct)) +
+      row('Expires', `${fmt(p.exp)} · ${status}`) +
+      row('Last refreshed', refreshedAt ? fmt(refreshedAt) : '—') +
+      row('Algorithm', `${h.alg ?? '—'} / ${h.typ ?? '—'}`);
+  }
+
+  private async handleRemoteLogin(): Promise<void> {
+    this.loginBtn.disabled = true;
+    this.loginBtn.textContent = 'Logging in...';
+    this.setStatus('', 'info');
+
+    try {
+      if (this.useToken) {
+        const token = this.tokenInput.value.trim();
+        if (!token) throw new Error('Paste an access token');
+        cloudApi.setAccessToken(token);
+        cloudApi.saveSession();
+      } else {
+        const email = this.emailInput.value.trim();
+        const pwd = this.passwordInput.value.trim();
+        if (!email || !pwd) throw new Error('Enter email and password');
+        await cloudApi.loginEmail(email, pwd);
+      }
+
+      this.setStatus('Loading your robots...', 'info');
+      const devices = await cloudApi.listDevices();
+
+      // Cache for hub screen
+      try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
+
+      if (devices.length === 0) {
+        this.setStatus('No robots bound to your account', 'error');
+        this.loginBtn.disabled = false;
+        this.loginBtn.textContent = 'Login';
+        return;
+      }
+
+      // Auto-select first robot and go straight to hub
+      const firstSn = devices[0].sn;
+      this.onConnect({
+        mode: 'STA-T',
+        ip: '',
+        token: cloudApi.accessToken,
+        serialNumber: firstSn,
+        email: '',
+        password: '',
+      });
+    } catch (e) {
+      this.setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+    } finally {
+      this.loginBtn.disabled = false;
+      this.loginBtn.textContent = 'Login';
+    }
+  }
+
   private handleConnect(): void {
     const mode = this.modeSelect.value as ConnectionMode;
-    const config: ConnectionConfig = {
-      mode,
-      ip: this.ipInput.value.trim(),
-      token: this.tokenInput.value.trim(),
-      serialNumber: this.snInput.value.trim(),
-      email: this.emailInput.value.trim(),
-      password: this.passwordInput.value.trim(),
-    };
 
-    this.onConnect(config);
+    if (mode === 'STA-T') {
+      // For Remote mode, go to hub (WebRTC connect happens there)
+      const sn = this.selectedSn || this.robotSelect.value;
+      if (!sn) {
+        this.setStatus('Please select a robot', 'error');
+        return;
+      }
+      // Pass config WITHOUT triggering WebRTC — hub handles that
+      this.onConnect({
+        mode,
+        ip: '',
+        token: cloudApi.accessToken,
+        serialNumber: sn,
+        email: '',
+        password: '',
+      });
+    } else {
+      this.onConnect({
+        mode,
+        ip: this.ipInput.value.trim(),
+        token: '',
+        serialNumber: '',
+        email: '',
+        password: '',
+      });
+    }
   }
 
   private async handleScan(): Promise<void> {
@@ -170,7 +362,6 @@ export class ConnectionPanel {
       if (results.length > 0) {
         const best = results[0];
         this.ipInput.value = best.ip;
-        if (best.sn) this.snInput.value = best.sn;
         if (best.ip !== DEFAULT_AP_IP) {
           this.modeSelect.value = 'STA-L';
           this.updateVisibility();

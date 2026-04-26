@@ -86,6 +86,42 @@ export function robotProxyPlugin(): Plugin {
           return;
         }
 
+        // Proxy BLE server API (Python FastAPI on port 5051)
+        if (url.pathname.startsWith('/ble-api/')) {
+          const targetPath = req.url!.replace('/ble-api', '');
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            const body = Buffer.concat(chunks);
+            const headers: Record<string, string> = {};
+            for (const [key, val] of Object.entries(req.headers)) {
+              if (typeof val === 'string' && key !== 'host' && key !== 'origin' && key !== 'referer') {
+                headers[key] = val;
+              }
+            }
+            if (body.length > 0) {
+              headers['content-length'] = body.length.toString();
+            }
+
+            const proxyReq = http.request(
+              { hostname: '127.0.0.1', port: 5051, path: targetPath, method: req.method, headers },
+              (proxyRes) => {
+                res.statusCode = proxyRes.statusCode ?? 500;
+                if (proxyRes.headers['content-type']) res.setHeader('Content-Type', proxyRes.headers['content-type']);
+                proxyRes.pipe(res);
+              },
+            );
+            proxyReq.on('error', (err) => {
+              res.statusCode = 502;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: `BLE server not running: ${err.message}. Start with: python3 server/ble_server.py` }));
+            });
+            if (body.length > 0) proxyReq.end(body);
+            else proxyReq.end();
+          });
+          return;
+        }
+
         // Proxy Unitree cloud API requests to avoid CORS
         if (url.pathname.startsWith('/unitree-api/')) {
           const targetPath = req.url!.replace('/unitree-api', '');
@@ -104,6 +140,21 @@ export function robotProxyPlugin(): Plugin {
               headers['content-length'] = body.length.toString();
             }
 
+            // Set User-Agent to match Android app (EdgeOne WAF blocks Node defaults)
+            headers['user-agent'] = 'okhttp/4.11.0';
+            // Ask for identity encoding — we don't want the server to gzip/deflate
+            // the body. Some endpoints return raw compressed bytes without sending
+            // the proper Content-Encoding header, which makes the browser parse
+            // them as binary JSON. Forcing identity avoids the ambiguity.
+            headers['accept-encoding'] = 'identity';
+            // Remove headers that leak browser/proxy origin
+            delete headers['sec-fetch-site'];
+            delete headers['sec-fetch-mode'];
+            delete headers['sec-fetch-dest'];
+            delete headers['sec-ch-ua'];
+            delete headers['sec-ch-ua-mobile'];
+            delete headers['sec-ch-ua-platform'];
+
             const proxyReq = https.request(
               {
                 hostname: 'global-robot-api.unitree.com',
@@ -114,8 +165,15 @@ export function robotProxyPlugin(): Plugin {
               },
               (proxyRes) => {
                 res.statusCode = proxyRes.statusCode ?? 500;
-                if (proxyRes.headers['content-type']) {
-                  res.setHeader('Content-Type', proxyRes.headers['content-type']);
+                // Forward ALL response headers (previously only content-type was
+                // forwarded, which dropped Content-Encoding — causing the browser
+                // to see compressed bytes without knowing to decompress them)
+                for (const [key, val] of Object.entries(proxyRes.headers)) {
+                  if (val === undefined) continue;
+                  // Skip hop-by-hop headers that shouldn't be forwarded
+                  const k = key.toLowerCase();
+                  if (k === 'transfer-encoding' || k === 'connection') continue;
+                  res.setHeader(key, val as string | string[]);
                 }
                 proxyRes.pipe(res);
               },

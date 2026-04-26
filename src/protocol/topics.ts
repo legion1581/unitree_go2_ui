@@ -89,6 +89,8 @@ export const SPORT_CMD = {
   FreeAvoid: 2048,
   CrossStep: 2051,
   LeadFollow: 2056,
+  BackStand: 2050,   // Rear Stand — MCF firmware
+  RageMode: 2059,    // Rage mode — MCF firmware
   // MCF IDs that differ from Normal
   StaticWalk: 1061,
   TrotRun: 1062,
