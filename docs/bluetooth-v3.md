@@ -160,4 +160,4 @@ Routing V3 frames to the AES decryptor is a frequent porting bug — the decrypt
 | GCM key length | 16 bytes (32 hex chars) |
 | GCM key file (on-robot) | `/unitree/etc/key/aes_key.bin` |
 
-For everything else (scanning, V1/V2 commands, WiFi flow, remote control), see [bluetooth-v1-v2.md](bluetooth-v1-v2.md).
+For scanning, V1/V2 commands, and WiFi configuration, see [bluetooth-v1-v2.md](bluetooth-v1-v2.md). For the BLE remote control and the WebRTC relay that forwards its inputs to the robot, see [remote-control.md](remote-control.md).

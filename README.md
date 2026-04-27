@@ -123,8 +123,9 @@ When a BLE remote control is connected, a gamepad icon appears in the control vi
 </p>
 
 Protocol reference:
-- [docs/bluetooth-v1-v2.md](docs/bluetooth-v1-v2.md) — Go2 (all firmware) and G1 (`< 1.5.1`)
+- [docs/bluetooth-v1-v2.md](docs/bluetooth-v1-v2.md) — Robot BLE provisioning (Go2 all firmware, G1 `< 1.5.1`)
 - [docs/bluetooth-v3.md](docs/bluetooth-v3.md) — G1 `≥ 1.5.1` extension (`VERSION` 0xF1, `GCM_KEY` 0xF2)
+- [docs/remote-control.md](docs/remote-control.md) — BLE remote (`Unitree-*`) and the WebRTC relay to the robot
 
 ```bash
 # Or run the BLE server separately:

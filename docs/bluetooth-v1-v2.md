@@ -1,8 +1,10 @@
 # Bluetooth Protocol V1 / V2 — Unitree Robots
 
-This document describes the legacy BLE provisioning protocol used to scan, connect, and configure Unitree robots (WiFi setup, serial number, AP MAC) and to read input from the Unitree BLE remote control. It also covers the WebRTC relay path that forwards remote-control inputs to the robot.
+This document describes the legacy BLE provisioning protocol used to scan, connect, and configure Unitree robots (WiFi setup, serial number, AP MAC).
 
-For the newer V3 commands (`VERSION`, `GCM_KEY`) introduced on G1 firmware 1.5.1, see [bluetooth-v3.md](bluetooth-v3.md). V3 is **not** available on Go2.
+Related documents:
+- [bluetooth-v3.md](bluetooth-v3.md) — V3 extension (`VERSION` 0xF1, `GCM_KEY` 0xF2) introduced on G1 firmware 1.5.1. **Not** available on Go2.
+- [remote-control.md](remote-control.md) — BLE remote (`Unitree-*`) protocol and the WebRTC relay that forwards remote inputs to the robot.
 
 ## Firmware Compatibility
 
@@ -24,8 +26,6 @@ V1 and V2 share the same wire format, encryption, and command set. The only diff
 - [Robot Connection Flow](#robot-connection-flow)
 - [Commands](#commands)
 - [WiFi Configuration](#wifi-configuration)
-- [Remote Control](#remote-control)
-- [WebRTC Relay](#webrtc-relay)
 
 ---
 
@@ -120,7 +120,7 @@ Robots and remotes are discovered via BLE advertisement.
 |--------|--------|
 | `Go2_` | Unitree Go2 robot |
 | `G1_`  | Unitree G1 robot |
-| `Unitree` (not `Go2_`) | BLE Remote Control (e.g. `Unitree-32KC0D`) |
+| `Unitree-` | BLE Remote Control (e.g. `Unitree-32KC0D`) — see [remote-control.md](remote-control.md) |
 
 ### Protocol Detection
 
@@ -305,180 +305,6 @@ Each step waits for a success response before proceeding. The password step has 
 
 ---
 
-## Remote Control
-
-The Unitree BLE remote control (e.g. `Unitree-32KC0D`) is a dual-mode Bluetooth device (classic BR/EDR + BLE). It uses the V1 (FFE0) service but with a different handshake and data format than the robot.
-
-### Connection Challenges
-
-The remote advertises with a **public** Bluetooth address and supports both BR/EDR and BLE. BlueZ's D-Bus API (`Device1.Connect()`) defaults to classic Bluetooth for such devices, which fails with `br-connection-profile-unavailable`.
-
-**Solution:** Use `gatttool` (via `pygatt`) which forces BLE/LE transport directly, bypassing BlueZ's transport auto-selection.
-
-### Connection Flow
-
-```
-1. BLE Scan     -> Find device with name starting with "Unitree" (not Go2_/G1_)
-2. LE Connect   -> Force BLE transport (gatttool -t public)
-3. Set MTU      -> Request MTU 64 (200ms after connect)
-4. Subscribe    -> Enable notifications on FFE1
-5. Handshake    -> Write hex-encoded "YS+2" to FFE2
-```
-
-### Handshake
-
-The handshake string `"YS+2"` is converted to its hex-character representation:
-
-```
-'Y' = 0x59 -> "59"
-'S' = 0x53 -> "53"
-'+' = 0x2B -> "2b"
-'2' = 0x32 -> "32"
-
-Result: b"59532b32" (8 ASCII bytes written to FFE2)
-```
-
-This is **not** AES-encrypted — it is sent as raw bytes.
-
-### Notification Packet (20 bytes)
-
-After handshake, the remote streams 20-byte packets at ~20 Hz on the notify characteristic (FFE1):
-
-```
-Offset  Size  Type        Field
-──────  ────  ──────────  ─────────────────
- 0      4     float32 LE  Left Stick X (lx)
- 4      4     float32 LE  Right Stick X (rx)
- 8      4     float32 LE  Right Stick Y (ry)
-12      4     float32 LE  Left Stick Y (ly)
-16      1     uint8       Button byte 1
-17      1     uint8       Button byte 2
-18      1     uint8       Battery (0-100%)
-19      1     uint8       RSSI
-```
-
-Joystick values are IEEE 754 floats, range approximately -1.0 to 1.0.
-
-### Button Mapping
-
-**Byte 16 — Shoulder & Function:**
-
-| Bit | Button |
-|-----|--------|
-| 0 | R1 |
-| 1 | L1 |
-| 2 | Start |
-| 3 | Select |
-| 4 | R2 |
-| 5 | L2 |
-| 6 | F1 |
-| 7 | F2 |
-
-**Byte 17 — Face & D-Pad:**
-
-| Bit | Button |
-|-----|--------|
-| 0 | A |
-| 1 | B |
-| 2 | X |
-| 3 | Y |
-| 4 | Up |
-| 5 | Right |
-| 6 | Down |
-| 7 | Left |
-
-Check if a button is pressed:
-```python
-pressed = bool((byte >> bit) & 1)
-```
-
-### Physical Layout
-
-```
-     [L2] [L1]              [R1] [R2]
-
-    ( Left Stick )        ( Right Stick )
-
-         [Up]                 [Y]
-   [Left]    [Right]     [X]     [B]
-        [Down]                [A]
-
-  [F1] [Select]          [F2] [Start]
-```
-
----
-
-## WebRTC Relay
-
-The Unitree app relays remote control BLE data to the robot over WebRTC. This is how the remote controls the robot when connected through the phone.
-
-### Data Flow
-
-```
-BLE Remote (20-byte notification)
-  -> Android BleNotifyCallback
-  -> EventBus: AppSendRockerEvent(comma_separated_bytes)
-  -> WebRTCFragment.onMessageEvent()
-  -> evaluateJavascript("appSendRocker", raw_byte_string)
-  -> JS dealRocker() parses bytes
-  -> publish("rt/wirelesscontroller", {lx, ly, rx, ry, keys})
-  -> WebRTC DataChannel
-  -> Robot
-```
-
-### WebRTC Message Format
-
-```json
-{
-  "type": "msg",
-  "topic": "rt/wirelesscontroller",
-  "data": {
-    "lx": 0.0,
-    "ly": 0.0,
-    "rx": 0.0,
-    "ry": 0.0,
-    "keys": 0
-  }
-}
-```
-
-### Keys Field
-
-The `keys` field is a uint16 bitmask packing all 16 buttons in order:
-
-```
-Bit  0: R1      Bit  8: A
-Bit  1: L1      Bit  9: B
-Bit  2: Start   Bit 10: X
-Bit  3: Select  Bit 11: Y
-Bit  4: R2      Bit 12: Up
-Bit  5: L2      Bit 13: Right
-Bit  6: F1      Bit 14: Down
-Bit  7: F2      Bit 15: Left
-```
-
-### Input Sources
-
-The same `rt/wirelesscontroller` topic is used by three input sources:
-
-| Source | Bridge Method | Notes |
-|---|---|---|
-| BLE Remote | `appSendRocker(bytes)` | Raw 20-byte notification forwarded |
-| USB/Android Gamepad | `appSendJoystick(json)` | ly and ry are **negated** |
-| Virtual Joystick (on-screen) | Direct JS publish | No `keys` field (buttons not applicable) |
-
-### RSSI Signal Thresholds (Remote UI)
-
-| RSSI (dBm) | Signal Level |
-|---|---|
-| >= -70 | Excellent |
-| >= -75 | Good |
-| >= -83 | Fair |
-| >= -90 | Weak |
-| < -100 | Very weak |
-
----
-
 ## Quick Reference
 
 | Constant | Value |
@@ -488,10 +314,9 @@ The same `rt/wirelesscontroller` topic is used by three input sources:
 | Request header | `0x52` |
 | Response header | `0x51` |
 | Chunk size | 14 bytes |
-| Handshake string (robot) | `"unitree"` |
-| Handshake string (remote) | `"59532b32"` (hex of `"YS+2"`) |
+| Handshake string | `"unitree"` |
 | WiFi AP mode byte | `0x01` |
 | WiFi STA mode byte | `0x02` |
 | Success status | `0x01` |
 
-For the V3 extension (`VERSION` 0xF1, `GCM_KEY` 0xF2 — G1 firmware ≥ 1.5.1 only), see [bluetooth-v3.md](bluetooth-v3.md).
+For the V3 extension (`VERSION` 0xF1, `GCM_KEY` 0xF2 — G1 firmware ≥ 1.5.1 only), see [bluetooth-v3.md](bluetooth-v3.md). For the BLE remote control and the WebRTC relay that forwards its inputs to the robot, see [remote-control.md](remote-control.md).
