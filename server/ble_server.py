@@ -404,7 +404,11 @@ class RemoteSession:
                 pass
 
             self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
-            self._adapter.start()
+            # reset_on_start=True would run `sudo systemctl restart bluetooth` and
+            # `sudo hciconfig … reset` (pygatt workaround for a legacy gatttool
+            # bonding lockup). Skip it so connecting doesn't prompt for a sudo
+            # password — re-enable if bonding lockups appear.
+            self._adapter.start(reset_on_start=False)
 
             try:
                 self._device = self._adapter.connect(
