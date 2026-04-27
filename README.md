@@ -122,7 +122,9 @@ When a BLE remote control is connected, a gamepad icon appears in the control vi
   <img src="images/bt-relay-button.png" width="60%" />
 </p>
 
-See [docs/bluetooth.md](docs/bluetooth.md) for the full protocol reference.
+Protocol reference:
+- [docs/bluetooth-v1-v2.md](docs/bluetooth-v1-v2.md) — Go2 (all firmware) and G1 (`< 1.5.1`)
+- [docs/bluetooth-v3.md](docs/bluetooth-v3.md) — G1 `≥ 1.5.1` extension (`VERSION` 0xF1, `GCM_KEY` 0xF2)
 
 ```bash
 # Or run the BLE server separately:

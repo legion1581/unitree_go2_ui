@@ -1,6 +1,18 @@
-# Bluetooth Protocol — Unitree Go2
+# Bluetooth Protocol V1 / V2 — Unitree Robots
 
-This document describes the BLE protocols used to communicate with the Unitree Go2 robot and the Unitree BLE remote control. Covers service UUIDs, encryption, packet format, handshakes, WiFi configuration, and remote control data.
+This document describes the legacy BLE provisioning protocol used to scan, connect, and configure Unitree robots (WiFi setup, serial number, AP MAC) and to read input from the Unitree BLE remote control. It also covers the WebRTC relay path that forwards remote-control inputs to the robot.
+
+For the newer V3 commands (`VERSION`, `GCM_KEY`) introduced on G1 firmware 1.5.1, see [bluetooth-v3.md](bluetooth-v3.md). V3 is **not** available on Go2.
+
+## Firmware Compatibility
+
+| Robot | Firmware | Service |
+|---|---|---|
+| Unitree Go2 | All released versions (`< 1.1.11` uses FFE0, `≥ 1.1.11` uses NUS) | V1 / V2 |
+| Unitree G1 | `< 1.5.1` | V1 / V2 |
+| Unitree G1 | `≥ 1.5.1` | V1 / V2 + [V3 extension](bluetooth-v3.md) |
+
+V1 and V2 share the same wire format, encryption, and command set. The only difference is the GATT service UUID used to expose the characteristics — see [Service UUIDs](#service-uuids).
 
 ## Table of Contents
 
@@ -12,7 +24,6 @@ This document describes the BLE protocols used to communicate with the Unitree G
 - [Robot Connection Flow](#robot-connection-flow)
 - [Commands](#commands)
 - [WiFi Configuration](#wifi-configuration)
-- [V3 Protocol Extension (GCM Key)](#v3-protocol-extension-gcm-key)
 - [Remote Control](#remote-control)
 - [WebRTC Relay](#webrtc-relay)
 
@@ -108,22 +119,23 @@ Robots and remotes are discovered via BLE advertisement.
 | Prefix | Device |
 |--------|--------|
 | `Go2_` | Unitree Go2 robot |
+| `G1_`  | Unitree G1 robot |
 | `Unitree` (not `Go2_`) | BLE Remote Control (e.g. `Unitree-32KC0D`) |
 
 ### Protocol Detection
 
-The protocol version is determined by which service UUID appears in the BLE advertisement:
+The protocol variant is determined by which service UUID appears in the BLE advertisement:
 
-| Service UUID | Protocol | Firmware |
+| Service UUID | Variant | Firmware |
 |---|---|---|
-| `0000ffe0-0000-1000-8000-00805f9b34fb` | Old (FFE0) | Pre-1.1.11 |
-| `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | New (NUS) | 1.1.11+ |
+| `0000ffe0-0000-1000-8000-00805f9b34fb` | V1 (FFE0) | Go2 `< 1.1.11`, all G1 |
+| `6e400001-b5a3-f393-e0a9-e50e24dcca9e` | V2 (NUS) | Go2 `≥ 1.1.11` |
 
 ---
 
 ## Service UUIDs
 
-### Old Protocol (FFE0)
+### V1 (FFE0)
 
 | UUID | Role |
 |---|---|
@@ -131,7 +143,7 @@ The protocol version is determined by which service UUID appears in the BLE adve
 | `0000ffe1-0000-1000-8000-00805f9b34fb` | Notify (robot -> client) |
 | `0000ffe2-0000-1000-8000-00805f9b34fb` | Write (client -> robot) |
 
-### New Protocol (Nordic UART Service)
+### V2 (Nordic UART Service)
 
 | UUID | Role |
 |---|---|
@@ -139,13 +151,13 @@ The protocol version is determined by which service UUID appears in the BLE adve
 | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` | Write / TX (client -> robot) |
 | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` | Notify / RX (robot -> client) |
 
-Both protocols use the same encryption, packet format, and command set — only the UUIDs differ.
+Both variants use the same encryption, packet format, and command set — only the UUIDs differ.
 
 ---
 
 ## Encryption
 
-All robot BLE packets (V1/V2) are encrypted with AES-128-CFB before transmission and decrypted on receive.
+All robot BLE packets are encrypted with AES-128-CFB before transmission and decrypted on receive.
 
 | Parameter | Value |
 |---|---|
@@ -167,7 +179,7 @@ def decrypt(data: bytes) -> bytes:
     return AES.new(KEY, AES.MODE_CFB, iv=IV, segment_size=128).decrypt(data)
 ```
 
-> **Note:** V3 protocol packets (magic prefix `0055543235` / "UT25") are sent unencrypted.
+> **Note:** The V3 extension on G1 (firmware ≥ 1.5.1) sends a small set of additional commands **unencrypted** with a different magic prefix. See [bluetooth-v3.md](bluetooth-v3.md). On a V1/V2 connection, frames whose first byte is `0x00` (rather than the encrypted-frame distribution) belong to V3 and must be routed to the V3 handler before AES decryption is attempted.
 
 ---
 
@@ -233,9 +245,9 @@ Chunked responses (e.g. GET_SN) include `chunk_idx` and `total_chunks` after the
 ## Robot Connection Flow
 
 ```
-1. BLE Scan        -> Find device with name prefix Go2_
+1. BLE Scan        -> Find device with name prefix Go2_ or G1_
 2. GATT Connect    -> Connect to the device
-3. Detect Protocol -> Check services for NUS or FFE0
+3. Detect Protocol -> Check services for NUS (V2) or FFE0 (V1)
 4. Subscribe       -> Enable notifications on the notify characteristic
 5. Handshake       -> Send chunked packet: instruction=0x01, data="unitree"
 6. Verify          -> Response status byte == 0x01 means success
@@ -289,59 +301,24 @@ Full WiFi setup sequence after handshake:
 
 Each step waits for a success response before proceeding. The password step has a longer timeout (15s) as the robot applies the WiFi configuration.
 
-> **Security note (CVE-2025-35027):** The robot passes SSID and password to shell scripts via `system()` without sanitization. This command injection vulnerability is present in firmware up to and including 1.1.11.
-
----
-
-## V3 Protocol Extension (GCM Key)
-
-Firmware 1.1.11+ supports V3 commands that are sent **unencrypted** (no AES-CFB).
-
-### Magic Prefix
-
-```
-0x00 0x55 0x54 0x32 0x35  ("UT25")
-```
-
-### V3 Commands
-
-| Command | ID | Description |
-|---|---|---|
-| VERSION | `0xF1` | Request BLE module version |
-| GCM_KEY | `0xF2` | Request AES-128-GCM key for WebRTC auth (data2=3) |
-
-### V3 Packet Format
-
-```
-[0x00] [0x55] [0x54] [0x32] [0x35] [command] [checksum]
-```
-
-### V3 Response Format
-
-```
-[0x00] [0x55] [0x54] [0x32] [0x35] [command] [chunk_idx] [total_chunks] [data...] [checksum]
-```
-
-### GCM Key
-
-The Go2 returns a raw hex string (32 ASCII chars = 16-byte key). The key is per-device, generated at first boot, and stored persistently. It is used for `data2=3` WebRTC authentication via AES-128-GCM encryption of the SDP nonce.
+> **Security note (CVE-2025-35027):** On Go2 firmware up to and including 1.1.11, the robot passes SSID and password to shell scripts via `system()` without sanitization, allowing command injection.
 
 ---
 
 ## Remote Control
 
-The Unitree BLE remote control (e.g. `Unitree-32KC0D`) is a dual-mode Bluetooth device (classic BR/EDR + BLE). It uses the old FFE0 service but with a different handshake and data format than the robot.
+The Unitree BLE remote control (e.g. `Unitree-32KC0D`) is a dual-mode Bluetooth device (classic BR/EDR + BLE). It uses the V1 (FFE0) service but with a different handshake and data format than the robot.
 
 ### Connection Challenges
 
-The remote advertises with a **public** Bluetooth address and supports both BR/EDR and BLE. BlueZ's D-Bus API (`Device1.Connect()`) defaults to classic Bluetooth for such devices, which fails with `br-connection-profile-unavailable`. 
+The remote advertises with a **public** Bluetooth address and supports both BR/EDR and BLE. BlueZ's D-Bus API (`Device1.Connect()`) defaults to classic Bluetooth for such devices, which fails with `br-connection-profile-unavailable`.
 
 **Solution:** Use `gatttool` (via `pygatt`) which forces BLE/LE transport directly, bypassing BlueZ's transport auto-selection.
 
 ### Connection Flow
 
 ```
-1. BLE Scan     -> Find device with name starting with "Unitree" (not Go2_)
+1. BLE Scan     -> Find device with name starting with "Unitree" (not Go2_/G1_)
 2. LE Connect   -> Force BLE transport (gatttool -t public)
 3. Set MTU      -> Request MTU 64 (200ms after connect)
 4. Subscribe    -> Enable notifications on FFE1
@@ -513,7 +490,8 @@ The same `rt/wirelesscontroller` topic is used by three input sources:
 | Chunk size | 14 bytes |
 | Handshake string (robot) | `"unitree"` |
 | Handshake string (remote) | `"59532b32"` (hex of `"YS+2"`) |
-| V3 magic | `0055543235` (`"UT25"`) |
 | WiFi AP mode byte | `0x01` |
 | WiFi STA mode byte | `0x02` |
 | Success status | `0x01` |
+
+For the V3 extension (`VERSION` 0xF1, `GCM_KEY` 0xF2 — G1 firmware ≥ 1.5.1 only), see [bluetooth-v3.md](bluetooth-v3.md).

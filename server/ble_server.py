@@ -43,8 +43,8 @@ CHUNK_SIZE = 14
 DEFAULT_ADAPTER = "hci0"
 _current_adapter = DEFAULT_ADAPTER
 
-# V3 protocol (firmware 1.1.11+) — sent unencrypted with this magic prefix.
-# See docs/bluetooth.md § "V3 Protocol Extension (GCM Key)".
+# V3 protocol (G1 firmware 1.5.1+; not supported on Go2) — sent unencrypted
+# with this magic prefix. See docs/bluetooth-v3.md.
 V3_MAGIC = bytes([0x00, 0x55, 0x54, 0x32, 0x35])  # "\x00UT25"
 
 
@@ -825,8 +825,9 @@ async def info():
 @app.get("/v3/gcm-key")
 async def v3_gcm_key():
     """Fetch the per-device AES-128-GCM key (32 hex chars / 16 bytes) used for
-    WebRTC `data2=3` authentication. Requires firmware 1.1.11+ (V3 protocol).
-    Returns `{key: null, supported: false}` on older firmware (timeout)."""
+    WebRTC `data2=3` authentication. Requires G1 firmware 1.5.1+ (V3 protocol);
+    not supported on Go2. Returns `{key: null, supported: false}` on
+    unsupported firmware (timeout)."""
     if not session.connected:
         raise HTTPException(400, "Not connected")
     key = await session.get_gcm_key()

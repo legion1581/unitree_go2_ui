@@ -328,8 +328,8 @@ export class BtPopover {
       `;
     }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
 
-    // V3 info (firmware 1.1.11+): module version + per-device GCM key for WebRTC auth.
-    // Both endpoints return `supported:false` on older firmware; in that case we hide the section.
+    // V3 info (G1 firmware 1.5.1+; not on Go2): module version + per-device GCM key for WebRTC auth.
+    // Both endpoints return `supported:false` on unsupported firmware; in that case we hide the section.
     const v3Rows = document.createElement('div');
     v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
     v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
