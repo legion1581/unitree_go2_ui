@@ -1010,6 +1010,16 @@ export class MappingPage {
 
       case 'goal':
         console.log(`[slam] Goal pose: x=${x.toFixed(3)} y=${y.toFixed(3)} yaw=${yaw.toFixed(3)} (${yawDeg}°)`);
+        // Setting a goal on a stopped nav module just registers the target —
+        // the robot won't move until navigation/start is issued. Auto-start
+        // here so dragging a goal "just works", regardless of whether nav was
+        // previously stopped (e.g. by a patrol/stop side-effect).
+        if (!this.navigationActive) {
+          this.sendCmd('navigation/start');
+          this.navigationActive = true;
+          this.setState('navigating');
+          this.updateNavControls();
+        }
         this.sendCmd(`navigation/set_goal_pose/${x.toFixed(3)}/${y.toFixed(3)}/${yaw.toFixed(3)}`);
         this.slamScene?.setGoalMarker(x, y, yaw);
         this.addLog(`Goal set: (${x.toFixed(2)}, ${y.toFixed(2)}) yaw=${yawDeg}`);
@@ -1151,6 +1161,7 @@ export class MappingPage {
 
   private setNavMode(mode: 'goal' | 'patrol'): void {
     const prev = this.navMode;
+    if (prev === mode) return;  // idempotent — same tab clicked, do nothing
     this.navMode = mode;
 
     // Deactivate any active click mode when switching
@@ -1160,14 +1171,18 @@ export class MappingPage {
       this.slamScene?.setClickMode('none');
     }
 
-    // Cleanup when leaving patrol (matching APK: pause + stop + clear visuals)
+    // Cleanup when leaving patrol — only if patrol is actually running.
+    // Sending pause+stop to an already-stopped patrol just produces noise
+    // (failed acks) and confuses the firmware state machine.
     if (prev === 'patrol' && mode === 'goal') {
-      this.sendCmd('patrol/pause');
-      this.sendCmd('patrol/stop');
       this.slamScene?.clearPatrolMarkers();
       this.slamScene?.clearTrace();
-      this.patrolPaused = false;
-      this.addLog('Patrol stopped — switched to Go to Goal');
+      if (this.state === 'patrolling') {
+        this.sendCmd('patrol/pause');
+        this.sendCmd('patrol/stop');
+        this.patrolPaused = false;
+        this.addLog('Patrol stopped — switched to Go to Goal');
+      }
     }
 
     // Cleanup when leaving goal
@@ -1872,7 +1887,17 @@ export class MappingPage {
       this.patrolPauseBtn.textContent = 'Pause';
       this.patrolPauseBtn.classList.remove('mapping-btn-start');
       this.patrolPauseBtn.classList.add('mapping-btn-warn');
+      // Firmware stops the navigation module along with patrol — sync our
+      // flag so the next "Set Goal" knows to re-issue navigation/start.
+      this.navigationActive = false;
+      this.updateNavControls();
       this.setState('localized');
+    }
+    // Same when nav is stopped directly by anyone (Stop Navigation button,
+    // patrol stop side-effect, autocharge teardown). Keeps our flag honest.
+    if (msg.includes('navigation/stop/success')) {
+      this.navigationActive = false;
+      this.updateNavControls();
     }
     // ── Live state detail from state_transition messages ──
     this.parseStateTransitions(msg);

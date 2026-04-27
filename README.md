@@ -28,6 +28,7 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
 - **Robot status** — Battery, motor data (temp, position, torque, lost packets), IMU, LiDAR state, network info
 - **Service manager** — View all running services, start/stop with protection handling
 - **Account Management** — Unitree cloud account: devices, firmware, tutorials, sharing, debug API console
+- **3D LiDAR Mapping (SLAM)** — build maps, localize, navigate to goals, run patrol loops, auto-dock and charge; local IndexedDB cache + zip import/export so saved maps survive the robot's single-slot storage
 - **Bluetooth Setup** — Configure robot WiFi over BLE (scan, connect, STA/AP mode) without the phone app
 - **Remote Control** — Connect to the Unitree BLE remote, live joystick/button visualization with Hz counter
 - **Dark / Light theme** — Floating sun/moon toggle in the top-right corner, persisted per-browser; scene background + grid adapt on the fly
@@ -137,6 +138,28 @@ Available in Remote mode via the hub. Provides access to the Unitree cloud API w
 - **Info** — app version with APK download, grouped video tutorials, changelog, announcements
 - **Account** — profile, avatar, password, region, session management
 - **Debug** — raw API console with 77 endpoints across 13 categories (Auth, Devices, Firmware, WebRTC, Wallet, etc.)
+
+## 3D LiDAR Mapping
+
+A full SLAM workflow in the browser, talking to the on-board `uslam_server` over WebRTC. Build a map, localize on it, drive to a goal, run a patrol loop, dock and charge — all without the phone app.
+
+![SLAM view](images/slam-view.png)
+
+Key points:
+
+- **Three-step flow** — `Mapping ➜ Localization ➜ Navigation`, gated by state and shown as a horizontal stepper banner under the header.
+- **Mapping** — `mapping/start` / `stop`; live point cloud streams over `rt/uslam/frontend/cloud_world_ds`, decoded off-thread by `libslam.wasm` and rendered as voxels.
+- **Localization** — drag a pose on the map, robot anchors and starts tracking; live scan + Go2 model both visible.
+- **Go to Goal** — drag a goal pose, robot drives there; auto-issues `navigation/start` if needed.
+- **Patrol** — multi-waypoint loop with full limit configuration: per-cycle time, total mission time, charge cycle time, loop count, BMS-SOC range. Reset to firmware defaults with one click.
+- **Auto-charge** — dedicated section with plate-distance tuning and a one-click "Disable in Patrol" that kills all three NEED_CHARGE triggers.
+- **Local map storage** — every saved map is cached in IndexedDB (PCD + PGM + TXT bundle); reloading uploads the bundle back to the robot via chunked `push_static_file` so localization/navigation work on saved maps even though the robot only has one physical slot.
+- **Zip import / export** — share or back up maps. Each saved-map row has Export → `<name>.zip`; the section header has Import .zip.
+- **Send Command panel** — left sidebar exposes a categorised template picker for ~56 SLAM commands, plus the live server log.
+- **PiP video feed** — draggable camera preview overlaid on the 3D viewport.
+- **Theme-aware** — dark and light themes apply to the 3D scene (background, grid, laser cloud) and the page chrome.
+
+Full protocol reference, state machines, file paths, and known quirks live in [docs/slam.md](docs/slam.md).
 
 ## Browser Support
 
