@@ -111,6 +111,32 @@ export class BtPopover {
     return btn;
   }
 
+  private copyButton(text: string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = 'Copy to clipboard';
+    btn.style.cssText = 'padding:2px 6px;font-size:10px;border-radius:3px;cursor:pointer;background:transparent;border:1px solid #1f2229;color:#888;font-family:inherit;flex-shrink:0;line-height:1;';
+    btn.textContent = 'Copy';
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        const orig = btn.textContent;
+        btn.textContent = 'Copied';
+        btn.style.color = '#66bb6a';
+        btn.style.borderColor = 'rgba(102,187,106,0.4)';
+        setTimeout(() => {
+          btn.textContent = orig;
+          btn.style.color = '#888';
+          btn.style.borderColor = '#1f2229';
+        }, 1200);
+      } catch {
+        btn.textContent = 'Failed';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+      }
+    });
+    return btn;
+  }
+
   private section(title: string): HTMLElement {
     const s = document.createElement('div');
     s.style.cssText = 'margin-bottom:12px;';
@@ -301,6 +327,42 @@ export class BtPopover {
         <div><span style="color:#666;">AP MAC:</span> ${this.esc(rInfo.ap_mac || '—')}</div>
       `;
     }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
+
+    // V3 info (firmware 1.1.11+): module version + per-device GCM key for WebRTC auth.
+    // Both endpoints return `supported:false` on older firmware; in that case we hide the section.
+    const v3Rows = document.createElement('div');
+    v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
+    v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
+    this.robotBody.appendChild(v3Rows);
+    Promise.all([
+      this.fetchJSON<{ key: string | null; supported: boolean }>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false })),
+      this.fetchJSON<{ version: string | null; supported: boolean }>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false })),
+    ]).then(([gcm, ver]) => {
+      if (!gcm.supported && !ver.supported) {
+        v3Rows.remove();
+        return;
+      }
+      v3Rows.innerHTML = '';
+      if (ver.supported && ver.version) {
+        const row = document.createElement('div');
+        row.innerHTML = `<span style="color:#666;">FW Ver:</span> ${this.esc(ver.version)}`;
+        v3Rows.appendChild(row);
+      }
+      if (gcm.supported && gcm.key) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;';
+        const lbl = document.createElement('span');
+        lbl.style.color = '#666';
+        lbl.textContent = 'GCM Key:';
+        const val = document.createElement('span');
+        val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+        val.title = gcm.key;
+        val.textContent = gcm.key;
+        const copy = this.copyButton(gcm.key);
+        row.append(lbl, val, copy);
+        v3Rows.appendChild(row);
+      }
+    });
 
     // WiFi config
     const wifiHeader = document.createElement('div');

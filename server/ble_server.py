@@ -43,6 +43,10 @@ CHUNK_SIZE = 14
 DEFAULT_ADAPTER = "hci0"
 _current_adapter = DEFAULT_ADAPTER
 
+# V3 protocol (firmware 1.1.11+) — sent unencrypted with this magic prefix.
+# See docs/bluetooth.md § "V3 Protocol Extension (GCM Key)".
+V3_MAGIC = bytes([0x00, 0x55, 0x54, 0x32, 0x35])  # "\x00UT25"
+
 
 class Cmd(IntEnum):
     HANDSHAKE  = 0x01
@@ -53,6 +57,9 @@ class Cmd(IntEnum):
     COUNTRY    = 0x06
     GET_AP_MAC = 0x07
     DISCONNECT = 0x08
+    # V3 (unencrypted, V3_MAGIC prefix)
+    V3_VERSION = 0xF1
+    V3_GCM_KEY = 0xF2
 
 
 # ─── Crypto ───────────────────────────────────────────────────────────
@@ -76,6 +83,12 @@ def build_chunked(instruction: int, chunk_data: bytes, idx: int = 1, total: int 
     checksum = (-sum(payload)) & 0xFF
     return ble_encrypt(payload + bytes([checksum]))
 
+def build_v3(instruction: int) -> bytes:
+    """Build a V3 (unencrypted) request: [V3_MAGIC][instruction][checksum]."""
+    payload = V3_MAGIC + bytes([instruction])
+    checksum = (-sum(payload)) & 0xFF
+    return payload + bytes([checksum])
+
 
 # ─── BLE Session ──────────────────────────────────────────────────────
 
@@ -98,6 +111,11 @@ class BLESession:
         self.sn_chunks: dict[int, bytes] = {}
         self.sn_result: Optional[str] = None
 
+        # V3 (unencrypted) response reassembly: cmd -> {chunk_idx: data}
+        self.v3_event = asyncio.Event()
+        self.v3_chunks: dict[int, dict[int, bytes]] = {}
+        self.v3_results: dict[int, str] = {}
+
     @property
     def connected(self) -> bool:
         return self._connected and self._device is not None
@@ -106,6 +124,13 @@ class BLESession:
         """Called from pygatt's background thread — must use call_soon_threadsafe
         to signal the asyncio event."""
         raw = bytes(value)
+
+        # V3 frames are unencrypted and start with V3_MAGIC. Handle before AES
+        # decryption (which would turn them into garbage).
+        if len(raw) >= len(V3_MAGIC) and raw[:len(V3_MAGIC)] == V3_MAGIC:
+            self._handle_v3_response(raw)
+            return
+
         try:
             plain = ble_decrypt(raw)
         except Exception:
@@ -257,6 +282,61 @@ class BLESession:
             mac_bytes = resp[3:resp[1] - 1]
             return ":".join(f"{b:02X}" for b in mac_bytes)
         return None
+
+    def _handle_v3_response(self, raw: bytes):
+        """Reassemble a V3 chunked response.
+
+        Frame: [V3_MAGIC(5)] [cmd] [chunk_idx] [total_chunks] [data...] [checksum]
+        Single-chunk responses also use this layout with idx=total=1.
+        """
+        # Minimum: magic(5) + cmd + idx + total + cksum = 9 bytes
+        if len(raw) < len(V3_MAGIC) + 4:
+            return
+        if (sum(raw) & 0xFF) != 0:
+            log.warning(f"V3 checksum mismatch ({len(raw)} bytes, cmd 0x{raw[5]:02X})")
+            return
+
+        cmd = raw[5]
+        idx = raw[6]
+        total = raw[7]
+        data = raw[8:-1]
+
+        bucket = self.v3_chunks.setdefault(cmd, {})
+        bucket[idx] = data
+
+        if total > 0 and len(bucket) >= total:
+            assembled = b"".join(bucket[i] for i in sorted(bucket))
+            try:
+                text = assembled.decode("utf-8").rstrip("\x00").strip()
+            except UnicodeDecodeError:
+                text = assembled.hex()
+            self.v3_results[cmd] = text
+            self.v3_chunks.pop(cmd, None)
+            if self._loop:
+                self._loop.call_soon_threadsafe(self.v3_event.set)
+
+    async def _send_v3(self, cmd: int, timeout: float = 3.0) -> Optional[str]:
+        if not self.connected:
+            return None
+        self.v3_event.clear()
+        self.v3_results.pop(cmd, None)
+        self.v3_chunks.pop(cmd, None)
+        await self._write(build_v3(cmd))
+        # Robot may answer slowly when it has to derive/decrypt the key on first call.
+        try:
+            await asyncio.wait_for(self.v3_event.wait(), timeout)
+        except asyncio.TimeoutError:
+            return None
+        return self.v3_results.get(cmd)
+
+    async def get_gcm_key(self) -> Optional[str]:
+        """Fetch per-device AES-128-GCM key (32 hex chars) used for WebRTC auth.
+        Returns None on V3-unsupported firmware (timeout)."""
+        return await self._send_v3(Cmd.V3_GCM_KEY)
+
+    async def get_version(self) -> Optional[str]:
+        """Fetch BLE module version string. Returns None on V3-unsupported firmware."""
+        return await self._send_v3(Cmd.V3_VERSION)
 
     async def set_wifi(self, ssid: str, password: str, ap_mode: bool = False, country: str = "US") -> dict:
         results = {}
@@ -740,6 +820,27 @@ async def info():
         "protocol": session.protocol,
         "address": session.address,
     }
+
+
+@app.get("/v3/gcm-key")
+async def v3_gcm_key():
+    """Fetch the per-device AES-128-GCM key (32 hex chars / 16 bytes) used for
+    WebRTC `data2=3` authentication. Requires firmware 1.1.11+ (V3 protocol).
+    Returns `{key: null, supported: false}` on older firmware (timeout)."""
+    if not session.connected:
+        raise HTTPException(400, "Not connected")
+    key = await session.get_gcm_key()
+    return {"key": key, "supported": key is not None}
+
+
+@app.get("/v3/version")
+async def v3_version():
+    """Fetch the BLE module version string. Returns `{version: null, supported: false}`
+    on firmware that doesn't speak V3."""
+    if not session.connected:
+        raise HTTPException(400, "Not connected")
+    version = await session.get_version()
+    return {"version": version, "supported": version is not None}
 
 
 @app.post("/wifi")
