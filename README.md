@@ -14,10 +14,6 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
   <img src="images/services.png" width="24%" />
 </p>
 
-<p align="center">
-  <img src="images/account-manager.png" width="60%" />
-</p>
-
 ## Features
 
 - **Real-time 3D visualization** — Go2 model with live joint angles, lidar spinning animation, and voxel point cloud (SLAM)
@@ -44,6 +40,22 @@ A browser-based control interface for the Unitree Go2 robot dog, communicating o
 - Node.js >= 18
 - npm >= 9
 - Unitree Go2 robot (firmware v1.1.x+)
+
+### Robot Compatibility
+
+**No jailbreak required** — works out of the box on stock firmware with **Go2 AIR / PRO / EDU**. Some hardware/services are model-dependent:
+
+| Feature | AIR | PRO | EDU |
+|---|:-:|:-:|:-:|
+| Core control, status, services, video | ✅ | ✅ | ✅ |
+| Account Management (cloud API) | ✅ | ✅ | ✅ |
+| Bluetooth setup (BLE WiFi config + remote) | ✅ | ✅ | ✅ |
+| Voxel-map streaming (`rt/utlidar/voxel_map_compressed`) | ✅ | ✅ | ✅ |
+| UWB (positioning, follow-me) | ❌ no hardware | ✅ | ✅ |
+| Audio (microphone, speaker) | ❌ no hardware | ✅ | ✅ |
+| 3D LiDAR Mapping (SLAM, navigation, patrol, autocharge) | ⚠️ | ✅ | ✅ |
+
+> **AIR caveat:** the on-board `uslam_server` SLAM service isn't shipped on AIR. The 3D LiDAR Mapping page will load but commands return failures since the module isn't running. Enabling it requires a jailbreak (out of scope for this repo).
 
 ## Installation
 
@@ -133,6 +145,8 @@ npm run ble-server
 ## Account Management
 
 Available in Remote mode via the hub. Provides access to the Unitree cloud API without needing the phone app.
+
+![Account Management](images/account-manager.png)
 
 - **Devices** — list robots with online status, details, firmware downloads, sharing, bind/unbind
 - **Info** — app version with APK download, grouped video tutorials, changelog, announcements
