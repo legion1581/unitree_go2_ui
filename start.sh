@@ -12,10 +12,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Install Python deps if missing
-if ! python3 -c "import fastapi, bleak, Crypto" 2>/dev/null; then
+# Install Python deps if missing.
+# websockets >= 11 is required: uvicorn passes a `logger` kwarg that older
+# versions (e.g. the apt-installed websockets 9.1 on Ubuntu) reject.
+if ! python3 -c "import fastapi, bleak, Crypto; import websockets; from packaging.version import Version; assert Version(websockets.__version__) >= Version('11.0')" 2>/dev/null; then
   echo "[start] Installing Python dependencies..."
-  pip3 install -r "$DIR/server/requirements.txt"
+  pip3 install --user -r "$DIR/server/requirements.txt"
 fi
 
 # Start BLE server unless --no-ble
