@@ -6,7 +6,7 @@
  * w.r.t. its own DOM lifecycle: just call `buildCloudPrefsRow()` to mount.
  */
 
-import { cloudApi, ROBOT_FAMILIES, REGIONS, type RobotFamily, type Region } from '../../api/unitree-cloud';
+import { cloudApi, ROBOT_FAMILIES, REGIONS, FAMILY_LABEL, type RobotFamily, type Region } from '../../api/unitree-cloud';
 
 export interface CloudPrefsOptions {
   /** Show the Region toggle (Global / CN). Default true. */
@@ -64,7 +64,7 @@ export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement
 
   row.appendChild(labeledGroup(
     'Family',
-    renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => v),
+    renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => FAMILY_LABEL[v]),
   ));
 
   if (showRegion) {

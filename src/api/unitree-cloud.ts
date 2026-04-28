@@ -11,17 +11,21 @@ const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
 const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
 
 // Robot families the cloud API knows about. The server keys some responses
-// (tutorials, firmware lists, announcements) off the AppName header — Go2 has
-// its own dedicated app ('Go2'), while the Unitree Explorer app covers the
-// industrial quadruped + humanoid line ('B2', also used for G1/R1/H2).
-export type RobotFamily = 'Go2' | 'G1' | 'R1' | 'B2' | 'H2';
-export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'G1', 'R1', 'B2', 'H2'];
+// (tutorials, firmware lists, announcements) off the AppName header. Go2 has
+// its own dedicated mobile app (AppName='Go2'), while the Unitree Explorer
+// app covers the industrial quadruped + humanoid line — G1, R1, B2, H1 all
+// share a single AppName='B2' (the Explorer APK identifies as B2 internally).
+// The user-facing pill therefore offers two choices, not five.
+export type RobotFamily = 'Go2' | 'Explorer';
+export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'Explorer'];
 const APP_NAME: Record<RobotFamily, string> = {
-  Go2: 'Go2',
-  G1:  'B2',
-  R1:  'B2',
-  B2:  'B2',
-  H2:  'B2',
+  Go2:      'Go2',
+  Explorer: 'B2',
+};
+/** Human-readable label for the family pill. */
+export const FAMILY_LABEL: Record<RobotFamily, string> = {
+  Go2:      'Go2',
+  Explorer: 'G1 / R1 / B2 / H1',
 };
 
 // Region selects which Unitree cloud endpoint the Vite proxy forwards to.
@@ -231,14 +235,27 @@ function readLocalEnum<T extends string>(key: string, allowed: ReadonlyArray<T>,
   } catch { return fallback; }
 }
 
+function readPersistedFamily(): RobotFamily {
+  try {
+    const v = localStorage.getItem('unitree_family');
+    if (v === 'Go2' || v === 'Explorer') return v;
+    // Migrate legacy granular values written before the Explorer collapse.
+    if (v === 'B2' || v === 'G1' || v === 'R1' || v === 'H1' || v === 'H2') {
+      localStorage.setItem('unitree_family', 'Explorer');
+      return 'Explorer';
+    }
+  } catch { /* ignore */ }
+  return 'Go2';
+}
+
 export class UnitreeCloudAPI {
   private token = '';
   private refreshToken = '';
   private _lastRefreshedAt: number | null = null;
   user: UserInfo | null = null;
 
-  // Persisted in localStorage; surfaced via the Hub-page family switch.
-  private _family: RobotFamily = readLocalEnum<RobotFamily>('unitree_family', ROBOT_FAMILIES, 'Go2');
+  // Persisted in localStorage; surfaced via the connection-panel family switch.
+  private _family: RobotFamily = readPersistedFamily();
   private _region: Region = readLocalEnum<Region>('unitree_region', REGIONS, 'global');
 
   get family(): RobotFamily { return this._family; }
