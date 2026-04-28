@@ -13,6 +13,7 @@ import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon'
 import { BtPopover } from './components/bt-popover';
 import { ThemeToggle } from './components/theme-toggle';
 import { btBackend } from '../api/bt-backend';
+import { cloudApi, ROBOT_FAMILIES, type RobotFamily, type Region } from '../api/unitree-cloud';
 import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
@@ -142,6 +143,65 @@ export class App {
     this.connectionPanel = new ConnectionPanel(modal, (config) => this.connect(config));
   }
 
+  private buildHubPrefsRow(isRemoteMode: boolean): HTMLElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;margin:8px 0 4px;';
+
+    const renderToggleGroup = <T extends string>(
+      values: ReadonlyArray<T>,
+      get: () => T,
+      set: (v: T) => void,
+      label: (v: T) => string,
+    ): HTMLElement => {
+      const group = document.createElement('div');
+      group.style.cssText = 'display:inline-flex;border:1px solid #2a2d35;border-radius:6px;overflow:hidden;';
+      const repaint = (): void => {
+        group.innerHTML = '';
+        for (const v of values) {
+          const btn = document.createElement('button');
+          const active = get() === v;
+          btn.textContent = label(v);
+          btn.style.cssText = `padding:5px 11px;border:none;font-size:11px;font-weight:600;letter-spacing:0.4px;cursor:${active ? 'default' : 'pointer'};background:${active ? '#4fc3f7' : 'transparent'};color:${active ? '#000' : '#888'};transition:background 0.12s,color 0.12s;`;
+          btn.addEventListener('click', () => { if (get() !== v) { set(v); repaint(); } });
+          group.appendChild(btn);
+        }
+      };
+      repaint();
+      return group;
+    };
+
+    const familyWrap = document.createElement('div');
+    familyWrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+    const familyLbl = document.createElement('span');
+    familyLbl.style.cssText = 'font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;';
+    familyLbl.textContent = 'Family';
+    familyWrap.append(
+      familyLbl,
+      renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => v),
+    );
+    row.appendChild(familyWrap);
+
+    if (isRemoteMode) {
+      const regionWrap = document.createElement('div');
+      regionWrap.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const regionLbl = document.createElement('span');
+      regionLbl.style.cssText = 'font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1.2px;font-weight:700;';
+      regionLbl.textContent = 'Region';
+      regionWrap.append(
+        regionLbl,
+        renderToggleGroup<Region>(
+          ['global', 'cn'],
+          () => cloudApi.region,
+          (v) => cloudApi.setRegion(v),
+          (v) => v === 'global' ? 'Global' : 'CN',
+        ),
+      );
+      row.appendChild(regionWrap);
+    }
+
+    return row;
+  }
+
   private showHubScreen(): void {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
@@ -189,6 +249,13 @@ export class App {
       info.textContent = infoItems.join(' | ');
     };
     renderHeader();
+
+    // ── Cloud preferences (robot family + region) ──
+    // Family decides the AppName header — Go2 is its own value, the rest
+    // (B2/G1/R1/H2) ride on the Unitree Explorer 'B2' AppName per the
+    // decompiled APK. Region toggles which Unitree cloud endpoint the proxy
+    // forwards to (global vs mainland CN). Both persist via localStorage.
+    hub.appendChild(this.buildHubPrefsRow(isRemoteMode));
 
     // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
     if (isRemoteMode) {

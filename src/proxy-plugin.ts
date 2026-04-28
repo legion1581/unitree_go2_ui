@@ -140,6 +140,16 @@ export function robotProxyPlugin(): Plugin {
               headers['content-length'] = body.length.toString();
             }
 
+            // Region selector: client sends `X-Unitree-Region: cn` to hit the
+            // mainland-China endpoint, anything else (or absent) defaults to
+            // the global endpoint. The header is consumed by the proxy and
+            // stripped before forwarding upstream.
+            const region = (headers['x-unitree-region'] || '').toLowerCase();
+            const hostname = region === 'cn'
+              ? 'robot-api.unitree.com'
+              : 'global-robot-api.unitree.com';
+            delete headers['x-unitree-region'];
+
             // Set User-Agent to match Android app (EdgeOne WAF blocks Node defaults)
             headers['user-agent'] = 'okhttp/4.11.0';
             // Ask for identity encoding — we don't want the server to gzip/deflate
@@ -157,7 +167,7 @@ export function robotProxyPlugin(): Plugin {
 
             const proxyReq = https.request(
               {
-                hostname: 'global-robot-api.unitree.com',
+                hostname,
                 port: 443,
                 path: targetPath,
                 method: req.method,

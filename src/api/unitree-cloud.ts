@@ -10,6 +10,26 @@ const API_BASE = '/unitree-api';
 const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
 const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
 
+// Robot families the cloud API knows about. The server keys some responses
+// (tutorials, firmware lists, announcements) off the AppName header — Go2 has
+// its own dedicated app ('Go2'), while the Unitree Explorer app covers the
+// industrial quadruped + humanoid line ('B2', also used for G1/R1/H2).
+export type RobotFamily = 'Go2' | 'B2' | 'G1' | 'R1' | 'H2';
+export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'B2', 'G1', 'R1', 'H2'];
+const APP_NAME: Record<RobotFamily, string> = {
+  Go2: 'Go2',
+  B2:  'B2',
+  G1:  'B2',
+  R1:  'B2',
+  H2:  'B2',
+};
+
+// Region selects which Unitree cloud endpoint the Vite proxy forwards to.
+// Sent as the `X-Unitree-Region` header; the proxy maps it to a hostname and
+// strips the header before forwarding upstream.
+export type Region = 'global' | 'cn';
+export const REGIONS: ReadonlyArray<Region> = ['global', 'cn'];
+
 // Unitree shipped response-body encryption in recent app versions (v1.12+).
 // Some endpoints (tutorial/list, app/version, app/version/intro/list) now
 // return raw AES-128-CFB128 ciphertext instead of JSON. The key/IV were
@@ -83,7 +103,12 @@ export function getLastResponseMeta(): LastResponseMeta { return { ..._lastRespo
  *  a few (notably GET /app/version) key their response off this. */
 export type Platform = 'Android' | 'iOS';
 
-function buildHeaders(token = '', platform: Platform = 'Android'): Record<string, string> {
+function buildHeaders(
+  token = '',
+  platform: Platform = 'Android',
+  family: RobotFamily = 'Go2',
+  region: Region = 'global',
+): Record<string, string> {
   const ts = Date.now().toString();
   const nonce = crypto.randomUUID?.()?.replace(/-/g, '') || md5(ts + Math.random());
   const sign = md5(`${SIGN_SECRET}${ts}${nonce}`);
@@ -96,15 +121,19 @@ function buildHeaders(token = '', platform: Platform = 'Android'): Record<string
     'AppTimestamp': ts,
     'AppNonce': nonce,
     'AppSign': sign,
-    'Channel': 'UMENG_CHANNEL',
+    'Channel': 'release',
     'Token': token,
-    'AppName': 'Go2',
+    'AppName': APP_NAME[family],
+    'X-Unitree-Region': region,
   };
 
+  // DeviceId fields are pipe-joined to match the Unitree Explorer / Go2 apps —
+  // the upstream API doesn't validate the value but matching the format keeps
+  // server-side analytics clean.
   if (platform === 'iOS') {
     return {
       ...common,
-      'DeviceId': 'Apple/iPhone/iPhone15,3/17.6.1/34',
+      'DeviceId': 'Apple|iPhone|iPhone15,3|iPhone15,3|17.6.1|34',
       'DevicePlatform': 'iOS',
       'DeviceModel': 'iPhone15,3',
       'SystemVersion': '17.6.1',
@@ -113,7 +142,7 @@ function buildHeaders(token = '', platform: Platform = 'Android'): Record<string
 
   return {
     ...common,
-    'DeviceId': 'Samsung/Samsung/SM-S931B/s24/14/34',
+    'DeviceId': 'Samsung|Samsung|SM-S931B|s24|14|34',
     'DevicePlatform': 'Android',
     'DeviceModel': 'SM-S931B',
     'SystemVersion': '34',
@@ -195,11 +224,34 @@ class UnitreeCloudError extends Error {
   }
 }
 
+function readLocalEnum<T extends string>(key: string, allowed: ReadonlyArray<T>, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return (v && (allowed as ReadonlyArray<string>).includes(v)) ? (v as T) : fallback;
+  } catch { return fallback; }
+}
+
 export class UnitreeCloudAPI {
   private token = '';
   private refreshToken = '';
   private _lastRefreshedAt: number | null = null;
   user: UserInfo | null = null;
+
+  // Persisted in localStorage; surfaced via the Hub-page family switch.
+  private _family: RobotFamily = readLocalEnum<RobotFamily>('unitree_family', ROBOT_FAMILIES, 'Go2');
+  private _region: Region = readLocalEnum<Region>('unitree_region', REGIONS, 'global');
+
+  get family(): RobotFamily { return this._family; }
+  setFamily(f: RobotFamily): void {
+    this._family = f;
+    try { localStorage.setItem('unitree_family', f); } catch { /* ignore */ }
+  }
+
+  get region(): Region { return this._region; }
+  setRegion(r: Region): void {
+    this._region = r;
+    try { localStorage.setItem('unitree_region', r); } catch { /* ignore */ }
+  }
 
   get isLoggedIn(): boolean {
     return !!this.token;
@@ -282,7 +334,7 @@ export class UnitreeCloudAPI {
 
     const resp = await fetch(url, {
       method,
-      headers: buildHeaders(this.token, platform),
+      headers: buildHeaders(this.token, platform, this._family, this._region),
       body: method === 'POST' && params ? new URLSearchParams(params) : undefined,
       signal: AbortSignal.timeout(15000),
     });
@@ -507,9 +559,10 @@ export class UnitreeCloudAPI {
   }
 
   async getTutorials(): Promise<TutorialGroup[]> {
+    const appName = APP_NAME[this._family];
     // Try v2 (grouped), fall back to v1 (flat)
     try {
-      const resp = await this.request<{ groupList?: Array<{ name: string; tutorialList: unknown[] }> }>('GET', 'v2/tutorial/list', { appName: 'Go2' });
+      const resp = await this.request<{ groupList?: Array<{ name: string; tutorialList: unknown[] }> }>('GET', 'v2/tutorial/list', { appName });
       if (resp.code === 100 && resp.data?.groupList) {
         return resp.data.groupList.map(g => ({
           name: g.name,
@@ -519,7 +572,7 @@ export class UnitreeCloudAPI {
     } catch { /* fall through */ }
 
     try {
-      const flat = await this.get<TutorialGroup['tutorials']>('tutorial/list', { appName: 'Go2' });
+      const flat = await this.get<TutorialGroup['tutorials']>('tutorial/list', { appName });
       if (Array.isArray(flat) && flat.length) return [{ name: 'Tutorials', tutorials: flat }];
     } catch { /* ignore */ }
     return [];
