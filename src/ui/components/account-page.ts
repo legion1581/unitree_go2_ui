@@ -79,11 +79,7 @@ export class AccountPage {
       const u = cloudApi.user;
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:14px;margin-bottom:12px;';
-      if (u.avatar) {
-        row.innerHTML = `<img src="${this.esc(u.avatar)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid #2a2d35;">`;
-      } else {
-        row.innerHTML = `<div style="width:56px;height:56px;border-radius:50%;background:#2a2d35;display:flex;align-items:center;justify-content:center;font-size:22px;color:#666;">${(u.nickname || '?')[0].toUpperCase()}</div>`;
-      }
+      row.appendChild(this.createAvatarImg(u.avatar, 56, u.nickname || u.email || '?', true));
       const info = document.createElement('div');
       info.innerHTML = `<div style="font-size:16px;font-weight:600;">${this.esc(u.nickname)}</div>
         <div style="font-size:12px;color:#666;">${this.esc(u.email)}</div>
@@ -115,8 +111,11 @@ export class AccountPage {
     if (cloudApi.user?.avatar) {
       const preview = document.createElement('div');
       preview.style.cssText = 'margin-bottom:10px;';
-      preview.innerHTML = `<img src="${this.esc(cloudApi.user.avatar)}" style="width:64px;height:64px;border-radius:8px;object-fit:cover;">
-        <div style="font-size:10px;color:#444;margin-top:4px;word-break:break-all;max-width:250px;">${this.esc(cloudApi.user.avatar)}</div>`;
+      preview.appendChild(this.createAvatarImg(cloudApi.user.avatar, 64, cloudApi.user.nickname || cloudApi.user.email || '?', false));
+      const urlText = document.createElement('div');
+      urlText.style.cssText = 'font-size:10px;color:#444;margin-top:4px;word-break:break-all;max-width:250px;';
+      urlText.textContent = cloudApi.user.avatar;
+      preview.appendChild(urlText);
       avatarSec.appendChild(preview);
     }
     const avatarUrlInput = this.input('Avatar URL', 'url');
@@ -989,6 +988,38 @@ export class AccountPage {
     const el = document.createElement('span');
     el.textContent = s;
     return el.innerHTML;
+  }
+
+  /**
+   * Render an avatar with a robust fallback. Some Unitree CDNs (notably
+   * fitness-static.unitree.com, which hosts the default avatar set
+   * /css/images/avatar/default/N.png) reject browser requests with 403 +
+   * ORB outside the mobile-app referer allowlist. Swap in a generated
+   * initial-circle so the UI doesn't render a broken image.
+   */
+  private createAvatarImg(url: string | undefined, size: number, displayName: string, rounded: boolean): HTMLImageElement {
+    const img = document.createElement('img');
+    const radius = rounded ? '50%' : '8px';
+    const border = rounded ? 'border:2px solid var(--avatar-border,#2a2d35);' : '';
+    img.style.cssText = `width:${size}px;height:${size}px;border-radius:${radius};object-fit:cover;${border}`;
+    img.alt = displayName;
+    const fallback = this.makeInitialAvatarDataUrl(size, displayName);
+    img.addEventListener('error', () => {
+      if (img.src !== fallback) img.src = fallback;
+    }, { once: true });
+    img.src = url || fallback;
+    return img;
+  }
+
+  private makeInitialAvatarDataUrl(size: number, name: string): string {
+    const trimmed = name.trim();
+    const initial = (trimmed[0] || '?').toUpperCase();
+    let hue = 0;
+    for (const ch of trimmed) hue = (hue * 31 + ch.charCodeAt(0)) >>> 0;
+    hue = hue % 360;
+    const fontSize = Math.round(size * 0.45);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" rx="${size / 2}" fill="hsl(${hue},45%,42%)"/><text x="50%" y="55%" text-anchor="middle" dominant-baseline="central" font-family="system-ui,-apple-system,sans-serif" font-size="${fontSize}" font-weight="600" fill="white">${this.esc(initial)}</text></svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
 
   destroy(): void { this.container.remove(); }
