@@ -2,6 +2,7 @@ import type { ConnectionMode, ConnectionConfig } from '../types';
 import { MODE_LABELS, DEFAULT_AP_IP } from '../connection/modes';
 import { scanForRobots } from '../connection/network-scan';
 import { cloudApi, type RobotDevice } from '../api/unitree-cloud';
+import { buildCloudPrefsRow } from './components/cloud-prefs';
 
 export type ConnectHandler = (config: ConnectionConfig) => void;
 
@@ -40,7 +41,8 @@ export class ConnectionPanel {
 
   private build(): void {
     this.container.innerHTML = `
-      <h2>Connect to Go2</h2>
+      <h2>Connect to <span id="conn-family-label"></span></h2>
+      <div id="conn-prefs-slot"></div>
       <div class="form-group">
         <label for="mode-select">Connection Mode</label>
         <select id="mode-select"></select>
@@ -109,6 +111,15 @@ export class ConnectionPanel {
       option.textContent = label;
       this.modeSelect.appendChild(option);
     }
+
+    // Cloud preferences (family + region) — selections drive the AppName
+    // header and which Unitree endpoint we hit. Re-render the heading on
+    // change so "Connect to <family>" stays in sync.
+    const familyLabel = this.container.querySelector('#conn-family-label') as HTMLElement;
+    const updateFamilyLabel = (): void => { familyLabel.textContent = cloudApi.family; };
+    updateFamilyLabel();
+    const prefsSlot = this.container.querySelector('#conn-prefs-slot') as HTMLElement;
+    prefsSlot.replaceWith(buildCloudPrefsRow({ onChange: updateFamilyLabel }));
 
     this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
       tab.addEventListener('click', () => {
