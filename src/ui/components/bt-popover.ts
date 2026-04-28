@@ -321,18 +321,32 @@ export class BtPopover {
     infoRows.innerHTML = `<div>Loading robot info...</div>`;
     this.robotBody.appendChild(infoRows);
 
+    // /info gives us the V1/V2 transport label; /v3/* tells us whether the
+    // V3 GCM-key extension is also present. Surface the protocol row as
+    // "V2 (NUS) + V3" when both are detected. Both fetches run in parallel;
+    // a small render() reads the latest known state and rewrites the row.
+    let baseProto: string | undefined;
+    let v3Supported: boolean | undefined;
+    const renderProtoRow = (): void => {
+      const cell = infoRows.querySelector('[data-proto-row]');
+      if (!cell || baseProto === undefined) return;
+      const suffix = v3Supported === true ? ' + V3' : '';
+      cell.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto + suffix)}`;
+    };
+
     this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
       // Map the backend's protocol token to a human-readable version label.
       // V1 = legacy FFE0 service (Go2 < 1.1.11, all G1). V2 = Nordic UART
       // (Go2 >= 1.1.11). See docs/bluetooth-v1-v2.md.
-      const proto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
-                  : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
-                  : (rInfo.protocol || '—');
+      baseProto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
+                : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
+                : (rInfo.protocol || '—');
       infoRows.innerHTML = `
         <div><span style="color:#666;">SN:</span> ${this.esc(rInfo.serial_number || '—')}</div>
         <div><span style="color:#666;">AP MAC:</span> ${this.esc(rInfo.ap_mac || '—')}</div>
-        <div><span style="color:#666;">Protocol:</span> ${this.esc(proto)}</div>
+        <div data-proto-row><span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}</div>
       `;
+      renderProtoRow();
     }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
 
     // V3 info (G1 firmware 1.5.1+; not on Go2): module version + per-device GCM key for WebRTC auth.
@@ -345,7 +359,9 @@ export class BtPopover {
       this.fetchJSON<{ key: string | null; supported: boolean }>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false })),
       this.fetchJSON<{ version: string | null; supported: boolean }>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false })),
     ]).then(([gcm, ver]) => {
-      if (!gcm.supported && !ver.supported) {
+      v3Supported = gcm.supported || ver.supported;
+      renderProtoRow();
+      if (!v3Supported) {
         v3Rows.remove();
         return;
       }
