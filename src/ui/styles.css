@@ -149,6 +149,18 @@ body {
   color: #6879e4;
 }
 
+html[data-theme="light"] .auth-toggle-row {
+  background: #f3f5f9;
+  border-color: #d4d9e4;
+}
+html[data-theme="light"] .auth-tab {
+  color: #5a6170;
+}
+html[data-theme="light"] .auth-tab.active {
+  background: rgba(74, 92, 207, 0.12);
+  color: #4a5ccf;
+}
+
 .status {
   margin-top: 12px;
   font-size: 13px;
@@ -2262,39 +2274,6 @@ html[data-theme="light"] .bt-btn-secondary {
   background: #ffffff !important;
   color: #1a1d23 !important;
   border: 1px solid #c4cbd6 !important;
-}
-
-/* Connection mode hero illustration (APK icons) */
-.mode-hero {
-  position: relative;
-  margin-top: 8px;
-  height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.85;
-}
-.mode-hero img {
-  max-height: 100%;
-  max-width: 100%;
-  object-fit: contain;
-  pointer-events: none;
-}
-.mode-hero-badge {
-  position: absolute;
-  top: -4px;
-  right: 20%;
-  width: 26px;
-  height: 26px;
-  background: rgba(255, 255, 255, 0.9);
-  border-radius: 50%;
-  padding: 3px;
-  box-sizing: border-box;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
-}
-/* In dark mode, the blueish hero PNG is already readable; in light it's fine too */
-html[data-theme="dark"] .mode-hero {
-  opacity: 0.95;
 }
 
 /* Connection-panel Scan button (the IP-row scan on the Local Network tab) */
