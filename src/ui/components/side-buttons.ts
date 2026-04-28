@@ -25,12 +25,26 @@ const RELAY_SVG = (color: string) => `<svg width="26" height="26" viewBox="0 0 2
   <circle cx="18" cy="13" r="1.8" fill="${color}" stroke="none"/>
 </svg>`;
 
+// Waist-lock padlock icon (G1)
+const WAIST_LOCK_SVG = (color: string) => `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="11" width="16" height="10" rx="2"/>
+  <path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+</svg>`;
+
+import type { RobotFamily } from '../../api/unitree-cloud';
+
 export interface SettingCallbacks {
   onRadarToggle: (enabled: boolean) => void;
   onLampSet: (level: number) => void;
   onVolumeSet: (level: number) => void;
   onLidarToggle: (enabled: boolean) => void;
   onRelayToggle: (enabled: boolean) => void;
+  /** Optional Waist-Lock toggle — only rendered when handler is provided
+   *  (G1 only). The flag indicates the desired locked state. */
+  onWaistLockToggle?: (lock: boolean) => void;
+  /** Robot family. G1 hides the Go2-specific buttons (Radar / LiDAR /
+   *  Lamp) and shows a Waist Lock toggle in their place. */
+  family?: RobotFamily;
 }
 
 export class SettingBar {
@@ -41,6 +55,8 @@ export class SettingBar {
   private volumeBtn!: HTMLButtonElement;
   private lampBtn!: HTMLButtonElement;
   private relayBtn!: HTMLButtonElement;
+  private waistLockBtn: HTMLButtonElement | null = null;
+  private waistLocked = false;
   private relayOn = false;
   private relayAvailable = false;
   private remoteName = '';
@@ -53,24 +69,31 @@ export class SettingBar {
     this.container = document.createElement('div');
     this.container.className = 'setting-bar';
 
-    // Radar button
-    this.radarBtn = this.createBtn('/sprites/icon_radar.png', 'Radar');
-    this.radarBtn.addEventListener('click', () => {
-      this.radarOn = !this.radarOn;
-      const img = this.radarBtn.querySelector('img')!;
-      img.src = this.radarOn ? '/sprites/icon_radar_on.png' : '/sprites/icon_radar.png';
-      callbacks.onRadarToggle(this.radarOn);
-    });
+    const isG1 = callbacks.family === 'G1';
 
-    // LiDAR button
-    const lidarBtn = this.createSvgBtn(LIDAR_SVG_ON, 'LiDAR');
-    lidarBtn.addEventListener('click', () => {
-      this.lidarOn = !this.lidarOn;
-      lidarBtn.innerHTML = this.lidarOn ? LIDAR_SVG_ON : LIDAR_SVG_OFF;
-      callbacks.onLidarToggle(this.lidarOn);
-    });
+    // Radar / LiDAR / Lamp are quadruped-only controls (obstacle avoid,
+    // mid360 toggle, head-lamp brightness). G1 has no equivalents in
+    // the Explorer webview so we skip them.
+    if (!isG1) {
+      this.radarBtn = this.createBtn('/sprites/icon_radar.png', 'Radar');
+      this.radarBtn.addEventListener('click', () => {
+        this.radarOn = !this.radarOn;
+        const img = this.radarBtn.querySelector('img')!;
+        img.src = this.radarOn ? '/sprites/icon_radar_on.png' : '/sprites/icon_radar.png';
+        callbacks.onRadarToggle(this.radarOn);
+      });
+      this.container.appendChild(this.radarBtn);
 
-    // Volume button
+      const lidarBtn = this.createSvgBtn(LIDAR_SVG_ON, 'LiDAR');
+      lidarBtn.addEventListener('click', () => {
+        this.lidarOn = !this.lidarOn;
+        lidarBtn.innerHTML = this.lidarOn ? LIDAR_SVG_ON : LIDAR_SVG_OFF;
+        callbacks.onLidarToggle(this.lidarOn);
+      });
+      this.container.appendChild(lidarBtn);
+    }
+
+    // Volume button (kept on both families).
     this.volumeBtn = this.createBtn('/sprites/icon_volume.png', 'Volume');
     this.volumeBtn.addEventListener('click', () => {
       this.toggleSlider(this.volumeBtn, 'Vol', this.volumeLevel, (val) => {
@@ -80,17 +103,33 @@ export class SettingBar {
         callbacks.onVolumeSet(val);
       });
     });
+    this.container.appendChild(this.volumeBtn);
 
-    // Lamp button
-    this.lampBtn = this.createBtn('/sprites/icon_lamp.png', 'Light');
-    this.lampBtn.addEventListener('click', () => {
-      this.toggleSlider(this.lampBtn, 'Light', this.lampLevel, (val) => {
-        this.lampLevel = val;
-        const img = this.lampBtn.querySelector('img')!;
-        img.src = val > 0 ? '/sprites/icon_lamp_on.png' : '/sprites/icon_lamp.png';
-        callbacks.onLampSet(val);
+    if (!isG1) {
+      this.lampBtn = this.createBtn('/sprites/icon_lamp.png', 'Light');
+      this.lampBtn.addEventListener('click', () => {
+        this.toggleSlider(this.lampBtn, 'Light', this.lampLevel, (val) => {
+          this.lampLevel = val;
+          const img = this.lampBtn.querySelector('img')!;
+          img.src = val > 0 ? '/sprites/icon_lamp_on.png' : '/sprites/icon_lamp.png';
+          callbacks.onLampSet(val);
+        });
       });
-    });
+      this.container.appendChild(this.lampBtn);
+    }
+
+    // Waist Lock — G1 only. Fires BaseRunner.G1_SETUP_MACHINE_TYPE
+    // (script demarcate_setup_machine_type.sh) with arg "6" (lock) /
+    // "5" (unlock) per the decompiled BaseInfoViewModel.kt:570.
+    if (isG1 && callbacks.onWaistLockToggle) {
+      this.waistLockBtn = this.createSvgBtn(WAIST_LOCK_SVG('#666'), 'Waist Unlocked');
+      this.waistLockBtn.addEventListener('click', () => {
+        this.waistLocked = !this.waistLocked;
+        this.updateWaistLockVisual();
+        callbacks.onWaistLockToggle?.(this.waistLocked);
+      });
+      this.container.appendChild(this.waistLockBtn);
+    }
 
     // Relay Remote button (disabled until remote is connected)
     this.relayBtn = this.createSvgBtn(RELAY_SVG('#444'), 'Relay Remote');
@@ -104,14 +143,20 @@ export class SettingBar {
       this.updateRelayVisual();
       callbacks.onRelayToggle(this.relayOn);
     });
-
-    this.container.appendChild(this.radarBtn);
-    this.container.appendChild(lidarBtn);
-    this.container.appendChild(this.volumeBtn);
-    this.container.appendChild(this.lampBtn);
     this.container.appendChild(this.relayBtn);
 
     parent.appendChild(this.container);
+  }
+
+  private updateWaistLockVisual(): void {
+    if (!this.waistLockBtn) return;
+    this.waistLockBtn.innerHTML = WAIST_LOCK_SVG(this.waistLocked ? '#6879e4' : '#666');
+    const lbl = document.createElement('span');
+    lbl.textContent = this.waistLocked ? 'Waist Locked' : 'Waist Unlocked';
+    // createSvgBtn writes a <span> sibling to the <svg>. Replace it.
+    const existingLbl = this.waistLockBtn.querySelector('span');
+    if (existingLbl) existingLbl.textContent = lbl.textContent;
+    else this.waistLockBtn.appendChild(lbl);
   }
 
   /** Called when BLE remote connection status changes. */

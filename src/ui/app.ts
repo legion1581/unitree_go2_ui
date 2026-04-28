@@ -379,11 +379,13 @@ export class App {
 
     // Setting bar
     this.settingBar = new SettingBar(this.controlUi, {
+      family: cloudApi.family,
       onRadarToggle: (enabled) => this.sendRadarToggle(enabled),
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
       onRelayToggle: (enabled) => this.setRelay(enabled),
+      onWaistLockToggle: (lock) => this.sendWaistLock(lock),
     });
     this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
 
@@ -843,10 +845,36 @@ export class App {
     this.pollNetworkType();
 
     // APK init requests: firmware version, motion mode, gas sensor
-    this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
-      JSON.stringify({ script: 'get_whole_packet_version.sh' }));
+    this.runBashScript('get_whole_packet_version.sh');
     this.dataHandler.publishRequest(RTC_TOPIC.MOTION_SWITCHER, 1001);
     this.dataHandler.publishRequest(RTC_TOPIC.GAS_SENSOR, 1002);
+
+    // G1 has dedicated hardware + software version scripts
+    // (BaseRunner.GET_HARDWARE_VERSION, GET_SOFTWARE_VERSION) per
+    // com/unitree/webrtc/data/BaseRunner.java in the decompiled apk.
+    if (cloudApi.family === 'G1') {
+      this.runBashScript('get_hardware_version.sh');
+      this.runBashScript('get_software_version.sh');
+      this.runBashScript('get_ip_address.sh');
+    }
+  }
+
+  /** Submit a bashrunner script line. The wire body matches what the
+   * Explorer apk emits at WebEventServiceImpl.java:128 — a single 'script'
+   * field whose value is "<script.sh> <space-separated args>". Logs the
+   * request so wire traces are easy to compare against responses. */
+  private runBashScript(scriptLine: string): void {
+    if (!this.dataHandler) return;
+    console.log(`[bashrunner] REQ → ${scriptLine}`);
+    this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
+      JSON.stringify({ script: scriptLine }));
+  }
+
+  /** Lock (true) or unlock (false) the G1 waist motor. Fires
+   *  BaseRunner.G1_SETUP_MACHINE_TYPE with arg "6"=lock / "5"=unlock,
+   *  per BaseInfoViewModel.kt:570. */
+  private sendWaistLock(lock: boolean): void {
+    this.runBashScript(`demarcate_setup_machine_type.sh ${lock ? 6 : 5}`);
   }
 
   private pollNetworkType(): void {
@@ -997,7 +1025,10 @@ export class App {
     }
 
     if (d.foot_force) this.robotState.footForce = d.foot_force;
-    if (d.imu_state?.temperature !== undefined) this.robotState.imuTemp = d.imu_state.temperature;
+    if (d.imu_state?.temperature !== undefined) {
+      this.robotState.imuTemp = d.imu_state.temperature;
+      this.navBar?.setBodyTemp(d.imu_state.temperature);
+    }
 
     // Update status page if visible
     if (this.currentScreen === 'status' && this.statusPage) {
@@ -1023,8 +1054,12 @@ export class App {
     if (body) this.robotState.bodyImu = body;
     if (crotch) this.robotState.crotchImu = crotch;
     // Mirror body IMU temperature into the legacy imuTemp field so the
-    // existing IMU section keeps showing a temperature on G1.
-    if (body) this.robotState.imuTemp = body.temp;
+    // existing IMU section keeps showing a temperature on G1, and feed
+    // the navbar popover so 'Body' line populates alongside 'Motor'.
+    if (body) {
+      this.robotState.imuTemp = body.temp;
+      this.navBar?.setBodyTemp(body.temp);
+    }
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
