@@ -322,9 +322,16 @@ export class BtPopover {
     this.robotBody.appendChild(infoRows);
 
     this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
+      // Map the backend's protocol token to a human-readable version label.
+      // V1 = legacy FFE0 service (Go2 < 1.1.11, all G1). V2 = Nordic UART
+      // (Go2 >= 1.1.11). See docs/bluetooth-v1-v2.md.
+      const proto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
+                  : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
+                  : (rInfo.protocol || '—');
       infoRows.innerHTML = `
         <div><span style="color:#666;">SN:</span> ${this.esc(rInfo.serial_number || '—')}</div>
         <div><span style="color:#666;">AP MAC:</span> ${this.esc(rInfo.ap_mac || '—')}</div>
+        <div><span style="color:#666;">Protocol:</span> ${this.esc(proto)}</div>
       `;
     }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
 

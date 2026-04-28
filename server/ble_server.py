@@ -175,7 +175,11 @@ class BLESession:
 
     def _connect_sync(self, address: str) -> None:
         self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
-        self._adapter.start()
+        # reset_on_start=True would run `sudo systemctl restart bluetooth` and
+        # `sudo hciconfig <hci> reset` (pygatt workaround for a legacy gatttool
+        # bonding lockup). Skip it so connecting doesn't prompt for a sudo
+        # password — re-enable if bonding lockups appear.
+        self._adapter.start(reset_on_start=False)
         try:
             self._device = self._adapter.connect(
                 address, address_type=pygatt.BLEAddressType.public, timeout=15,
@@ -484,7 +488,8 @@ class RemoteSession:
                 pass
 
             self._adapter = pygatt.GATTToolBackend(hci_device=_current_adapter)
-            self._adapter.start()
+            # See BLESession._connect_sync above — skip the sudo-requiring reset.
+            self._adapter.start(reset_on_start=False)
 
             try:
                 self._device = self._adapter.connect(
