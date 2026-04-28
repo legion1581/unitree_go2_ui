@@ -1,4 +1,5 @@
 import { theme } from '../theme';
+import { cloudApi } from '../../api/unitree-cloud';
 
 const BT_SVG = (color: string) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
   <path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/>
@@ -48,7 +49,7 @@ export class NavBar {
         <button class="back-btn">
           <img src="/sprites/nav-bar-left-icon.png" alt="Back" />
         </button>
-        <span class="nav-bar-title">Go2</span>
+        <span class="nav-bar-title">${cloudApi.family}</span>
       </div>
       <div class="nav-bar-right">
         <span class="motor-temp-label"></span>

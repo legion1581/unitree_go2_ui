@@ -242,17 +242,21 @@ export class StatusPage {
       this.row('Velocity (x, y, z)', 'imu-vel'),
     ]));
 
-    // LiDAR
-    this.lidarBody = document.createElement('div');
-    this.lidarBody.className = 'status-section-body';
-    const lidarWait = document.createElement('div');
-    lidarWait.className = 'status-row';
-    const lidarWaitLabel = document.createElement('span');
-    lidarWaitLabel.className = 'status-label';
-    lidarWaitLabel.textContent = 'Waiting for LiDAR state...';
-    lidarWait.appendChild(lidarWaitLabel);
-    this.lidarBody.appendChild(lidarWait);
-    content.appendChild(this.buildSection('LiDAR', [], this.lidarBody));
+    // LiDAR — Go2 only. G1's webview doesn't surface LiDAR/SLAM UI, and
+    // its lowstate doesn't carry a lidarState payload, so the section
+    // would just sit on "Waiting for LiDAR state..." indefinitely.
+    if (family !== 'G1') {
+      this.lidarBody = document.createElement('div');
+      this.lidarBody.className = 'status-section-body';
+      const lidarWait = document.createElement('div');
+      lidarWait.className = 'status-row';
+      const lidarWaitLabel = document.createElement('span');
+      lidarWaitLabel.className = 'status-label';
+      lidarWaitLabel.textContent = 'Waiting for LiDAR state...';
+      lidarWait.appendChild(lidarWaitLabel);
+      this.lidarBody.appendChild(lidarWait);
+      content.appendChild(this.buildSection('LiDAR', [], this.lidarBody));
+    }
 
     // Network
     content.appendChild(this.buildSection('Network', [

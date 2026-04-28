@@ -13,6 +13,7 @@ import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon'
 import { BtPopover } from './components/bt-popover';
 import { ThemeToggle } from './components/theme-toggle';
 import { btBackend } from '../api/bt-backend';
+import { cloudApi } from '../api/unitree-cloud';
 import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
@@ -293,13 +294,18 @@ export class App {
     else svcBtn.disabled = true;
     btnRow.appendChild(svcBtn);
 
-    // 3D LiDAR Mapping button
-    const mapBtn = document.createElement('button');
-    mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
-    mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
-    if (!needsWebRTC) mapBtn.addEventListener('click', () => this.showMappingScreen());
-    else mapBtn.disabled = true;
-    btnRow.appendChild(mapBtn);
+    // 3D LiDAR Mapping button — Go2 only. The G1 Explorer webview doesn't
+    // expose any mapping UI even though the URDF includes a mid360 LiDAR
+    // (verified against the decompiled APK 1.9.3 — pages/ has no mapping
+    // chunk and the G1 series subscription path skips rt/utlidar/*).
+    if (cloudApi.family !== 'G1') {
+      const mapBtn = document.createElement('button');
+      mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
+      mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
+      if (!needsWebRTC) mapBtn.addEventListener('click', () => this.showMappingScreen());
+      else mapBtn.disabled = true;
+      btnRow.appendChild(mapBtn);
+    }
 
     // Account Management — only in Remote mode
     if (isRemoteMode) {
@@ -402,8 +408,12 @@ export class App {
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
     this.actionBar = new ActionBar(w2, (action) => {
-      console.log(`[go2:action] REQ → ${action.name} (api_id=${action.apiId}, param=${action.param ?? '{}'})`);
-      this.dataHandler?.publishRequest(RTC_TOPIC.SPORT_MOD, action.apiId, action.param);
+      // G1 modes + arm gestures all route through G1_ARM_REQUEST (the
+      // humanoid uses 'rt/api/arm/request' instead of 'rt/api/sport/request').
+      // Go2 keeps SPORT_MOD as before. Verified against Explorer 1.9.3.
+      const topic = cloudApi.family === 'G1' ? RTC_TOPIC.G1_ARM_REQUEST : RTC_TOPIC.SPORT_MOD;
+      console.log(`[action] REQ → ${action.name} (topic=${topic} api_id=${action.apiId}, param=${action.param ?? '{}'})`);
+      this.dataHandler?.publishRequest(topic, action.apiId, action.param);
     });
     opWrapper.appendChild(w2);
 
@@ -763,21 +773,33 @@ export class App {
 
     this.dataHandler.publishTyped('', 'on', DATA_CHANNEL_TYPE.VID);
 
-    // Subscribe to data topics (matching APK's WebRTC bridge subscriptions)
+    // Subscribe to data topics (matching APK's WebRTC bridge subscriptions).
+    // Family-specific paths:
+    //   * Go2: bms_state lives inside lowstate; single IMU on imu_state.
+    //   * G1:  bms_state arrives on its own topic (rt/lf/bmsstate);
+    //          dual IMU on rt/lf/lowstate_doubleimu (Body + Crotch);
+    //          no LiDAR / SLAM topics — Explorer doesn't expose them.
     this.dataHandler.subscribe(RTC_TOPIC.LOW_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.LF_SPORT_MOD_STATE);
-    this.dataHandler.subscribe(RTC_TOPIC.ROBOT_ODOM);
-    this.dataHandler.subscribe(RTC_TOPIC.LIDAR_ARRAY);
-    this.dataHandler.subscribe(RTC_TOPIC.LIDAR_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.MULTIPLE_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.SELFTEST);
     this.dataHandler.subscribe(RTC_TOPIC.SERVICE_STATE);
-
-    // Enable LiDAR (send 5 times for reliability, like APK)
-    for (let i = 0; i < 5; i++) {
-      setTimeout(() => {
-        this.dataHandler?.publish(RTC_TOPIC.LIDAR_SWITCH, 'ON');
-      }, i * 100);
+    if (cloudApi.family === 'G1') {
+      this.dataHandler.subscribe(RTC_TOPIC.BMS_STATE);
+      this.dataHandler.subscribe(RTC_TOPIC.DOUBLE_IMU);
+      this.dataHandler.subscribe(RTC_TOPIC.G1_ARM_ACTION_STATE);
+    } else {
+      this.dataHandler.subscribe(RTC_TOPIC.ROBOT_ODOM);
+      this.dataHandler.subscribe(RTC_TOPIC.LIDAR_ARRAY);
+      this.dataHandler.subscribe(RTC_TOPIC.LIDAR_STATE);
+      // Enable LiDAR (send 5 times for reliability, like APK).
+      // G1 has a mid360 in the URDF but the Explorer webview never
+      // toggles it on, so we skip the switch on humanoid families.
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => {
+          this.dataHandler?.publish(RTC_TOPIC.LIDAR_SWITCH, 'ON');
+        }, i * 100);
+      }
     }
 
     this.dataHandler.onTopicData = (msg) => this.handleTopicMessage(msg);
@@ -830,6 +852,11 @@ export class App {
     switch (msg.topic) {
       case RTC_TOPIC.LOW_STATE:
         this.handleLowState(msg.data);
+        break;
+      case RTC_TOPIC.BMS_STATE:
+        // G1 publishes battery on its own topic; payload is the bms_state
+        // struct directly (not wrapped under d.bms_state like in lowstate).
+        this.handleLowState({ bms_state: msg.data });
         break;
       case RTC_TOPIC.ROBOT_ODOM:
         this.handleRobotOdom(msg.data);
