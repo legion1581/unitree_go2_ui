@@ -1,3 +1,5 @@
+import { cloudApi, type RobotFamily } from '../../api/unitree-cloud';
+
 export interface RobotStatus {
   batteryPercent: number;
   batteryCurrent: number;
@@ -18,12 +20,30 @@ export interface RobotStatus {
   selfTestResults: string[];
 }
 
-const MOTOR_NAMES = [
+// Motor name layouts. The Go2 quadruped publishes 12 joints; the G1
+// humanoid publishes 29 (12 legs + 3 waist + 14 arms in the lowstate
+// motorStates array, matching the joint order of g1_29dof.urdf).
+// If a future firmware exposes more motors than we have names for, the
+// fallback "M<N>" label keeps the row legible.
+const MOTOR_NAMES_GO2 = [
   'FR Hip', 'FR Thigh', 'FR Calf',
   'FL Hip', 'FL Thigh', 'FL Calf',
   'RR Hip', 'RR Thigh', 'RR Calf',
   'RL Hip', 'RL Thigh', 'RL Calf',
 ];
+const MOTOR_NAMES_G1 = [
+  'L Hip P', 'L Hip R', 'L Hip Y', 'L Knee', 'L Ank P', 'L Ank R',
+  'R Hip P', 'R Hip R', 'R Hip Y', 'R Knee', 'R Ank P', 'R Ank R',
+  'Waist Y', 'Waist R', 'Waist P',
+  'L Sho P', 'L Sho R', 'L Sho Y', 'L Elbow', 'L Wri R', 'L Wri P', 'L Wri Y',
+  'R Sho P', 'R Sho R', 'R Sho Y', 'R Elbow', 'R Wri R', 'R Wri P', 'R Wri Y',
+];
+function motorNamesFor(family: RobotFamily): string[] {
+  return family === 'G1' ? MOTOR_NAMES_G1 : MOTOR_NAMES_GO2;
+}
+function motorName(family: RobotFamily, idx: number): string {
+  return motorNamesFor(family)[idx] ?? `M${String(idx).padStart(2, '0')}`;
+}
 
 const MODE_NAMES: Record<number, string> = {
   0: 'Idle', 1: 'Balancing', 2: 'Walking', 3: 'Running',
@@ -34,6 +54,7 @@ export class StatusPage {
   private container: HTMLElement;
   private vals: Map<string, HTMLElement> = new Map();
   private motorRows: HTMLElement[] = [];
+  private motorRowsParent: HTMLElement | null = null;
   private footForceRow: HTMLElement | null = null;
   private lidarBody: HTMLElement | null = null;
   private built = false;
@@ -146,8 +167,12 @@ export class StatusPage {
       this.row('Charge Cycles', 'bat-cycles'),
     ]));
 
-    // Motors
-    const motorEls: HTMLElement[] = [];
+    // Motors — body becomes the live container so we can grow / shrink rows
+    // when the incoming motorStates length doesn't match the family's expected
+    // count (e.g. firmware exposes a 23-DOF G1 instead of 29).
+    const motorBody = document.createElement('div');
+    motorBody.className = 'status-section-body';
+
     const motorHeader = document.createElement('div');
     motorHeader.className = 'status-motor-header';
     for (const label of ['Motor', 'Pos', 'Vel', 'Torque', 'Temp', 'Lost']) {
@@ -155,60 +180,58 @@ export class StatusPage {
       s.textContent = label;
       motorHeader.appendChild(s);
     }
-    motorEls.push(motorHeader);
+    motorBody.appendChild(motorHeader);
 
-    for (let i = 0; i < 12; i++) {
-      const r = document.createElement('div');
-      r.className = 'status-motor-row';
-      const nameSpan = document.createElement('span');
-      nameSpan.className = 'motor-name';
-      nameSpan.textContent = MOTOR_NAMES[i];
-      r.appendChild(nameSpan);
-      for (let c = 0; c < 5; c++) {
-        const cell = document.createElement('span');
-        cell.textContent = '-';
-        r.appendChild(cell);
-      }
+    const family = cloudApi.family;
+    const initialCount = family === 'G1' ? 29 : 12;
+    for (let i = 0; i < initialCount; i++) {
+      const r = this.buildMotorRow(family, i);
       this.motorRows.push(r);
-      motorEls.push(r);
+      motorBody.appendChild(r);
     }
+    this.motorRowsParent = motorBody;
 
     const summary = document.createElement('div');
     summary.className = 'status-summary';
     summary.appendChild(this.row('Communication Quality', 'motor-quality'));
     summary.appendChild(this.row('Max Motor Temp', 'motor-max-temp'));
-    motorEls.push(summary);
+    motorBody.appendChild(summary);
 
-    const footSummary = document.createElement('div');
-    footSummary.className = 'status-summary';
-    const footLabel = document.createElement('div');
-    footLabel.className = 'status-row';
-    const footLabelText = document.createElement('span');
-    footLabelText.className = 'status-label';
-    footLabelText.textContent = 'Foot Force';
-    footLabel.appendChild(footLabelText);
-    footSummary.appendChild(footLabel);
-    const footHeader = document.createElement('div');
-    footHeader.className = 'status-motor-header';
-    footHeader.style.gridTemplateColumns = 'repeat(4,1fr)';
-    for (const label of ['FR', 'FL', 'RR', 'RL']) {
-      const s = document.createElement('span');
-      s.textContent = label;
-      footHeader.appendChild(s);
+    // Foot-force is a quadruped concept (FR/FL/RR/RL contact). G1 publishes
+    // empty footForce arrays and has dexterous hands instead — skip the
+    // section entirely on humanoid families.
+    if (family !== 'G1') {
+      const footSummary = document.createElement('div');
+      footSummary.className = 'status-summary';
+      const footLabel = document.createElement('div');
+      footLabel.className = 'status-row';
+      const footLabelText = document.createElement('span');
+      footLabelText.className = 'status-label';
+      footLabelText.textContent = 'Foot Force';
+      footLabel.appendChild(footLabelText);
+      footSummary.appendChild(footLabel);
+      const footHeader = document.createElement('div');
+      footHeader.className = 'status-motor-header';
+      footHeader.style.gridTemplateColumns = 'repeat(4,1fr)';
+      for (const label of ['FR', 'FL', 'RR', 'RL']) {
+        const s = document.createElement('span');
+        s.textContent = label;
+        footHeader.appendChild(s);
+      }
+      footSummary.appendChild(footHeader);
+      this.footForceRow = document.createElement('div');
+      this.footForceRow.className = 'status-motor-row';
+      this.footForceRow.style.gridTemplateColumns = 'repeat(4,1fr)';
+      for (let c = 0; c < 4; c++) {
+        const cell = document.createElement('span');
+        cell.textContent = '-';
+        this.footForceRow.appendChild(cell);
+      }
+      footSummary.appendChild(this.footForceRow);
+      motorBody.appendChild(footSummary);
     }
-    footSummary.appendChild(footHeader);
-    this.footForceRow = document.createElement('div');
-    this.footForceRow.className = 'status-motor-row';
-    this.footForceRow.style.gridTemplateColumns = 'repeat(4,1fr)';
-    for (let c = 0; c < 4; c++) {
-      const cell = document.createElement('span');
-      cell.textContent = '-';
-      this.footForceRow.appendChild(cell);
-    }
-    footSummary.appendChild(this.footForceRow);
-    motorEls.push(footSummary);
 
-    content.appendChild(this.buildSection('Motor Data', motorEls));
+    content.appendChild(this.buildSection('Motor Data', [], motorBody));
 
     // IMU
     content.appendChild(this.buildSection('IMU & Position', [
@@ -271,8 +294,38 @@ export class StatusPage {
     return r;
   }
 
+  private buildMotorRow(family: RobotFamily, idx: number): HTMLElement {
+    const r = document.createElement('div');
+    r.className = 'status-motor-row';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'motor-name';
+    nameSpan.textContent = motorName(family, idx);
+    r.appendChild(nameSpan);
+    for (let c = 0; c < 5; c++) {
+      const cell = document.createElement('span');
+      cell.textContent = '-';
+      r.appendChild(cell);
+    }
+    return r;
+  }
+
+  private ensureMotorRows(count: number): void {
+    if (!this.motorRowsParent || count <= this.motorRows.length) return;
+    const family = cloudApi.family;
+    // Insert new rows just before the summary block (last child of the body)
+    // so the summary stays at the bottom.
+    const summaryAnchor = this.motorRowsParent.querySelector('.status-summary');
+    for (let i = this.motorRows.length; i < count; i++) {
+      const r = this.buildMotorRow(family, i);
+      this.motorRows.push(r);
+      if (summaryAnchor) this.motorRowsParent.insertBefore(r, summaryAnchor);
+      else this.motorRowsParent.appendChild(r);
+    }
+  }
+
   private updateMotors(s: RobotStatus): void {
     if (s.motorStates.length === 0) return;
+    this.ensureMotorRows(s.motorStates.length);
 
     let totalLost = 0;
     let maxTemp = 0;

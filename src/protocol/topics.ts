@@ -29,6 +29,18 @@ export const RTC_TOPIC = {
   UWB_STATE: 'rt/uwbstate',
   PUBLIC_NETWORK_STATUS: 'rt/public_network_status',
 
+  // G1-specific (firmware 1.5.1+) — humanoid arm + dexterous hand topics.
+  // Locomotion (legs/torso) still flows through SPORT_MOD; G1_ARM_REQUEST
+  // is the new path for shoulder/elbow/wrist/hand requests on the
+  // humanoid line. ARM_ACTION_STATE feeds back execution state for
+  // arm trajectories; the DEX3_*_STATE pair carries dexterous-hand pose.
+  // Cross-checked against the Unitree Explorer 1.9.3 bundle —
+  // index-CtgArt9k.js routes on `["G1","R1"].includes(series)`.
+  G1_ARM_REQUEST: 'rt/api/arm/request',
+  G1_ARM_ACTION_STATE: 'rt/arm/action/state',
+  G1_DEX3_LEFT_STATE: 'rt/lf/dex3/left/state',
+  G1_DEX3_RIGHT_STATE: 'rt/lf/dex3/right/state',
+
   // USLAM (3D LiDAR Mapping / Navigation / Patrol)
   USLAM_CMD: 'rt/uslam/client_command',
   USLAM_SERVER_LOG: 'rt/uslam/server_log',

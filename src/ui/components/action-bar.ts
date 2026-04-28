@@ -1,4 +1,5 @@
 import { SPORT_CMD } from '../../protocol/topics';
+import { cloudApi, type RobotFamily } from '../../api/unitree-cloud';
 
 export interface RobotAction {
   apiId: number;
@@ -6,50 +7,68 @@ export interface RobotAction {
   icon: string;
   /** JSON parameter string sent with the request. Defaults to '{}'. */
   param?: string;
+  /** Which robot families support this action. Defaults to ['Go2'] when omitted. */
+  families?: ReadonlyArray<RobotFamily>;
 }
 
 const DATA_TRUE = '{"data":true}';
 
+// Family tagging policy:
+//   GO2  — quadruped-only (Roll Over, Sit, foot-driven gaits, side flips, …)
+//   ALL  — verified (or low-risk) on both: gestures, simple postures, the
+//          three forward acrobatics the Explorer bundle lists for G1
+//          (FrontFlip / FrontJump / FrontPounce on humanoid execution).
+// G1 hardware coverage is conservative — the broader humanoid action set
+// (arm targeting, pose presets, balance modes) lives behind G1_ARM_REQUEST
+// which we don't expose in the action bar yet.
+const GO2: ReadonlyArray<RobotFamily> = ['Go2'];
+const ALL: ReadonlyArray<RobotFamily> = ['Go2', 'G1'];
+
 /** All available actions (tricks/gestures) */
 export const ALL_ACTIONS: RobotAction[] = [
-  { apiId: SPORT_CMD.Wallow, name: 'Roll Over', icon: '/icons/rollOver.svg' },
-  { apiId: SPORT_CMD.Stretch, name: 'Stretch', icon: '/icons/stretch.svg' },
-  { apiId: SPORT_CMD.Hello, name: 'Shake Hand', icon: '/icons/shakeHands.svg' },
-  { apiId: SPORT_CMD.FingerHeart, name: 'Heart', icon: '/icons/showHeart.svg' },
-  { apiId: SPORT_CMD.FrontPounce, name: 'Pounce', icon: '/icons/pounceForward.svg' },
-  { apiId: SPORT_CMD.FrontJump, name: 'Jump Fwd', icon: '/icons/jumpForward.svg' },
-  { apiId: SPORT_CMD.Scrape, name: 'Greet', icon: '/icons/newYear.svg' },
-  { apiId: SPORT_CMD.Dance1, name: 'Dance 1', icon: '/icons/dance1.svg' },
-  { apiId: SPORT_CMD.Dance2, name: 'Dance 2', icon: '/icons/dance2.svg' },
-  { apiId: SPORT_CMD.FrontFlip, name: 'Front Flip', icon: '/sprites/icon_flip_forward.png', param: DATA_TRUE },
-  { apiId: SPORT_CMD.BackFlip, name: 'Back Flip', icon: '/icons/hand_stand.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.LeftFlip, name: 'Left Flip', icon: '/icons/mode_bound.svg', param: DATA_TRUE },
+  { apiId: SPORT_CMD.Wallow, name: 'Roll Over', icon: '/icons/rollOver.svg', families: GO2 },
+  { apiId: SPORT_CMD.Stretch, name: 'Stretch', icon: '/icons/stretch.svg', families: ALL },
+  { apiId: SPORT_CMD.Hello, name: 'Shake Hand', icon: '/icons/shakeHands.svg', families: ALL },
+  { apiId: SPORT_CMD.FingerHeart, name: 'Heart', icon: '/icons/showHeart.svg', families: ALL },
+  { apiId: SPORT_CMD.FrontPounce, name: 'Pounce', icon: '/icons/pounceForward.svg', families: ALL },
+  { apiId: SPORT_CMD.FrontJump, name: 'Jump Fwd', icon: '/icons/jumpForward.svg', families: ALL },
+  { apiId: SPORT_CMD.Scrape, name: 'Greet', icon: '/icons/newYear.svg', families: GO2 },
+  { apiId: SPORT_CMD.Dance1, name: 'Dance 1', icon: '/icons/dance1.svg', families: ALL },
+  { apiId: SPORT_CMD.Dance2, name: 'Dance 2', icon: '/icons/dance2.svg', families: ALL },
+  { apiId: SPORT_CMD.FrontFlip, name: 'Front Flip', icon: '/sprites/icon_flip_forward.png', param: DATA_TRUE, families: ALL },
+  { apiId: SPORT_CMD.BackFlip, name: 'Back Flip', icon: '/icons/hand_stand.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.LeftFlip, name: 'Left Flip', icon: '/icons/mode_bound.svg', param: DATA_TRUE, families: GO2 },
   // Moved from modes: these are one-shot postures, not persistent modes
-  { apiId: SPORT_CMD.Damp, name: 'Damping', icon: '/icons/mode_damping.svg' },
-  { apiId: SPORT_CMD.Sit, name: 'Sit Down', icon: '/icons/sitDown.svg' },
-  { apiId: SPORT_CMD.StandDown, name: 'Crouch', icon: '/icons/lieDown.svg' },
-  { apiId: SPORT_CMD.StandUp, name: 'Lock On', icon: '/icons/mode_locking.svg' },
+  { apiId: SPORT_CMD.Damp, name: 'Damping', icon: '/icons/mode_damping.svg', families: ALL },
+  { apiId: SPORT_CMD.Sit, name: 'Sit Down', icon: '/icons/sitDown.svg', families: GO2 },
+  { apiId: SPORT_CMD.StandDown, name: 'Crouch', icon: '/icons/lieDown.svg', families: GO2 },
+  { apiId: SPORT_CMD.StandUp, name: 'Lock On', icon: '/icons/mode_locking.svg', families: ALL },
 ];
 
 /** All available modes */
 export const ALL_MODES: RobotAction[] = [
-  { apiId: SPORT_CMD.FreeWalk, name: 'Free Walk', icon: '/icons/mode_freeWalk.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.Pose, name: 'Pose', icon: '/icons/mode_pose.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.SwitchGait, name: 'Run', icon: '/icons/mode_run.svg', param: '{"data":1}' },
-  { apiId: SPORT_CMD.WalkStair, name: 'Walk Stair', icon: '/icons/mode_climbingStairs.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.StaticWalk, name: 'Static Walk', icon: '/icons/mode_walk.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.EconomicGait, name: 'Endurance', icon: '/icons/mode_batteryLife.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.LeadFollow, name: 'Leash', icon: '/icons/mode_traction.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.HandStand, name: 'Hand Stand', icon: '/icons/hand_stand.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.FreeAvoid, name: 'Free Avoid', icon: '/icons/mode_ai_avoid.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.FreeBound, name: 'Bound', icon: '/icons/mode_ai_bound.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.FreeJump, name: 'Jump', icon: '/icons/mode_bound.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.RecoveryStand, name: 'Stand', icon: '/icons/mode_stand.svg' },
-  { apiId: SPORT_CMD.CrossStep, name: 'Cross Step', icon: '/icons/mode_crossStep.svg', param: DATA_TRUE },
+  { apiId: SPORT_CMD.FreeWalk, name: 'Free Walk', icon: '/icons/mode_freeWalk.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.Pose, name: 'Pose', icon: '/icons/mode_pose.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.SwitchGait, name: 'Run', icon: '/icons/mode_run.svg', param: '{"data":1}', families: GO2 },
+  { apiId: SPORT_CMD.WalkStair, name: 'Walk Stair', icon: '/icons/mode_climbingStairs.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.StaticWalk, name: 'Static Walk', icon: '/icons/mode_walk.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.EconomicGait, name: 'Endurance', icon: '/icons/mode_batteryLife.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.LeadFollow, name: 'Leash', icon: '/icons/mode_traction.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.HandStand, name: 'Hand Stand', icon: '/icons/hand_stand.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.FreeAvoid, name: 'Free Avoid', icon: '/icons/mode_ai_avoid.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.FreeBound, name: 'Bound', icon: '/icons/mode_ai_bound.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.FreeJump, name: 'Jump', icon: '/icons/mode_bound.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.RecoveryStand, name: 'Stand', icon: '/icons/mode_stand.svg', families: ALL },
+  { apiId: SPORT_CMD.CrossStep, name: 'Cross Step', icon: '/icons/mode_crossStep.svg', param: DATA_TRUE, families: GO2 },
   // Moved from actions: these are persistent postures (remain active until next command)
-  { apiId: SPORT_CMD.BackStand, name: 'Rear Stand', icon: '/icons/mode_ai_stand.svg', param: DATA_TRUE },
-  { apiId: SPORT_CMD.RageMode, name: 'Rage', icon: '/icons/mode_runaway.svg', param: DATA_TRUE },
+  { apiId: SPORT_CMD.BackStand, name: 'Rear Stand', icon: '/icons/mode_ai_stand.svg', param: DATA_TRUE, families: GO2 },
+  { apiId: SPORT_CMD.RageMode, name: 'Rage', icon: '/icons/mode_runaway.svg', param: DATA_TRUE, families: GO2 },
 ];
+
+/** Whether this action is supported on the given (or current) robot family. */
+export function actionSupports(a: RobotAction, family: RobotFamily = cloudApi.family): boolean {
+  return (a.families ?? GO2).includes(family);
+}
 
 export type ActionCallback = (action: RobotAction) => void;
 
@@ -134,6 +153,7 @@ export class ActionBar {
       const list = ref.type === 'action' ? ALL_ACTIONS : ALL_MODES;
       const action = list[ref.index];
       if (!action) continue;
+      if (!actionSupports(action)) continue;
       const btn = document.createElement('button');
       btn.className = 'action-island-item';
       btn.innerHTML = `
@@ -278,10 +298,12 @@ export class ActionBar {
     modeGrid.innerHTML = '';
 
     ALL_ACTIONS.forEach((action, idx) => {
+      if (!actionSupports(action)) return;
       actionGrid.appendChild(this.createPopupItem(action, idx, 'action'));
     });
 
     ALL_MODES.forEach((mode, idx) => {
+      if (!actionSupports(mode)) return;
       modeGrid.appendChild(this.createPopupItem(mode, idx, 'mode'));
     });
   }
