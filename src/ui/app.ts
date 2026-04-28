@@ -369,12 +369,17 @@ export class App {
     this.navBar.setBtIconClick(() => this.toggleBtPopover());
     this.updateNavBarBtIcon();
 
-    // PIP camera
-    this.pipCamera = new PipCamera(this.controlUi);
-    if (this.videoStream) {
-      this.pipCamera.setStream(this.videoStream);
+    // PIP camera. The PIP bubble swaps the 3D scene and the camera between
+    // main-view and pip on tap. G1 has no 3D scene (camera is the only
+    // view), so the PIP would be empty in one mode and redundant in the
+    // other — skip it on humanoid families.
+    if (cloudApi.family !== 'G1') {
+      this.pipCamera = new PipCamera(this.controlUi);
+      if (this.videoStream) {
+        this.pipCamera.setStream(this.videoStream);
+      }
+      this.pipCamera.setOnTap(() => this.toggleViewMode());
     }
-    this.pipCamera.setOnTap(() => this.toggleViewMode());
 
     // Setting bar
     this.settingBar = new SettingBar(this.controlUi, {
@@ -594,6 +599,31 @@ export class App {
   }
 
   private async init3DScene(): Promise<void> {
+    // G1's Explorer webview ships no 3D model — the camera stream IS the
+    // view. Skip Scene3D / Go2.glb load; mount the fullscreen video bg
+    // immediately and lock viewMode to 'video' so the rest of the UI
+    // (toggle, PIP) doesn't try to swap with a non-existent canvas.
+    if (cloudApi.family === 'G1') {
+      this.viewMode = 'video';
+      this.videoBg = document.createElement('video');
+      this.videoBg.id = 'video-bg';
+      this.videoBg.className = 'video-bg-fullscreen';
+      this.videoBg.autoplay = true;
+      this.videoBg.playsInline = true;
+      this.videoBg.muted = true;
+      this.root.insertBefore(this.videoBg, this.controlUi);
+      if (this.videoStream) {
+        this.videoBg.srcObject = this.videoStream;
+      } else {
+        // Show static-noise placeholder until the WebRTC video track lands.
+        this.noiseBgCanvas = document.createElement('canvas');
+        this.noiseBgCanvas.id = 'noise-bg';
+        this.noiseBgCanvas.className = 'noise-bg-fullscreen';
+        this.root.insertBefore(this.noiseBgCanvas, this.controlUi);
+        this.startBgNoise();
+      }
+      return;
+    }
     try {
       const { Scene3D: S3D } = await import('./scene/scene');
       const canvas = document.createElement('canvas');
