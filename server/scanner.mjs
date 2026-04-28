@@ -1,20 +1,27 @@
 /**
- * UDP Multicast Scanner for Unitree Go2 robots.
+ * UDP Multicast Scanner for Unitree robots (Go2 + G1).
  *
- * Protocol (from multicast_scanner.py):
- *   - Multicast group: 231.1.1.1
+ * Wire protocol — same on both, only the multicast group(s) differ:
  *   - Send query to port 10131: {"name":"unitree_dapengche"}
  *   - Receive responses on port 10134: {"sn":"<serial>","ip":"<ip>"}
  *
+ * Multicast groups per family:
+ *   - Go2: 231.1.1.1
+ *   - G1:  231.1.1.2 + 239.255.1.1   (matches multicast_responder.py on
+ *          /unitree/.../webrtc_dds_bridge/ in G1 firmware 1.5.1)
+ *
  * Exposes a tiny HTTP API on port 3001:
- *   GET /scan          → scans and returns JSON array of found robots
- *   GET /scan?timeout=5000  → custom timeout in ms (default 3000)
+ *   GET /scan?family=Go2|G1  → scans and returns JSON array of found robots
+ *   GET /scan?timeout=5000   → custom timeout in ms (default 3000)
  */
 
 import dgram from 'node:dgram';
 import http from 'node:http';
 
-const MULTICAST_GROUP = '231.1.1.1';
+const FAMILY_GROUPS = {
+  Go2: ['231.1.1.1'],
+  G1:  ['231.1.1.2', '239.255.1.1'],
+};
 const QUERY_PORT = 10131;
 const RECV_PORT = 10134;
 const QUERY_MSG = JSON.stringify({ name: 'unitree_dapengche' });
@@ -22,16 +29,17 @@ const DEFAULT_TIMEOUT = 3000;
 const HTTP_PORT = parseInt(process.env.SCANNER_PORT || '3001', 10);
 
 /**
- * Perform a UDP multicast scan for Go2 robots.
- * @param {number} timeoutMs  How long to listen for responses.
+ * Perform a UDP multicast scan for a family of robots.
+ * @param {'Go2' | 'G1'} family  Which multicast group set to use.
+ * @param {number} timeoutMs     How long to listen for responses.
  * @returns {Promise<Array<{sn: string, ip: string}>>}
  */
-function scanForRobots(timeoutMs = DEFAULT_TIMEOUT) {
+function scanForRobots(family = 'Go2', timeoutMs = DEFAULT_TIMEOUT) {
+  const groups = FAMILY_GROUPS[family] || FAMILY_GROUPS.Go2;
   return new Promise((resolve, reject) => {
     const results = [];
     const seen = new Set();
 
-    // Receiver socket (listen on RECV_PORT for responses)
     const receiver = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
     receiver.on('error', (err) => {
@@ -45,36 +53,36 @@ function scanForRobots(timeoutMs = DEFAULT_TIMEOUT) {
         if (data.sn && data.ip && !seen.has(data.sn)) {
           seen.add(data.sn);
           results.push({ sn: data.sn, ip: data.ip });
-          console.log(`[scanner] Found robot: SN=${data.sn} IP=${data.ip}`);
+          console.log(`[scanner] Found ${family} robot: SN=${data.sn} IP=${data.ip}`);
         }
       } catch { /* ignore non-JSON */ }
     });
 
     receiver.bind(RECV_PORT, () => {
-      try {
-        receiver.addMembership(MULTICAST_GROUP);
-      } catch { /* may already be member */ }
+      for (const g of groups) {
+        try { receiver.addMembership(g); } catch { /* may already be member */ }
+      }
 
-      // Send the query
       const sender = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       const buf = Buffer.from(QUERY_MSG);
-
-      // Send multiple times for reliability
       let sent = 0;
       const sendQuery = () => {
-        sender.send(buf, 0, buf.length, QUERY_PORT, MULTICAST_GROUP, (err) => {
-          if (err) console.warn('[scanner] Send error:', err.message);
-          sent++;
-          if (sent < 3) setTimeout(sendQuery, 200);
-          else sender.close();
-        });
+        for (const g of groups) {
+          sender.send(buf, 0, buf.length, QUERY_PORT, g, (err) => {
+            if (err) console.warn(`[scanner] Send error to ${g}:`, err.message);
+          });
+        }
+        sent++;
+        if (sent < 3) setTimeout(sendQuery, 200);
+        else setTimeout(() => sender.close(), 100);
       };
       sendQuery();
     });
 
-    // Resolve after timeout
     setTimeout(() => {
-      try { receiver.dropMembership(MULTICAST_GROUP); } catch {}
+      for (const g of groups) {
+        try { receiver.dropMembership(g); } catch { /* not a member */ }
+      }
       receiver.close();
       resolve(results);
     }, timeoutMs);
@@ -99,10 +107,11 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/scan' && req.method === 'GET') {
     const timeout = parseInt(url.searchParams.get('timeout') || String(DEFAULT_TIMEOUT), 10);
-    console.log(`[scanner] Scan requested (timeout=${timeout}ms)`);
+    const family = url.searchParams.get('family') || 'Go2';
+    console.log(`[scanner] Scan requested (family=${family}, timeout=${timeout}ms)`);
 
     try {
-      const robots = await scanForRobots(timeout);
+      const robots = await scanForRobots(family, timeout);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ robots }));
     } catch (err) {

@@ -10,22 +10,23 @@ const API_BASE = '/unitree-api';
 const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
 const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
 
-// Robot families the cloud API knows about. The server keys some responses
-// (tutorials, firmware lists, announcements) off the AppName header. Go2 has
-// its own dedicated mobile app (AppName='Go2'), while the Unitree Explorer
-// app covers the industrial quadruped + humanoid line — G1, R1, B2, H1 all
-// share a single AppName='B2' (the Explorer APK identifies as B2 internally).
-// The user-facing pill therefore offers two choices, not five.
-export type RobotFamily = 'Go2' | 'Explorer';
-export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'Explorer'];
+// Robot families this UI is tested against. The Unitree cloud server keys
+// some responses (tutorials, firmware lists, announcements) off the AppName
+// header — Go2 has its own dedicated mobile app (AppName='Go2'); G1 ships
+// in the Unitree Explorer app which identifies as 'B2' internally
+// (RetrofitFactory.java:139 in the decompiled APK). Other Explorer-line
+// models (R1 / B2 / H1) presumably share AppName='B2' but aren't on hand
+// to verify, so the choice is intentionally limited to Go2 + G1.
+export type RobotFamily = 'Go2' | 'G1';
+export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'G1'];
 const APP_NAME: Record<RobotFamily, string> = {
-  Go2:      'Go2',
-  Explorer: 'B2',
+  Go2: 'Go2',
+  G1:  'B2',
 };
 /** Human-readable label for the family pill. */
 export const FAMILY_LABEL: Record<RobotFamily, string> = {
-  Go2:      'Go2',
-  Explorer: 'G1 / R1 / B2 / H1',
+  Go2: 'Go2',
+  G1:  'G1',
 };
 
 // Region selects which Unitree cloud endpoint the Vite proxy forwards to.
@@ -238,11 +239,12 @@ function readLocalEnum<T extends string>(key: string, allowed: ReadonlyArray<T>,
 function readPersistedFamily(): RobotFamily {
   try {
     const v = localStorage.getItem('unitree_family');
-    if (v === 'Go2' || v === 'Explorer') return v;
-    // Migrate legacy granular values written before the Explorer collapse.
-    if (v === 'B2' || v === 'G1' || v === 'R1' || v === 'H1' || v === 'H2') {
-      localStorage.setItem('unitree_family', 'Explorer');
-      return 'Explorer';
+    if (v === 'Go2' || v === 'G1') return v;
+    // Migrate legacy values written before the family list was simplified
+    // (anything other than Go2 maps onto the Explorer-line, now keyed as G1).
+    if (v === 'Explorer' || v === 'B2' || v === 'R1' || v === 'H1' || v === 'H2') {
+      localStorage.setItem('unitree_family', 'G1');
+      return 'G1';
     }
   } catch { /* ignore */ }
   return 'Go2';

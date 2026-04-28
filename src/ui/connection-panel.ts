@@ -351,7 +351,7 @@ export class ConnectionPanel {
     this.setStatus('Scanning network...', 'info');
 
     try {
-      const results = await scanForRobots((msg) => this.setStatus(msg, 'info'));
+      const results = await scanForRobots(cloudApi.family, (msg) => this.setStatus(msg, 'info'));
       if (results.length > 0) {
         const best = results[0];
         this.ipInput.value = best.ip;
