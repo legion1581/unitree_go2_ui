@@ -84,6 +84,8 @@ export class StatusPage {
   private motorRows: HTMLElement[] = [];
   private motorRowsParent: HTMLElement | null = null;
   private footForceRow: HTMLElement | null = null;
+  private bodyImuSection: HTMLElement | null = null;
+  private crotchImuSection: HTMLElement | null = null;
   private system: SystemInfo = {};
   private lidarBody: HTMLElement | null = null;
   private built = false;
@@ -145,7 +147,6 @@ export class StatusPage {
     this.setVal('sys-sw',     s.softwareVersion || this.system.softwareVersion || '—');
 
     // Firmware
-    this.setVal('fw-version', s.firmwareVersion || 'Fetching...');
     this.setVal('fw-mode', s.motionMode || 'Unknown');
 
     // Battery
@@ -190,10 +191,12 @@ export class StatusPage {
     const fmtRpy = (rpy: [number, number, number]): string =>
       `R ${rpy[0].toFixed(2)}, P ${rpy[1].toFixed(2)}, Y ${rpy[2].toFixed(2)}`;
     if (s.bodyImu) {
+      if (this.bodyImuSection) this.bodyImuSection.style.display = '';
       this.setVal('imu-body-rpy',  fmtRpy(s.bodyImu.rpy));
       this.setVal('imu-body-temp', `${s.bodyImu.temp.toFixed(1)}°C`);
     }
     if (s.crotchImu) {
+      if (this.crotchImuSection) this.crotchImuSection.style.display = '';
       this.setVal('imu-crotch-rpy',  fmtRpy(s.crotchImu.rpy));
       this.setVal('imu-crotch-temp', `${s.crotchImu.temp.toFixed(1)}°C`);
     }
@@ -214,21 +217,26 @@ export class StatusPage {
 
   private buildSections(content: HTMLElement): void {
     // System Info — surfaces what we know from the connection config
-    // (family, mode, IP, SN). Hardware / Software version slots are
-    // populated by a follow-up bashrunner request (not yet implemented);
-    // until then they show '-'.
-    content.appendChild(this.buildSection('System', [
+    // (family, mode, IP, SN) plus the bashrunner-fetched hardware /
+    // software / IP fields once they land.
+    const systemRows: HTMLElement[] = [
       this.row('Family', 'sys-family'),
       this.row('Mode', 'sys-mode'),
       this.row('IP Address', 'sys-ip'),
-      this.row('Serial Number', 'sys-sn'),
+    ];
+    // SN only meaningful in Remote mode where it comes from the cloud
+    // device binding. Skip the row in Local mode to avoid a permanent '-'.
+    if (this.system.serialNumber) {
+      systemRows.push(this.row('Serial Number', 'sys-sn'));
+    }
+    systemRows.push(
       this.row('Hardware Version', 'sys-hw'),
       this.row('Software Version', 'sys-sw'),
-    ]));
+    );
+    content.appendChild(this.buildSection('System', systemRows));
 
-    // Firmware
+    // Motion Mode is its own section (Software Version moved into System).
     content.appendChild(this.buildSection('Firmware', [
-      this.row('Package Version', 'fw-version'),
       this.row('Motion Mode', 'fw-mode'),
     ]));
 
@@ -343,14 +351,21 @@ export class StatusPage {
     // 'IMU & Position' block stays untouched for Go2. Source:
     // rt/lf/lowstate_doubleimu (parsed in app.ts handleDoubleImu).
     if (family === 'G1') {
-      content.appendChild(this.buildSection('Body IMU (Torso)', [
+      this.bodyImuSection = this.buildSection('Body IMU (Torso)', [
         this.row('Roll / Pitch / Yaw', 'imu-body-rpy'),
         this.row('Temperature', 'imu-body-temp'),
-      ]));
-      content.appendChild(this.buildSection('Crotch IMU (Pelvis)', [
+      ]);
+      this.crotchImuSection = this.buildSection('Crotch IMU (Pelvis)', [
         this.row('Roll / Pitch / Yaw', 'imu-crotch-rpy'),
         this.row('Temperature', 'imu-crotch-temp'),
-      ]));
+      ]);
+      // Hidden until the first rt/lf/lowstate_doubleimu frame lands —
+      // user may have selected the G1 family pill but be connected to
+      // a quadruped that doesn't publish that topic.
+      this.bodyImuSection.style.display = 'none';
+      this.crotchImuSection.style.display = 'none';
+      content.appendChild(this.bodyImuSection);
+      content.appendChild(this.crotchImuSection);
     }
 
     // LiDAR — Go2 only. G1's webview doesn't surface LiDAR/SLAM UI, and

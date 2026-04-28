@@ -1089,6 +1089,7 @@ export class App {
     }
   }
 
+  private sportModeStateLogCount = 0;
   private handleSportModeState(data: unknown): void {
     const d = data as {
       position?: number[];
@@ -1097,6 +1098,12 @@ export class App {
       mode?: number;
       gait_type?: number;
     };
+
+    if (this.sportModeStateLogCount < 3) {
+      console.log('[sportmode] keys:', Object.keys(data as object));
+      console.log('[sportmode] sample:', JSON.stringify(data).slice(0, 400));
+      this.sportModeStateLogCount++;
+    }
 
     if (d.position) this.robotState.position = d.position;
     if (d.velocity) this.robotState.velocity = d.velocity;
