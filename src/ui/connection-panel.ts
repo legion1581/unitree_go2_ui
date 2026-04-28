@@ -153,6 +153,14 @@ export class ConnectionPanel {
 
     this.modeSelect.value = 'STA-L';
 
+    // Restore the last IP the user actually connected with (Local modes
+    // only — Remote uses cloud devices). Stored on every successful
+    // handleConnect() / handleScan() write.
+    try {
+      const lastIp = localStorage.getItem('unitree_last_ip');
+      if (lastIp) this.ipInput.value = lastIp;
+    } catch { /* ignore */ }
+
     // If a previous session saved a token, pre-fill the Token field and default
     // to the Token tab in Remote mode — user just hits Login.
     if (cloudApi.loadSession() && cloudApi.isLoggedIn) {
@@ -334,9 +342,14 @@ export class ConnectionPanel {
         password: '',
       });
     } else {
+      const ip = this.ipInput.value.trim();
+      // Persist the IP for next launch — only for Local modes; AP mode's
+      // 192.168.12.1 is hardcoded so storing it is harmless but the
+      // STA-L IP is the value that actually changes per network.
+      if (ip) try { localStorage.setItem('unitree_last_ip', ip); } catch { /* ignore */ }
       this.onConnect({
         mode,
-        ip: this.ipInput.value.trim(),
+        ip,
         token: '',
         serialNumber: '',
         email: '',

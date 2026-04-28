@@ -1,5 +1,20 @@
 import { cloudApi, type RobotFamily } from '../../api/unitree-cloud';
 
+export interface SystemInfo {
+  /** Connection mode (STA-L, STA-T, AP, ...). */
+  mode?: string;
+  /** Robot IP, when connected via Local. */
+  ip?: string;
+  /** Cloud-bound serial number, when connected via Remote. */
+  serialNumber?: string;
+  /** Firmware-reported hardware version. Optional — populated by a
+   *  bashrunner request (BaseRunner.GET_HARDWARE_VERSION) on G1; not
+   *  yet implemented in this client. */
+  hardwareVersion?: string;
+  /** Firmware-reported software version (BaseRunner.GET_SOFTWARE_VERSION). */
+  softwareVersion?: string;
+}
+
 export interface RobotStatus {
   batteryPercent: number;
   batteryCurrent: number;
@@ -14,6 +29,10 @@ export interface RobotStatus {
   networkType: string;
   footForce: number[];
   imuTemp: number;
+  // G1 ships two IMUs in rt/lf/lowstate_doubleimu: torso ("Body") and
+  // pelvis ("Crotch"). Both optional so Go2's single-IMU shape is unaffected.
+  bodyImu?: { rpy: [number, number, number]; temp: number };
+  crotchImu?: { rpy: [number, number, number]; temp: number };
   mode: number;
   gaitType: number;
   position: number[];
@@ -60,12 +79,14 @@ export class StatusPage {
   private motorRows: HTMLElement[] = [];
   private motorRowsParent: HTMLElement | null = null;
   private footForceRow: HTMLElement | null = null;
+  private system: SystemInfo = {};
   private lidarBody: HTMLElement | null = null;
   private built = false;
   private updateTimer = 0;
   private pendingState: RobotStatus | null = null;
 
-  constructor(parent: HTMLElement, initialState: RobotStatus, onBack: () => void) {
+  constructor(parent: HTMLElement, initialState: RobotStatus, onBack: () => void, system: SystemInfo = {}) {
+    this.system = system;
     this.container = document.createElement('div');
     this.container.className = 'status-page';
 
@@ -108,6 +129,16 @@ export class StatusPage {
   private applyState(s: RobotStatus): void {
     if (!this.built) return;
 
+    // System Info — these are largely static (set once from the
+    // connection config) but the apply loop is the simplest re-paint
+    // hook; setVal short-circuits when the value hasn't changed.
+    this.setVal('sys-family', cloudApi.family);
+    this.setVal('sys-mode',   this.system.mode || '—');
+    this.setVal('sys-ip',     this.system.ip   || '—');
+    this.setVal('sys-sn',     this.system.serialNumber || '—');
+    this.setVal('sys-hw',     this.system.hardwareVersion || '—');
+    this.setVal('sys-sw',     this.system.softwareVersion || '—');
+
     // Firmware
     this.setVal('fw-version', s.firmwareVersion || 'Fetching...');
     this.setVal('fw-mode', s.motionMode || 'Unknown');
@@ -149,6 +180,19 @@ export class StatusPage {
     this.setVal('imu-pos', s.position.map((v) => v.toFixed(2)).join(', '));
     this.setVal('imu-vel', s.velocity.map((v) => v.toFixed(2)).join(', '));
 
+    // Dual IMU on G1 (Body / Crotch). The rows are only built for G1, so
+    // setVal is a no-op on Go2.
+    const fmtRpy = (rpy: [number, number, number]): string =>
+      `R ${rpy[0].toFixed(2)}, P ${rpy[1].toFixed(2)}, Y ${rpy[2].toFixed(2)}`;
+    if (s.bodyImu) {
+      this.setVal('imu-body-rpy',  fmtRpy(s.bodyImu.rpy));
+      this.setVal('imu-body-temp', `${s.bodyImu.temp.toFixed(1)}°C`);
+    }
+    if (s.crotchImu) {
+      this.setVal('imu-crotch-rpy',  fmtRpy(s.crotchImu.rpy));
+      this.setVal('imu-crotch-temp', `${s.crotchImu.temp.toFixed(1)}°C`);
+    }
+
     // LiDAR
     this.updateLidar(s);
 
@@ -164,6 +208,19 @@ export class StatusPage {
   }
 
   private buildSections(content: HTMLElement): void {
+    // System Info — surfaces what we know from the connection config
+    // (family, mode, IP, SN). Hardware / Software version slots are
+    // populated by a follow-up bashrunner request (not yet implemented);
+    // until then they show '-'.
+    content.appendChild(this.buildSection('System', [
+      this.row('Family', 'sys-family'),
+      this.row('Mode', 'sys-mode'),
+      this.row('IP Address', 'sys-ip'),
+      this.row('Serial Number', 'sys-sn'),
+      this.row('Hardware Version', 'sys-hw'),
+      this.row('Software Version', 'sys-sw'),
+    ]));
+
     // Firmware
     content.appendChild(this.buildSection('Firmware', [
       this.row('Package Version', 'fw-version'),
@@ -268,13 +325,28 @@ export class StatusPage {
     content.appendChild(this.buildSection('Motor Data', [], motorBody));
 
     // IMU
-    content.appendChild(this.buildSection('IMU & Position', [
+    const imuRows: HTMLElement[] = [
       this.row('Robot Mode', 'imu-mode'),
       this.row('Gait Type', 'imu-gait'),
       this.row('IMU Temperature', 'imu-temp'),
       this.row('Position (x, y, z)', 'imu-pos'),
       this.row('Velocity (x, y, z)', 'imu-vel'),
-    ]));
+    ];
+    content.appendChild(this.buildSection('IMU & Position', imuRows));
+
+    // G1 ships two IMUs. Surface them in their own section so the legacy
+    // 'IMU & Position' block stays untouched for Go2. Source:
+    // rt/lf/lowstate_doubleimu (parsed in app.ts handleDoubleImu).
+    if (family === 'G1') {
+      content.appendChild(this.buildSection('Body IMU (Torso)', [
+        this.row('Roll / Pitch / Yaw', 'imu-body-rpy'),
+        this.row('Temperature', 'imu-body-temp'),
+      ]));
+      content.appendChild(this.buildSection('Crotch IMU (Pelvis)', [
+        this.row('Roll / Pitch / Yaw', 'imu-crotch-rpy'),
+        this.row('Temperature', 'imu-crotch-temp'),
+      ]));
+    }
 
     // LiDAR — Go2 only. G1's webview doesn't surface LiDAR/SLAM UI, and
     // its lowstate doesn't carry a lidarState payload, so the section

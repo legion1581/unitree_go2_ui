@@ -454,7 +454,11 @@ export class App {
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
 
-    this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
+    this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub(), {
+      mode: this.connectionConfig?.mode,
+      ip: this.connectionConfig?.ip,
+      serialNumber: this.connectionConfig?.serialNumber,
+    });
   }
 
   private showServicesScreen(): void {
@@ -891,6 +895,9 @@ export class App {
         // struct directly (not wrapped under d.bms_state like in lowstate).
         this.handleLowState({ bms_state: msg.data });
         break;
+      case RTC_TOPIC.DOUBLE_IMU:
+        this.handleDoubleImu(msg.data);
+        break;
       case RTC_TOPIC.ROBOT_ODOM:
         this.handleRobotOdom(msg.data);
         break;
@@ -993,6 +1000,31 @@ export class App {
     if (d.imu_state?.temperature !== undefined) this.robotState.imuTemp = d.imu_state.temperature;
 
     // Update status page if visible
+    if (this.currentScreen === 'status' && this.statusPage) {
+      this.statusPage.update(this.robotState);
+    }
+  }
+
+  // G1 publishes both torso ("Body") and pelvis ("Crotch") IMUs on
+  // rt/lf/lowstate_doubleimu. Field names in the payload aren't
+  // documented; probe the common shapes (imu_state/imu_state2,
+  // imu_in_torso/imu_in_pelvis, body_imu/crotch_imu, [arr0, arr1]).
+  private handleDoubleImu(data: unknown): void {
+    type Imu = { rpy?: [number, number, number]; quaternion?: number[]; temperature?: number };
+    const d = data as Record<string, unknown>;
+    const pickImu = (raw: unknown): { rpy: [number, number, number]; temp: number } | null => {
+      if (!raw || typeof raw !== 'object') return null;
+      const i = raw as Imu;
+      const rpy = (i.rpy ?? [0, 0, 0]) as [number, number, number];
+      return { rpy, temp: i.temperature ?? 0 };
+    };
+    const body = pickImu(d.imu_state ?? d.body_imu ?? d.imu_in_torso ?? d.imuTorso);
+    const crotch = pickImu(d.imu_state2 ?? d.crotch_imu ?? d.imu_in_pelvis ?? d.imuPelvis);
+    if (body) this.robotState.bodyImu = body;
+    if (crotch) this.robotState.crotchImu = crotch;
+    // Mirror body IMU temperature into the legacy imuTemp field so the
+    // existing IMU section keeps showing a temperature on G1.
+    if (body) this.robotState.imuTemp = body.temp;
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
