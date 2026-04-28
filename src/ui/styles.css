@@ -1012,6 +1012,12 @@ html[data-theme="light"] .auth-tab.active {
   text-align: center;
 }
 
+.hub-remote-section {
+  background: rgba(26, 29, 35, 0.5);
+  border: 1px solid #1f2229;
+  text-align: left;
+}
+
 .hub-title {
   font-size: 22px;
   font-weight: 600;
@@ -2281,6 +2287,12 @@ html[data-theme="light"] .acct-btn-secondary:hover { background: #eef1f7; }
 html[data-theme="light"] .acct-status-online  { background: #d8f0d6; color: #1f6b1f; }
 html[data-theme="light"] .acct-status-offline { background: #e6e9ef; color: #5a6170; }
 html[data-theme="light"] .acct-status-unknown { background: #eef0f5; color: #8b92a0; }
+
+/* Hub WebRTC-connect card (Remote mode) — light */
+html[data-theme="light"] .hub-remote-section {
+  background: #f3f5f9;
+  border-color: #d4d9e4;
+}
 
 /* BT popover inputs / selects / device rows (light) */
 html[data-theme="light"] .bt-field {

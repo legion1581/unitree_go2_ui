@@ -193,7 +193,8 @@ export class App {
     // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
     if (isRemoteMode) {
       const remoteSection = document.createElement('div');
-      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;background:rgba(26,29,35,0.5);border-radius:10px;border:1px solid #1f2229;';
+      remoteSection.className = 'hub-remote-section';
+      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;border-radius:10px;';
 
       // Robot select (only if multiple robots)
       let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
@@ -204,7 +205,8 @@ export class App {
 
       if (cachedDevices.length > 1) {
         const robotSel = document.createElement('select');
-        robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
+        robotSel.className = 'acct-input';
+        robotSel.style.cssText = 'width:100%;font-size:13px;margin-bottom:10px;';
         const currentSn = this.connectionConfig?.serialNumber || '';
         for (const d of cachedDevices) {
           const opt = document.createElement('option');

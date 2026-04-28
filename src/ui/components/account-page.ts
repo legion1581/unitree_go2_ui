@@ -1003,6 +1003,11 @@ export class AccountPage {
     const border = rounded ? 'border:2px solid var(--avatar-border,#2a2d35);' : '';
     img.style.cssText = `width:${size}px;height:${size}px;border-radius:${radius};object-fit:cover;${border}`;
     img.alt = displayName;
+    // fitness-static.unitree.com's WAF returns 403 when the Referer header
+    // names an origin outside the mobile-app allowlist. Direct address-bar
+    // navigation works because no Referer is sent — replicate that here so
+    // the actual avatar loads instead of the SVG fallback.
+    img.referrerPolicy = 'no-referrer';
     const fallback = this.makeInitialAvatarDataUrl(size, displayName);
     img.addEventListener('error', () => {
       if (img.src !== fallback) img.src = fallback;
