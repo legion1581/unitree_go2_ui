@@ -14,13 +14,13 @@ const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
 // (tutorials, firmware lists, announcements) off the AppName header — Go2 has
 // its own dedicated app ('Go2'), while the Unitree Explorer app covers the
 // industrial quadruped + humanoid line ('B2', also used for G1/R1/H2).
-export type RobotFamily = 'Go2' | 'B2' | 'G1' | 'R1' | 'H2';
-export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'B2', 'G1', 'R1', 'H2'];
+export type RobotFamily = 'Go2' | 'G1' | 'R1' | 'B2' | 'H2';
+export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'G1', 'R1', 'B2', 'H2'];
 const APP_NAME: Record<RobotFamily, string> = {
   Go2: 'Go2',
-  B2:  'B2',
   G1:  'B2',
   R1:  'B2',
+  B2:  'B2',
   H2:  'B2',
 };
 
@@ -541,7 +541,13 @@ export class UnitreeCloudAPI {
   }
 
   getFirmwareDownloadUrl(downloadPath: string): string {
-    return downloadPath.startsWith('http') ? downloadPath : `${FIRMWARE_CDN}${downloadPath}`;
+    if (downloadPath.startsWith('http')) return downloadPath;
+    // The API returns `download` as an unencoded path (e.g. ".../package_..._G1_Edu+_...upk")
+    // while the parallel `packageName` field is URL-encoded ("..._G1_Edu%2B_..."). The CDN
+    // routes on the encoded form — fetching the raw `+` returns 404 because `+` decodes to
+    // a space in URL parsers. Percent-encode each path segment (preserving the slashes).
+    const encoded = downloadPath.split('/').map(s => encodeURIComponent(s)).join('/');
+    return `${FIRMWARE_CDN}${encoded}`;
   }
 
   // ─── App info ────────────────────────────────────────────────────

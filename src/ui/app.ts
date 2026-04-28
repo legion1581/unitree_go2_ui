@@ -13,8 +13,6 @@ import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon'
 import { BtPopover } from './components/bt-popover';
 import { ThemeToggle } from './components/theme-toggle';
 import { btBackend } from '../api/bt-backend';
-import { cloudApi } from '../api/unitree-cloud';
-import { buildCloudPrefsRow } from './components/cloud-prefs';
 import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
@@ -175,7 +173,7 @@ export class App {
 
     const renderHeader = (): void => {
       const sn = this.connectionConfig?.serialNumber || '';
-      let robotName = `${cloudApi.family} ${isConnected ? 'Connected' : 'Dashboard'}`;
+      let robotName = isConnected ? 'Connected' : 'Dashboard';
       if (sn) {
         const dev = cachedDevicesForHeader.find(d => d.sn === sn);
         robotName = dev?.alias || sn;
@@ -191,17 +189,6 @@ export class App {
       info.textContent = infoItems.join(' | ');
     };
     renderHeader();
-
-    // ── Cloud preferences (robot family + region) ──
-    // Family decides the AppName header — Go2 is its own value, the rest
-    // (B2/G1/R1/H2) ride on the Unitree Explorer 'B2' AppName per the
-    // decompiled APK. Region toggles which Unitree cloud endpoint the proxy
-    // forwards to (global vs mainland CN). Both persist via localStorage.
-    // Region pills only matter in Remote mode (no cloud calls otherwise).
-    hub.appendChild(buildCloudPrefsRow({
-      showRegion: isRemoteMode,
-      onChange: () => renderHeader(),
-    }));
 
     // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
     if (isRemoteMode) {
