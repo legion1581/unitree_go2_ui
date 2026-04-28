@@ -43,6 +43,7 @@ body {
   font-weight: 600;
   margin-bottom: 20px;
   color: #fff;
+  text-align: center;
 }
 
 .form-group {
@@ -2083,6 +2084,55 @@ html[data-theme="light"] .mapping-substate {
 textarea.acct-input { color: #e0e0e0; }
 textarea.acct-input.acct-input-mono { color: #e0e0e0; }
 
+/* Label/value rows used in robot tiles + Info-tab + device-detail views.
+   The value defaults to a class color so it themes; callers can still pass
+   an inline color override (e.g. green '#66bb6a' for success values). */
+.acct-info-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 13px;
+  align-items: center;
+}
+.acct-info-label {
+  color: #888;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.acct-info-value {
+  color: #e0e0e0;
+  word-break: break-all;
+  user-select: text;
+  cursor: text;
+  flex: 1;
+}
+.acct-info-mono {
+  font-family: monospace;
+  font-size: 12px;
+}
+.acct-info-copy {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  color: #555;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* File-input "Choose file" button — browsers render this as a native button
+   that ignores most CSS; ::file-selector-button is the standardized hook. */
+.acct-file-input::file-selector-button {
+  margin-right: 8px;
+  padding: 4px 10px;
+  background: #1a1d23;
+  color: #e0e0e0;
+  border: 1px solid #2a2d35;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
 /* Online / Offline / Unknown badge on the device tile in the Devices tab. */
 .acct-status-badge {
   position: absolute;
@@ -2293,6 +2343,26 @@ html[data-theme="light"] .hub-remote-section {
   background: #f3f5f9;
   border-color: #d4d9e4;
 }
+
+/* Robot-tile / Info-tab key:value rows — light. Bumps the value text from
+   the dark-theme near-white (#e0e0e0) to the standard light body color so
+   SN / Series / Model / version numbers etc. become legible on white. */
+html[data-theme="light"] .acct-info-label { color: #5a6170; }
+html[data-theme="light"] .acct-info-value { color: #1a1d23; }
+html[data-theme="light"] .acct-info-copy  { color: #8b92a0; }
+
+/* File-input "Choose file" button — light */
+html[data-theme="light"] .acct-file-input::file-selector-button {
+  background: #ffffff;
+  color: #4a5ccf;
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .acct-file-input::file-selector-button:hover {
+  background: #eef1f7;
+}
+
+/* Connection-panel heading — light */
+html[data-theme="light"] .connection-panel h2 { color: #1a1d23; }
 
 /* BT popover inputs / selects / device rows (light) */
 html[data-theme="light"] .bt-field {

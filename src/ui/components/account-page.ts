@@ -130,7 +130,8 @@ export class AccountPage {
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.accept = 'image/*';
-    fileInput.style.cssText = 'width:100%;padding:6px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:12px;margin-bottom:8px;';
+    fileInput.className = 'acct-input acct-file-input';
+    fileInput.style.cssText = 'padding:6px;font-size:12px;margin-bottom:8px;';
     avatarSec.appendChild(fileInput);
 
     avatarSec.appendChild(this.button('Update Avatar', async () => {
@@ -225,8 +226,8 @@ export class AccountPage {
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;';
     const refreshBtn = document.createElement('button');
-    refreshBtn.className = 'acct-btn';
-    refreshBtn.style.cssText = 'background:#1a1d23;color:#4fc3f7;border:1px solid #2a2d35;flex:1;';
+    refreshBtn.className = 'acct-btn acct-btn-secondary';
+    refreshBtn.style.flex = '1';
     refreshBtn.textContent = 'Refresh Info';
     refreshBtn.addEventListener('click', async () => {
       try { await cloudApi.getUserInfo(); this.switchTab('account'); } catch (e) { alert(String(e)); }
@@ -931,21 +932,22 @@ export class AccountPage {
 
   private infoRow(parent: HTMLElement, label: string, value: string, mono = false, color = ''): void {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;padding:3px 0;font-size:13px;align-items:center;';
+    row.className = 'acct-info-row';
     const labelSpan = document.createElement('span');
-    labelSpan.style.cssText = 'color:#888;min-width:80px;flex-shrink:0;';
+    labelSpan.className = 'acct-info-label';
     labelSpan.textContent = label;
     row.appendChild(labelSpan);
 
     const valueSpan = document.createElement('span');
-    valueSpan.style.cssText = `color:${color || '#e0e0e0'};${mono ? 'font-family:monospace;font-size:12px;' : ''}word-break:break-all;user-select:text;cursor:text;flex:1;`;
+    valueSpan.className = `acct-info-value${mono ? ' acct-info-mono' : ''}`;
+    if (color) valueSpan.style.color = color;
     valueSpan.textContent = value || '-';
     row.appendChild(valueSpan);
 
     // Copy button for mono values (SN, IP, keys, etc.)
     if (mono && value && value !== '-') {
       const copyBtn = document.createElement('button');
-      copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px 4px;color:#555;font-size:11px;flex-shrink:0;';
+      copyBtn.className = 'acct-info-copy';
       copyBtn.textContent = '📋';
       copyBtn.title = 'Copy to clipboard';
       copyBtn.addEventListener('click', (e) => {
@@ -953,7 +955,7 @@ export class AccountPage {
         navigator.clipboard.writeText(value).then(() => {
           copyBtn.textContent = '✓';
           copyBtn.style.color = '#66bb6a';
-          setTimeout(() => { copyBtn.textContent = '📋'; copyBtn.style.color = '#555'; }, 1500);
+          setTimeout(() => { copyBtn.textContent = '📋'; copyBtn.style.color = ''; }, 1500);
         });
       });
       row.appendChild(copyBtn);
