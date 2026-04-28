@@ -859,15 +859,22 @@ export class App {
     }
   }
 
+  /** id → script line, used to correlate bashrunner responses to the
+   *  request that triggered them (multiple scripts share api_id 1001). */
+  private bashrunnerPending: Map<number, string> = new Map();
+
   /** Submit a bashrunner script line. The wire body matches what the
    * Explorer apk emits at WebEventServiceImpl.java:128 — a single 'script'
    * field whose value is "<script.sh> <space-separated args>". Logs the
-   * request so wire traces are easy to compare against responses. */
-  private runBashScript(scriptLine: string): void {
+   * request and tracks the request id so the response handler can route
+   * to the right RobotStatus field. */
+  private runBashScript(scriptLine: string): number | undefined {
     if (!this.dataHandler) return;
-    console.log(`[bashrunner] REQ → ${scriptLine}`);
-    this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
+    const id = this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
       JSON.stringify({ script: scriptLine }));
+    this.bashrunnerPending.set(id, scriptLine);
+    console.log(`[bashrunner] REQ → ${scriptLine} (id=${id})`);
+    return id;
   }
 
   /** Lock (true) or unlock (false) the G1 waist motor. Fires
@@ -1005,20 +1012,28 @@ export class App {
         this.mappingPage?.setBattery(bms.soc);
       }
       if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
-      // G1 bms uses pack_voltage / bat_voltage; Go2 keeps a single 'voltage' field.
-      // Surface both verbatim and pick the most informative one for the
-      // generic batteryVoltage label.
-      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
-      const bat = typeof bms.bat_voltage === 'number' ? bms.bat_voltage : undefined;
+      // Voltages: Go2 lowstate ships an array `bmsvoltage: [pack, bat, _]`
+      // (mV); some payloads also expose `pack_voltage` / `bat_voltage` /
+      // `voltage` as scalars. Read whichever shape is present.
+      const bmsv = Array.isArray(bms.bmsvoltage) ? bms.bmsvoltage as unknown[] : [];
+      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage
+                 : (typeof bmsv[0] === 'number' ? bmsv[0] as number : undefined);
+      const bat  = typeof bms.bat_voltage === 'number' ? bms.bat_voltage
+                 : (typeof bmsv[1] === 'number' ? bmsv[1] as number : undefined);
       const voltage = typeof bms.voltage === 'number' ? bms.voltage : undefined;
       if (pack !== undefined) this.robotState.batteryPackVoltage = pack;
       if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
       const v = pack ?? voltage ?? bat;
       if (v !== undefined) this.robotState.batteryVoltage = v;
       if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
-      if (Array.isArray(bms.temps)) {
-        const temps = bms.temps as unknown[];
-        const numericTemps = temps.filter((t): t is number => typeof t === 'number');
+      // Temps: Go2 ships `temperature: [t0..t11]`; some firmwares use `temps`.
+      // BatteryDataViewmodel.kt indexes 0=MOS, 2=BAT1, 3=RES (label set
+      // confirmed against the G1 apk; Go2 uses the same array shape).
+      const tempsArr = Array.isArray(bms.temperature) ? bms.temperature
+                     : Array.isArray(bms.temps)       ? bms.temps
+                     : null;
+      if (tempsArr) {
+        const numericTemps = (tempsArr as unknown[]).filter((t): t is number => typeof t === 'number');
         this.robotState.batteryTemps = numericTemps;
         if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
       }
@@ -1183,36 +1198,77 @@ export class App {
   }
 
   private handleBashrunnerResponse(data: unknown): void {
-    console.log('[go2:ui] Bashrunner raw response:', JSON.stringify(data));
     const d = data as {
-      header?: { identity?: { api_id?: number }; status?: { code?: number } };
+      header?: { identity?: { id?: number; api_id?: number }; status?: { code?: number } };
       data?: string;
     };
-    console.log('[go2:ui] Bashrunner status code:', d.header?.status?.code, 'api_id:', d.header?.identity?.api_id, 'data type:', typeof d.data, 'data:', d.data);
-    if (d.header?.status?.code === 0 && typeof d.data === 'string') {
-      try {
-        const parsed = JSON.parse(d.data) as { result?: string; info?: string; type?: string };
-        console.log('[go2:ui] Bashrunner parsed data:', parsed);
-        if (parsed.info) {
-          this.robotState.firmwareVersion = parsed.info;
-          console.log('[go2:ui] Firmware version set to:', parsed.info);
-        } else if (parsed.result) {
-          this.robotState.firmwareVersion = parsed.result;
-          console.log('[go2:ui] Firmware version set to:', parsed.result);
-        } else {
-          this.robotState.firmwareVersion = d.data;
-          console.log('[go2:ui] Firmware version (raw data):', d.data);
+    const code = d.header?.status?.code;
+    const id = d.header?.identity?.id;
+    const scriptLine = id !== undefined ? this.bashrunnerPending.get(id) : undefined;
+    if (id !== undefined) this.bashrunnerPending.delete(id);
+    const scriptName = scriptLine ? scriptLine.split(' ')[0] : '?';
+    console.log(`[bashrunner] RES ← ${scriptName} (id=${id}, code=${code}) data=`, d.data);
+
+    if (code !== 0 || typeof d.data !== 'string') return;
+
+    let info: unknown;
+    let result: string | undefined;
+    try {
+      const parsed = JSON.parse(d.data) as { result?: string; info?: unknown; type?: string };
+      info = parsed.info;
+      result = parsed.result;
+    } catch {
+      info = d.data;
+    }
+
+    // Route by script. The robot replies with `info` shaped per script:
+    //   * get_ip_address.sh        -> { wlan0: "...", wlan1: "..." }
+    //   * get_hardware_version.sh  -> "10"   (formatted as "2.<n/10>.<n%10>")
+    //   * get_software_version.sh  -> "1.4.6"
+    //   * get_whole_packet_version.sh -> firmware string
+    switch (scriptName) {
+      case 'get_ip_address.sh': {
+        if (info && typeof info === 'object') {
+          const ips = info as { wlan0?: string; wlan1?: string; eth0?: string };
+          const ip = ips.wlan0 || ips.wlan1 || ips.eth0 || '';
+          if (ip) {
+            this.robotState.ipAddress = ip;
+            console.log('[bashrunner] ip address:', ip);
+          }
         }
-      } catch {
-        // data might be the raw string
-        this.robotState.firmwareVersion = d.data;
-        console.log('[go2:ui] Firmware version (parse failed, raw):', d.data);
+        break;
       }
-      if (this.currentScreen === 'status' && this.statusPage) {
-        this.statusPage.update(this.robotState);
+      case 'get_hardware_version.sh': {
+        // BaseInfoViewModel.kt:232 formats as "2" + (n/10) + "." + (n%10),
+        // i.e. info=10 -> "2.1.0", info=12 -> "2.1.2".
+        const raw = typeof info === 'string' ? info : typeof info === 'number' ? String(info) : '';
+        const n = parseInt(raw, 10);
+        if (!Number.isNaN(n)) {
+          const formatted = `2.${Math.floor(n / 10)}.${n % 10}`;
+          this.robotState.hardwareVersion = formatted;
+          console.log('[bashrunner] hardware version:', formatted);
+        }
+        break;
       }
-    } else {
-      console.warn('[go2:ui] Bashrunner response not code 0 or data not string. code:', d.header?.status?.code, 'data:', d.data);
+      case 'get_software_version.sh': {
+        if (typeof info === 'string') {
+          this.robotState.softwareVersion = info;
+          console.log('[bashrunner] software version:', info);
+        }
+        break;
+      }
+      case 'get_whole_packet_version.sh': {
+        const v = typeof info === 'string' ? info : (result || '');
+        if (v) this.robotState.firmwareVersion = v;
+        break;
+      }
+      default:
+        // Unknown script — log only, no-op.
+        console.log('[bashrunner] (unrouted) info:', info, 'result:', result);
+    }
+
+    if (this.currentScreen === 'status' && this.statusPage) {
+      this.statusPage.update(this.robotState);
     }
   }
 

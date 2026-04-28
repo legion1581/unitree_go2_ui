@@ -104,26 +104,24 @@ export class DataChannelHandler {
     this.webrtc.send({ type, topic, data });
   }
 
-  /** Send a request matching the SDK format: header + parameter (JSON string) + binary. */
-  publishRequest(topic: string, apiId: number, parameter: string = '{}'): void {
+  /** Send a request matching the SDK format: header + parameter (JSON string) + binary.
+   *  Returns the generated `id` so the caller can correlate the response
+   *  (the robot echoes it back in `header.identity.id`). */
+  publishRequest(topic: string, apiId: number, parameter: string = '{}'): number {
+    const id = Math.floor(Math.random() * 2147483647);
     this.webrtc.send({
       type: DATA_CHANNEL_TYPE.REQUEST,
       topic,
       data: {
         header: {
-          identity: {
-            id: Math.floor(Math.random() * 2147483647),
-            api_id: apiId,
-          },
-          policy: {
-            priority: 0,
-            noreply: false,
-          },
+          identity: { id, api_id: apiId },
+          policy: { priority: 0, noreply: false },
         },
         parameter,
         binary: [],
       },
     });
+    return id;
   }
 
   /** Request a static file from the robot. Returns base64 data via callback. */

@@ -38,6 +38,11 @@ export interface RobotStatus {
   position: number[];
   velocity: number[];
   firmwareVersion: string;
+  // Filled from the bashrunner correlated-response handler
+  // (get_hardware_version.sh / get_software_version.sh / get_ip_address.sh).
+  hardwareVersion?: string;
+  softwareVersion?: string;
+  ipAddress?: string;
   motionMode: string;
   lidarState: string;
   selfTestResults: string[];
@@ -129,15 +134,15 @@ export class StatusPage {
   private applyState(s: RobotStatus): void {
     if (!this.built) return;
 
-    // System Info — these are largely static (set once from the
-    // connection config) but the apply loop is the simplest re-paint
-    // hook; setVal short-circuits when the value hasn't changed.
+    // System Info — values arriving via bashrunner (s.hardwareVersion /
+    // s.softwareVersion / s.ipAddress) override the connection-config
+    // seeds when present.
     this.setVal('sys-family', cloudApi.family);
     this.setVal('sys-mode',   this.system.mode || '—');
-    this.setVal('sys-ip',     this.system.ip   || '—');
+    this.setVal('sys-ip',     s.ipAddress || this.system.ip || '—');
     this.setVal('sys-sn',     this.system.serialNumber || '—');
-    this.setVal('sys-hw',     this.system.hardwareVersion || '—');
-    this.setVal('sys-sw',     this.system.softwareVersion || '—');
+    this.setVal('sys-hw',     s.hardwareVersion || this.system.hardwareVersion || '—');
+    this.setVal('sys-sw',     s.softwareVersion || this.system.softwareVersion || '—');
 
     // Firmware
     this.setVal('fw-version', s.firmwareVersion || 'Fetching...');
