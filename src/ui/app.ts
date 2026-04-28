@@ -73,28 +73,24 @@ export class App {
   private btPopover: BtPopover | null = null;
 
   // Robot state (accumulated from topic messages)
-  private robotState = {
+  private robotState: import('./components/status-page').RobotStatus = {
     batteryPercent: 0,
     batteryCurrent: 0,
     batteryVoltage: 0,
     batteryCycles: 0,
     batteryTemp: 0,
-    motorStates: [] as Array<{ q: number; dq: number; tau: number; temp: number; lost: number }>,
+    motorStates: [],
     networkType: '',
-    footForce: [] as number[],
+    footForce: [],
     imuTemp: 0,
     mode: 0,
     gaitType: 0,
-    position: [0, 0, 0] as number[],
-    velocity: [0, 0, 0] as number[],
-    // Firmware / version info (from bashrunner)
+    position: [0, 0, 0],
+    velocity: [0, 0, 0],
     firmwareVersion: '',
-    // Motion switcher
     motionMode: '',
-    // LiDAR state
-    lidarState: '' as string,
-    // Self-test results
-    selfTestResults: [] as string[],
+    lidarState: '',
+    selfTestResults: [],
   };
 
   constructor(root: HTMLElement) {
@@ -611,15 +607,22 @@ export class App {
       this.videoBg.autoplay = true;
       this.videoBg.playsInline = true;
       this.videoBg.muted = true;
+      // Override the .video-bg-fullscreen CSS default of display:none —
+      // Go2's setViewMode() does this in the swap path; for G1 we mount
+      // the video element straight to visible.
+      this.videoBg.style.display = 'block';
       this.root.insertBefore(this.videoBg, this.controlUi);
+      this.noiseBgCanvas = document.createElement('canvas');
+      this.noiseBgCanvas.id = 'noise-bg';
+      this.noiseBgCanvas.className = 'noise-bg-fullscreen';
+      this.root.insertBefore(this.noiseBgCanvas, this.controlUi);
       if (this.videoStream) {
         this.videoBg.srcObject = this.videoStream;
       } else {
-        // Show static-noise placeholder until the WebRTC video track lands.
-        this.noiseBgCanvas = document.createElement('canvas');
-        this.noiseBgCanvas.id = 'noise-bg';
-        this.noiseBgCanvas.className = 'noise-bg-fullscreen';
-        this.root.insertBefore(this.noiseBgCanvas, this.controlUi);
+        // Static-noise placeholder until the WebRTC video track lands.
+        // The handler in onVideoTrack swaps the noise canvas off and the
+        // video element on (it's already display:block) when stream arrives.
+        this.noiseBgCanvas.style.display = 'block';
         this.startBgNoise();
       }
       return;
@@ -944,26 +947,46 @@ export class App {
     if (d.motor_state) {
       if (this.scene3d) this.scene3d.robotModel.updateMotorState(d.motor_state);
       if (this.mappingPage) this.mappingPage.updateMotorState(d.motor_state);
-      // Only first 12 motors are real (FR/FL/RR/RL hip/thigh/calf), rest are zeros
-      this.robotState.motorStates = d.motor_state.slice(0, 12).map((m) => ({
+      // Go2 lowstate carries 12 real motors followed by zeros; G1 has up to
+      // 29 (12 legs + 3 waist + 14 arms). Slice family-aware so the status
+      // page sees the full motor set on G1 but stays trim on Go2.
+      const motorLimit = cloudApi.family === 'G1' ? 29 : 12;
+      this.robotState.motorStates = d.motor_state.slice(0, motorLimit).map((m) => ({
         q: m.q ?? 0, dq: m.dq ?? 0, tau: m.tau_est ?? 0, temp: m.temperature ?? 0, lost: m.lost ?? 0,
       }));
-      // Update nav bar max motor temp
-      const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
+      // Update nav bar max motor temp. Math.max(...[]) is -Infinity, so
+      // fall back to 0 on an empty motorStates array.
+      const temps = this.robotState.motorStates.map((m) => m.temp);
+      const maxTemp = temps.length > 0 ? Math.max(...temps) : 0;
       this.navBar?.setMotorTemp(maxTemp);
       this.mappingPage?.setMotorTemp(maxTemp);
     }
 
     if (d.bms_state) {
-      if (d.bms_state.soc !== undefined) {
-        this.robotState.batteryPercent = d.bms_state.soc;
-        this.navBar?.setBattery(d.bms_state.soc);
-        this.mappingPage?.setBattery(d.bms_state.soc);
+      const bms = d.bms_state as Record<string, unknown>;
+      if (typeof bms.soc === 'number') {
+        this.robotState.batteryPercent = bms.soc;
+        this.navBar?.setBattery(bms.soc);
+        this.mappingPage?.setBattery(bms.soc);
       }
-      if (d.bms_state.current !== undefined) this.robotState.batteryCurrent = d.bms_state.current;
-      if (d.bms_state.voltage !== undefined) this.robotState.batteryVoltage = d.bms_state.voltage;
-      if (d.bms_state.cycle !== undefined) this.robotState.batteryCycles = d.bms_state.cycle;
-      if (d.bms_state.temps?.[0] !== undefined) this.robotState.batteryTemp = d.bms_state.temps[0];
+      if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
+      // G1 bms uses pack_voltage / bat_voltage; Go2 keeps a single 'voltage' field.
+      // Surface both verbatim and pick the most informative one for the
+      // generic batteryVoltage label.
+      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
+      const bat = typeof bms.bat_voltage === 'number' ? bms.bat_voltage : undefined;
+      const voltage = typeof bms.voltage === 'number' ? bms.voltage : undefined;
+      if (pack !== undefined) this.robotState.batteryPackVoltage = pack;
+      if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
+      const v = pack ?? voltage ?? bat;
+      if (v !== undefined) this.robotState.batteryVoltage = v;
+      if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
+      if (Array.isArray(bms.temps)) {
+        const temps = bms.temps as unknown[];
+        const numericTemps = temps.filter((t): t is number => typeof t === 'number');
+        this.robotState.batteryTemps = numericTemps;
+        if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
+      }
     }
 
     if (d.foot_force) this.robotState.footForce = d.foot_force;

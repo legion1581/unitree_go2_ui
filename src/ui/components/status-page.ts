@@ -3,9 +3,13 @@ import { cloudApi, type RobotFamily } from '../../api/unitree-cloud';
 export interface RobotStatus {
   batteryPercent: number;
   batteryCurrent: number;
-  batteryVoltage: number;
+  batteryVoltage: number;       // Go2: voltage; G1: pack_voltage
   batteryCycles: number;
-  batteryTemp: number;
+  batteryTemp: number;          // Go2 / fallback: temps[0]
+  // G1-specific bms_state fields. All optional so Go2 stays unaffected.
+  batteryTemps?: number[];      // bms_state.temps — array of cell/MOS/RES temps
+  batteryBatVoltage?: number;   // bms_state.bat_voltage — single-cell pack voltage
+  batteryPackVoltage?: number;  // bms_state.pack_voltage — total pack voltage
   motorStates: Array<{ q: number; dq: number; tau: number; temp: number; lost: number }>;
   networkType: string;
   footForce: number[];
@@ -117,6 +121,22 @@ export class StatusPage {
     this.setVal('bat-current', `${s.batteryCurrent} mA`);
     this.setVal('bat-temp', `${s.batteryTemp}°C`);
     this.setVal('bat-cycles', `${s.batteryCycles}`);
+    // G1-only extended fields (no-op when the row wasn't built)
+    if (s.batteryPackVoltage !== undefined) {
+      this.setVal('bat-pack-voltage', `${(s.batteryPackVoltage / 1000).toFixed(2)} V`);
+    }
+    if (s.batteryBatVoltage !== undefined) {
+      this.setVal('bat-bat-voltage', `${(s.batteryBatVoltage / 1000).toFixed(2)} V`);
+    }
+    if (s.batteryTemps) {
+      // Per the G1 BatteryDataViewmodel.kt index map: temps[0]=MOS,
+      // temps[2]=BAT1, temps[3]=RES, temps[1] not surfaced separately.
+      const labels = ['MOS', 'temp 2', 'BAT1', 'RES'];
+      labels.forEach((lbl, i) => {
+        const v = s.batteryTemps?.[i];
+        if (v !== undefined) this.setVal(`bat-temp-${i}`, `${v}°C`);
+      });
+    }
 
     // Motors
     this.updateMotors(s);
@@ -159,13 +179,27 @@ export class StatusPage {
     barTrack.appendChild(barFill);
     this.vals.set('bat-fill', barFill);
 
-    content.appendChild(this.buildSection('Battery', [
+    const batteryRows: HTMLElement[] = [
       batPctRow, barTrack,
       this.row('Voltage', 'bat-voltage'),
       this.row('Current', 'bat-current'),
       this.row('Temperature', 'bat-temp'),
       this.row('Charge Cycles', 'bat-cycles'),
-    ]));
+    ];
+    // G1 BMS exposes more granular voltage + temperature rails. Build the
+    // extra rows up front; setVal is a no-op until data lands so they
+    // show '-' on a fresh G1 connection until the first bmsstate frame.
+    // Field/index map mirrors com/unitree/g1/ui/battery/BatteryDataViewmodel.kt.
+    if (cloudApi.family === 'G1') {
+      batteryRows.push(
+        this.row('Pack Voltage', 'bat-pack-voltage'),
+        this.row('Cell Voltage', 'bat-bat-voltage'),
+        this.row('MOS Temp',  'bat-temp-0'),
+        this.row('BAT1 Temp', 'bat-temp-2'),
+        this.row('RES Temp',  'bat-temp-3'),
+      );
+    }
+    content.appendChild(this.buildSection('Battery', batteryRows));
 
     // Motors — body becomes the live container so we can grow / shrink rows
     // when the incoming motorStates length doesn't match the family's expected
