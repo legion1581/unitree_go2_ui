@@ -361,11 +361,8 @@ export class AccountPage {
 
     // Online badge
     const badge = document.createElement('span');
-    badge.style.cssText = `position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;${
-      online === true ? 'background:#1b5e20;color:#a5d6a7;' :
-      online === false ? 'background:#333;color:#666;' :
-      'background:#222;color:#555;'
-    }`;
+    const state = online === true ? 'online' : online === false ? 'offline' : 'unknown';
+    badge.className = `acct-status-badge acct-status-${state}`;
     badge.textContent = online === true ? 'Online' : online === false ? 'Offline' : '—';
     tile.appendChild(badge);
 
@@ -387,15 +384,15 @@ export class AccountPage {
     btns.style.cssText = 'display:flex;gap:6px;margin-top:10px;';
 
     const detailBtn = document.createElement('button');
-    detailBtn.className = 'acct-btn';
-    detailBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;background:#1a1d23;color:#4fc3f7;border:1px solid #2a2d35;';
+    detailBtn.className = 'acct-btn acct-btn-secondary';
+    detailBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
     detailBtn.textContent = 'Details';
     detailBtn.addEventListener('click', () => this.showDeviceDetail(dev));
     btns.appendChild(detailBtn);
 
     const shareBtn = document.createElement('button');
-    shareBtn.className = 'acct-btn';
-    shareBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;background:#1a1d23;color:#888;border:1px solid #2a2d35;';
+    shareBtn.className = 'acct-btn acct-btn-secondary';
+    shareBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
     shareBtn.textContent = 'Share';
     shareBtn.addEventListener('click', () => this.showShareView(dev));
     btns.appendChild(shareBtn);
@@ -678,12 +675,14 @@ export class AccountPage {
     const methodWrap = document.createElement('div');
     methodWrap.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
     const methodSel = document.createElement('select');
-    methodSel.style.cssText = 'width:80px;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#fff;border-radius:6px;';
+    methodSel.className = 'acct-input';
+    methodSel.style.cssText = 'width:80px;padding:8px;font-size:13px;';
     methodSel.innerHTML = '<option>GET</option><option>POST</option>';
     const pathInput = document.createElement('input');
     pathInput.type = 'text';
     pathInput.placeholder = 'endpoint/path';
-    pathInput.style.cssText = 'flex:1;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#4fc3f7;border-radius:6px;font-family:monospace;font-size:13px;';
+    pathInput.className = 'acct-input acct-input-mono';
+    pathInput.style.cssText = 'flex:1;padding:8px;font-size:13px;';
     methodWrap.appendChild(methodSel);
     methodWrap.appendChild(pathInput);
     form.appendChild(methodWrap);
@@ -691,7 +690,8 @@ export class AccountPage {
     const paramsInput = document.createElement('textarea');
     paramsInput.placeholder = 'key=value (one per line)';
     paramsInput.rows = 4;
-    paramsInput.style.cssText = 'width:100%;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-family:monospace;font-size:12px;resize:vertical;';
+    paramsInput.className = 'acct-input acct-input-mono';
+    paramsInput.style.cssText = 'padding:8px;font-size:12px;resize:vertical;';
     form.appendChild(paramsInput);
 
     // Decryption status banner (hidden until first request)
@@ -971,7 +971,7 @@ export class AccountPage {
     wrapper.appendChild(lbl);
     const input = document.createElement('input');
     input.type = inputType || type;
-    input.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:14px;';
+    input.className = 'acct-input';
     wrapper.appendChild(input);
     return { wrapper, input };
   }

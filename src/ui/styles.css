@@ -2052,6 +2052,44 @@ html[data-theme="light"] .mapping-substate {
 .acct-btn-primary:hover { background: #29b6f6; }
 .acct-btn-danger { background: #c62828; color: #fff; }
 .acct-btn-danger:hover { background: #e53935; }
+.acct-btn-secondary {
+  background: #1a1d23;
+  color: #4fc3f7;
+  border: 1px solid #2a2d35;
+}
+.acct-btn-secondary:hover { background: #21252e; }
+
+/* Reusable input/select/textarea styling for the Account + Debug tabs.
+   Inline layout (width / flex / padding) still works on top — this class
+   only owns colors so it can react to the theme. */
+.acct-input {
+  width: 100%;
+  padding: 8px 10px;
+  background: #0a0c10;
+  border: 1px solid #2a2d35;
+  color: #e0e0e0;
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.acct-input-mono { font-family: monospace; color: #4fc3f7; }
+textarea.acct-input { color: #e0e0e0; }
+textarea.acct-input.acct-input-mono { color: #e0e0e0; }
+
+/* Online / Offline / Unknown badge on the device tile in the Devices tab. */
+.acct-status-badge {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-weight: 700;
+}
+.acct-status-online   { background: #1b5e20; color: #a5d6a7; }
+.acct-status-offline  { background: #333;    color: #888;    }
+.acct-status-unknown  { background: #222;    color: #555;    }
 
 /* BT popover adapter rows (dark defaults) */
 .bt-adapter-row {
@@ -2210,6 +2248,39 @@ html[data-theme="light"] .status-page,
 html[data-theme="light"] .services-page {
   color: #1a1d23;
 }
+
+/* Account-page tab bar (Devices / Info / Account / Debug) — light */
+html[data-theme="light"] .acct-tab-bar {
+  background: rgba(255, 255, 255, 0.95);
+  border-bottom-color: #d4d9e4;
+}
+html[data-theme="light"] .acct-tab-btn         { color: #5a6170; }
+html[data-theme="light"] .acct-tab-btn:hover   { color: #1a1d23; }
+html[data-theme="light"] .acct-tab-btn.active  { color: #4a5ccf; border-bottom-color: #4a5ccf; }
+
+/* Account / Debug tab inputs — light */
+html[data-theme="light"] .acct-input {
+  background: #ffffff;
+  border-color: #c4cbd6;
+  color: #1a1d23;
+}
+html[data-theme="light"] textarea.acct-input,
+html[data-theme="light"] textarea.acct-input.acct-input-mono { color: #1a1d23; }
+html[data-theme="light"] .acct-input.acct-input-mono { color: #4a5ccf; }
+html[data-theme="light"] .acct-input::placeholder { color: #8b92a0; }
+
+/* Secondary button (Details / Share / etc.) — light */
+html[data-theme="light"] .acct-btn-secondary {
+  background: #ffffff;
+  color: #4a5ccf;
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .acct-btn-secondary:hover { background: #eef1f7; }
+
+/* Device-tile online/offline/unknown badge — light */
+html[data-theme="light"] .acct-status-online  { background: #d8f0d6; color: #1f6b1f; }
+html[data-theme="light"] .acct-status-offline { background: #e6e9ef; color: #5a6170; }
+html[data-theme="light"] .acct-status-unknown { background: #eef0f5; color: #8b92a0; }
 
 /* BT popover inputs / selects / device rows (light) */
 html[data-theme="light"] .bt-field {
