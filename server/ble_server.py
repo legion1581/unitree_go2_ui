@@ -375,6 +375,20 @@ class BLESession:
                 return
             self.v3_version = raw[6]
             self.v3_results[Cmd.V3_VERSION] = str(raw[6])
+            # The F1 frame is delivered as a 20-byte notification on V3
+            # firmware (default BLE MTU=23 → 20-byte payload). Our parser
+            # only consumes the first 9 bytes (magic+F1+ver+flag+cksum) but
+            # the apk's `dogSn` is set from BLE GET_SN somewhere — and we
+            # don't see that fire on V3. Suspect the SN may be packed into
+            # the F1 payload itself; dump the full frame so we can see
+            # what's in bytes 8..-1 (the 11 bytes past our parse).
+            log.info(f"V3 F1 frame: {len(raw)}B {raw.hex()}")
+            try:
+                tail = raw[8:].rstrip(b"\x00")
+                if tail:
+                    log.info(f"V3 F1 tail (bytes 8..end): {tail.hex()} | ascii={tail.decode('ascii', errors='replace')!r}")
+            except Exception:
+                pass
             log.info(f"V3 firmware detected (BLE module version {raw[6]})")
             if self._loop:
                 self._loop.call_soon_threadsafe(self.v3_event.set)
