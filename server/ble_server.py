@@ -197,6 +197,11 @@ class BLESession:
         # default MTU=23 caps it at the first 7 chars. After we negotiate
         # MTU=104 in `_connect_sync`, expect the full 16-char SN here.
         self.f1_sn_partial: str = ""
+        # SN per fetch path. Reported separately in /info so the UI can
+        # surface where each value came from (F1 / V3 GCM / legacy V1/V2)
+        # and cross-check them against each other.
+        self.sn_gcm: Optional[str] = None
+        self.sn_v1v2: Optional[str] = None
 
     @property
     def connected(self) -> bool:
@@ -258,8 +263,10 @@ class BLESession:
             # V3 GCM path: data is a contiguous string at bytes[3 : plain[1]-1].
             if self.aes_key is not None and len(plain) > 4:
                 sn_bytes = plain[3:plain[1] - 1]
-                self.sn_result = sn_bytes.decode("utf-8", errors="replace").rstrip("\x00").strip()
-                log.info(f"V3 GET_SN result: {self.sn_result!r}")
+                sn = sn_bytes.decode("utf-8", errors="replace").rstrip("\x00").strip()
+                self.sn_gcm = sn
+                self.sn_result = sn
+                log.info(f"V3 GCM GET_SN reply → {sn!r}")
                 if self._loop:
                     self._loop.call_soon_threadsafe(self.event.set)
                 return
@@ -269,10 +276,13 @@ class BLESession:
             chunk_data = plain[5:plain[1] - 1]
             self.sn_chunks[chunk_idx] = chunk_data
             if len(self.sn_chunks) >= total:
-                self.sn_result = b"".join(
+                sn = b"".join(
                     self.sn_chunks[i] for i in sorted(self.sn_chunks)
                 ).decode("utf-8").rstrip("\x00")
+                self.sn_v1v2 = sn
+                self.sn_result = sn
                 self.sn_chunks.clear()
+                log.info(f"V1/V2 GET_SN reply → {sn!r}")
                 if self._loop:
                     self._loop.call_soon_threadsafe(self.event.set)
             return
@@ -404,6 +414,8 @@ class BLESession:
         self.v3_version = None
         self.aes_key = None
         self.f1_sn_partial = ""
+        self.sn_gcm = None
+        self.sn_v1v2 = None
 
     def _write_sync(self, packet: bytes) -> None:
         if self._device:
@@ -502,6 +514,10 @@ class BLESession:
             otherwise return the SN already harvested from the F1 frame
             payload. We deliberately don't chase the V1/V2 path on V3
             firmware since it always times out and adds 5s of latency.
+
+        Per-path SN values are recorded on `self.sn_gcm`, `self.sn_v1v2`
+        and `self.f1_sn_partial` independently so /info can report all
+        three for cross-validation.
         """
         self.sn_result = None
         self.sn_chunks.clear()
@@ -510,25 +526,27 @@ class BLESession:
 
         if is_v3:
             if self.aes_key is not None:
+                self.sn_gcm = None
                 pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
+                log.info(f"BLE → GET_SN (V3 GCM, op=0x02): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
                 await self._write(pkt)
                 try:
                     await asyncio.wait_for(self.event.wait(), 3.0)
                 except asyncio.TimeoutError:
-                    pass
+                    log.info("BLE GET_SN (V3 GCM) timeout — no decrypt-able reply within 3s")
                 if self.sn_result:
                     return self.sn_result
-            # Whether we tried GCM or skipped it, the F1-embedded SN is the
-            # fast and correct fallback on V3 firmware.
             return self.f1_sn_partial or None
 
         # V1/V2 firmware: AES-CFB GET_SN with chunked reply.
+        self.sn_v1v2 = None
         pkt = build_simple(Cmd.GET_SN)
+        log.info(f"BLE → GET_SN (V1/V2 AES-CFB, op=0x02): {len(pkt)}B {pkt.hex()}")
         await self._write(pkt)
         try:
             await asyncio.wait_for(self.event.wait(), 5.0)
         except asyncio.TimeoutError:
-            pass
+            log.info("BLE GET_SN (V1/V2) timeout")
         await asyncio.sleep(0.5)
         return self.sn_result
 
@@ -544,23 +562,29 @@ class BLESession:
             self.event.clear()
             self.response = None
             pkt = build_gcm_v3(Cmd.GET_AP_MAC, b"", self.aes_key)
+            log.info(f"BLE → GET_AP_MAC (V3 GCM, op=0x07): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
             await self._write(pkt)
             try:
                 await asyncio.wait_for(self.event.wait(), 3.0)
             except asyncio.TimeoutError:
-                pass
+                log.info("BLE GET_AP_MAC (V3 GCM) timeout — no decrypt-able reply within 3s")
             resp = self.response
             if resp and len(resp) >= 4 and resp[2] == Cmd.GET_AP_MAC:
                 mac_bytes = resp[3:resp[1] - 1]
                 if len(mac_bytes) == 6:
-                    return ":".join(f"{b:02X}" for b in mac_bytes)
+                    mac = ":".join(f"{b:02X}" for b in mac_bytes)
+                    log.info(f"V3 GCM GET_AP_MAC reply → {mac}")
+                    return mac
             return None
 
         pkt = build_simple(Cmd.GET_AP_MAC)
+        log.info(f"BLE → GET_AP_MAC (V1/V2 AES-CFB, op=0x07): {len(pkt)}B {pkt.hex()}")
         resp = await self._write_and_wait(pkt)
         if resp and len(resp) > 4:
             mac_bytes = resp[3:resp[1] - 1]
-            return ":".join(f"{b:02X}" for b in mac_bytes)
+            mac = ":".join(f"{b:02X}" for b in mac_bytes)
+            log.info(f"V1/V2 GET_AP_MAC reply → {mac}")
+            return mac
         return None
 
     def _handle_v3_response(self, raw: bytes):
@@ -1136,11 +1160,15 @@ async def info():
         "ap_mac": mac,
         "protocol": session.protocol,
         "address": session.address,
-        # Partial SN harvested from the F1 frame's payload (truncated by
-        # MTU=23 if exchange_mtu didn't take). Useful as a hint when
-        # `serial_number` came back null because we don't have the AES key
-        # yet to GCM-decrypt the GET_SN reply.
+        # Per-path SNs so the UI can label the source (and warn on a
+        # mismatch). f1_sn_partial is from the unsolicited F1 frame, so
+        # it's available the moment the BLE link comes up; sn_gcm is the
+        # V3 GCM-decrypted GET_SN reply (proves the AES key works);
+        # sn_v1v2 is the legacy AES-CFB chunked reply for Go2 / pre-1.5.1
+        # G1.
         "f1_sn_partial": session.f1_sn_partial,
+        "sn_gcm": session.sn_gcm,
+        "sn_v1v2": session.sn_v1v2,
     }
 
 

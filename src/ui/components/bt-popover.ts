@@ -15,7 +15,18 @@ interface ScanResult {
   remotes: Array<{ name: string; address: string; rssi: number | null }>;
 }
 interface AdapterInfo { name: string; address: string; up: boolean; type: string; }
-interface RobotInfo { serial_number: string; ap_mac: string; protocol: string; address: string; f1_sn_partial?: string; }
+interface RobotInfo {
+  serial_number: string;
+  ap_mac: string;
+  protocol: string;
+  address: string;
+  // Per-path SN values (only populated when the corresponding fetch path
+  // returned). Used to label the displayed SN with its source and to
+  // cross-validate F1 vs GCM agreement.
+  f1_sn_partial?: string;
+  sn_gcm?: string | null;
+  sn_v1v2?: string | null;
+}
 interface RemoteState {
   lx: number; ly: number; rx: number; ry: number;
   buttons: Record<string, boolean>;
@@ -62,6 +73,11 @@ export class BtPopover {
   // Wired by the WiFi form so the AES gate / /info refresh can re-enable
   // it when V3 GCM actually starts decrypting.
   private wifiGateApply: ((enabled: boolean) => void) | null = null;
+  // Set by updateRobotSection so the AES gate (and any future caller)
+  // can refresh just /info without rebuilding the entire panel — a full
+  // rebuild while the user is typing in the AES input ejects focus and
+  // turns subsequent backspaces into browser-back navigation.
+  private renderInfoRowsCb: ((info: RobotInfo) => void) | null = null;
   private connectingAddrs: Set<string> = new Set();  // addresses with an in-flight connect
   private unsubStatus: (() => void) | null = null;
   private unsubAdapters: (() => void) | null = null;
@@ -81,6 +97,16 @@ export class BtPopover {
     this.overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9500;display:flex;justify-content:flex-end;align-items:flex-start;padding:54px 18px 0 0;';
     this.overlay.addEventListener('click', (e) => {
       if (e.target === this.overlay) this.close();
+    });
+    // Block stray Backspace from triggering history.back when focus
+    // briefly leaves the AES input (e.g. during a status repaint).
+    // Allow it through normally when an editable element is focused.
+    this.overlay.addEventListener('keydown', (e) => {
+      if (e.key !== 'Backspace' && e.key !== 'Delete') return;
+      const tgt = e.target as HTMLElement | null;
+      const tag = (tgt?.tagName || '').toUpperCase();
+      const editable = tag === 'INPUT' || tag === 'TEXTAREA' || tgt?.isContentEditable;
+      if (!editable) e.preventDefault();
     });
 
     this.panel = document.createElement('div');
@@ -440,18 +466,22 @@ export class BtPopover {
       const snVal = rInfo.serial_number || '';
       const macVal = rInfo.ap_mac || '';
       infoRows.innerHTML = '';
-      // SN row — copy button when present, dash when not.
-      infoRows.appendChild(this.infoRowWithCopy('SN:', snVal, 'data-sn'));
-      // F1 frames embed the SN at offset 12 with a length prefix; under
-      // BLE MTU=23 only the first 7 chars survive. Surface that partial
-      // value as a hint when SN itself is empty (it was already useful
-      // diagnostic during reverse engineering).
-      if (!snVal && rInfo.f1_sn_partial) {
-        const hint = document.createElement('div');
-        hint.style.cssText = 'font-size:10px;color:#777;margin-left:18px;';
-        hint.innerHTML = `<span style="color:#666;">F1 hint:</span> <code style="color:#aaa;">${this.esc(rInfo.f1_sn_partial)}</code> (truncated by MTU)`;
-        infoRows.appendChild(hint);
+      // SN row + a small "(from F1)" / "(F1 ✓ GCM)" / "(V1/V2)" tag so the
+      // user can see which path produced the SN. If F1 and GCM disagree we
+      // flag it explicitly — that'd indicate either a stale AES key or a
+      // truncated F1 read.
+      const snRow = this.infoRowWithCopy('SN:', snVal, 'data-sn');
+      const tag = this.snSourceTag(rInfo);
+      if (tag) {
+        const tagSpan = document.createElement('span');
+        tagSpan.style.cssText = `font-size:10px;color:${tag.color};margin-left:6px;`;
+        tagSpan.textContent = `(${tag.label})`;
+        // Insert the tag before the Copy button so the row stays compact.
+        const copyBtn = snRow.querySelector('button');
+        if (copyBtn) snRow.insertBefore(tagSpan, copyBtn);
+        else snRow.appendChild(tagSpan);
       }
+      infoRows.appendChild(snRow);
       infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
       // /info returning a real AP MAC on V3 firmware proves the per-device
       // AES key is decrypting frames correctly (the F1 fallback only
@@ -470,6 +500,7 @@ export class BtPopover {
       renderProtoRow();
     };
 
+    this.renderInfoRowsCb = renderInfoRows;
     if (cached.info) renderInfoRows(cached.info);
     this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
       robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), info: rInfo });
@@ -665,6 +696,40 @@ export class BtPopover {
     this.wifiGateApply(enabled);
   }
 
+  /** Refresh /info and re-render the SN / AP MAC rows in place. Used
+   *  after the AES key gate POSTs a new key to the backend — the user
+   *  is mid-typing in the AES input, so we must NOT rebuild the whole
+   *  panel (that ejects focus and turns subsequent backspaces into
+   *  browser-back navigation). Updates only the existing infoRows DOM. */
+  private async refreshInfo(): Promise<void> {
+    if (!this.robotStatus.connected) return;
+    const addr = this.robotStatus.address;
+    try {
+      const rInfo = await this.fetchJSON<RobotInfo>('/info');
+      robotPanelCache.set(addr, { ...(robotPanelCache.get(addr) || {}), info: rInfo });
+      this.renderInfoRowsCb?.(rInfo);
+    } catch { /* leave previous values in place */ }
+  }
+
+  /** Pick a small "(source)" tag for the SN field that tells the user
+   *  which BLE path produced the value, and whether F1 and GCM
+   *  cross-validate. Returns null if there's no SN at all. */
+  private snSourceTag(rInfo: RobotInfo): { label: string; color: string } | null {
+    const f1 = (rInfo.f1_sn_partial || '').trim();
+    const gcm = (rInfo.sn_gcm || '').trim();
+    const v12 = (rInfo.sn_v1v2 || '').trim();
+    if (!f1 && !gcm && !v12) return null;
+    if (f1 && gcm) {
+      return f1 === gcm
+        ? { label: 'F1 ✓ GCM', color: '#66bb6a' }
+        : { label: `F1≠GCM (F1=${f1})`, color: '#e57373' };
+    }
+    if (gcm) return { label: 'V3 GCM', color: '#66bb6a' };
+    if (v12) return { label: 'V1/V2', color: '#66bb6a' };
+    if (f1) return { label: 'from V3 F1', color: '#888' };
+    return null;
+  }
+
   /**
    * Build an AES-128 key gate input. The popup uses this to gate the WiFi
    * form (and, eventually, the SN/MAC fetch path) on V3 firmware. State is
@@ -754,10 +819,11 @@ export class BtPopover {
               status.textContent = '✓ key sent';
               status.style.color = '#66bb6a';
               if (!wasInitial) {
-                // User-edited key — invalidate cache and re-render so
-                // /info gets re-fetched with GCM-decrypted SN / MAC.
-                robotPanelCache.delete(this.robotStatus.address);
-                this.updateRobotSection();
+                // User-edited key. Refresh /info in place (no panel
+                // rebuild) so the SN / MAC update without ejecting focus
+                // from the input the user just typed in. Cache is also
+                // updated by refreshInfo().
+                this.refreshInfo();
               }
             } catch (e) {
               status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -769,6 +835,13 @@ export class BtPopover {
       }
     };
     input.addEventListener('input', refresh);
+    // Defense in depth: when the input briefly loses focus (e.g. status
+    // update repaints something nearby) some browsers route Backspace to
+    // history.back(). Stop the key from bubbling out of the input — the
+    // input still gets the default delete behavior.
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' || e.key === 'Delete') e.stopPropagation();
+    });
     // Use the "_last" sentinel as a fallback if no candidate was set.
     if (!candidate) {
       const last = getCachedAesKey('_last');
