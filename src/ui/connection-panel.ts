@@ -30,11 +30,13 @@ export class ConnectionPanel {
   private remoteLoggedIn = false;
   private selectedSn = '';
   private onConnect: ConnectHandler;
+  private onAccountManager?: () => void;
 
-  constructor(parent: HTMLElement, onConnect: ConnectHandler) {
+  constructor(parent: HTMLElement, onConnect: ConnectHandler, onAccountManager?: () => void) {
     this.container = document.createElement('div');
     this.container.className = 'connection-panel';
     this.onConnect = onConnect;
+    this.onAccountManager = onAccountManager;
     this.build();
     parent.appendChild(this.container);
   }
@@ -299,7 +301,18 @@ export class ConnectionPanel {
       try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
 
       if (devices.length === 0) {
-        this.setStatus('No robots bound to your account', 'error');
+        // Login worked, account is fine — there's just nothing bound. Don't
+        // dead-end the user here; route them straight into Account Manager
+        // so they can bind a robot (or browse the other tabs). Falls back to
+        // a status message if the host app didn't provide a route.
+        if (this.onAccountManager) {
+          this.setStatus('Logged in — no robots bound. Opening Account Manager…', 'info');
+          this.loginBtn.disabled = false;
+          this.loginBtn.textContent = 'Login';
+          this.onAccountManager();
+          return;
+        }
+        this.setStatus('Logged in — no robots bound to this account.', 'error');
         this.loginBtn.disabled = false;
         this.loginBtn.textContent = 'Login';
         return;

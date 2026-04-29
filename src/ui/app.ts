@@ -137,7 +137,14 @@ export class App {
     modal.className = 'connection-modal';
     this.root.appendChild(modal);
 
-    this.connectionPanel = new ConnectionPanel(modal, (config) => this.connect(config));
+    this.connectionPanel = new ConnectionPanel(
+      modal,
+      (config) => this.connect(config),
+      // Lets the panel route the user to the Account Manager when login
+      // succeeds but no robots are bound (otherwise they'd be stuck on the
+      // login screen with nothing to do).
+      () => this.showAccountScreen(),
+    );
   }
 
   private showHubScreen(): void {
