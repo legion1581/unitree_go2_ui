@@ -525,24 +525,19 @@ export class UnitreeCloudAPI {
   }
 
   /**
-   * Trade the 44-char base64 BLE-fetched GCM key + SN for the 16-byte
-   * AES-128 key used in WebRTC `data2=3` SDP authentication. The SN must
-   * be RSA-encrypted with the cloud's public key (see `getPubKey`).
-   * Response is the derived key as a hex string.
+   * POST `device/bindExtData` and return the encrypted response body
+   * verbatim. The caller is responsible for AES-decrypting `data` with the
+   * random session key it wrapped into `sk` — see `aes-key-derive.ts`.
    *
-   * Note: we send both `sn=<plain>` and `sk=<rsa-encrypted-sn>`. The 1.9.3
-   * apk only sets the encrypted blob in `sn`, but the cloud's error message
-   * (`"sk decode error"`) and every other RSA-using endpoint
-   * (`webrtc/account`, `webrtc/connect`, `getOfferByServer`) consume `sk`
-   * for the encrypted secret. Sending both is a no-op for the apk path and
-   * fixes the contract for stricter / newer servers.
+   * Body shape mirrors `webrtc/account`:
+   *   sn       — plain device serial
+   *   sk       — RSA(public_key, random_AES_key)
+   *   extData  — 44-char base64 BLE GCM key
+   * The 1.9.3 apk's older single-field shape (sn=RSA(SN)) is rejected by
+   * current servers with `"sk decode error"`.
    */
-  async bindExtData(extData: string, sn: string, snEncrypted: string): Promise<string> {
-    return (await this.post<string>('device/bindExtData', {
-      extData,
-      sn,
-      sk: snEncrypted,
-    })) || '';
+  async bindExtData(extData: string, sn: string, sk: string): Promise<string> {
+    return (await this.post<string>('device/bindExtData', { extData, sn, sk })) || '';
   }
 
   async updateDevice(sn: string, alias: string, remark = ''): Promise<void> {
