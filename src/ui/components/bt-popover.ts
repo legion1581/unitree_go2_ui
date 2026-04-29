@@ -554,7 +554,7 @@ export class BtPopover {
         // payload is unusable for bindExtData.
         const isFull = gcm.key.length >= 300;
         v3Rows.appendChild(this.keyRow(
-          isFull ? 'extData (344B RSA):' : `extData (TRUNCATED ${gcm.key.length} ch — MTU exchange failed):`,
+          isFull ? '344B RSA:' : `344B RSA (TRUNCATED ${gcm.key.length} ch — MTU exchange failed):`,
           gcm.key,
         ));
       }
@@ -721,10 +721,10 @@ export class BtPopover {
     if (!f1 && !gcm && !v12) return null;
     if (f1 && gcm) {
       return f1 === gcm
-        ? { label: 'F1 ✓ GCM', color: '#66bb6a' }
-        : { label: `F1≠GCM (F1=${f1})`, color: '#e57373' };
+        ? { label: 'F1 ✓ AES', color: '#66bb6a' }
+        : { label: `F1≠AES (F1=${f1})`, color: '#e57373' };
     }
-    if (gcm) return { label: 'V3 GCM', color: '#66bb6a' };
+    if (gcm) return { label: 'V3 AES', color: '#66bb6a' };
     if (v12) return { label: 'V1/V2', color: '#66bb6a' };
     if (f1) return { label: 'from V3 F1', color: '#888' };
     return null;

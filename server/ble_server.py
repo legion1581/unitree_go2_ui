@@ -126,6 +126,29 @@ def build_gcm_v3(op: int, data: bytes, key: bytes) -> bytes:
     return body + bytes([outer_cksum])
 
 
+def build_gcm_v3_chunked(op: int, chunk_data: bytes, idx: int, total: int, key: bytes) -> bytes:
+    """V3 GCM-wrapped chunked command. Inner plaintext follows the V1
+    chunked layout `[0x52][len][op][idx][total][data][cksum]` — required
+    by the firmware for SSID / password ops, which it silently drops
+    when sent in the simple (non-chunked) shape."""
+    inner_len = len(chunk_data) + 6  # 0x52 + len + op + idx + total + data + cksum
+    inner = bytes([0x52, inner_len, op, idx, total]) + chunk_data
+    inner_cksum = (-sum(inner)) & 0xFF
+    plaintext = inner + bytes([inner_cksum])
+
+    nonce = secrets.token_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+
+    body = (
+        bytes([len(nonce)]) + nonce +
+        bytes([len(tag)]) + tag +
+        bytes([len(ciphertext)]) + ciphertext
+    )
+    outer_cksum = (-sum(body)) & 0xFF
+    return body + bytes([outer_cksum])
+
+
 def decrypt_gcm_v3(raw: bytes, key: bytes) -> Optional[bytes]:
     """Reverse of build_gcm_v3. Returns the inner V1/V2 plaintext frame
     (with leading 0x52) on success, None on header / decryption failure."""
@@ -731,11 +754,18 @@ class BLESession:
         if self.aes_key is None:
             return {"error": "AES-128 key not set on session"}
 
-        async def send_v3(label: str, op: int, data: bytes) -> bool:
+        async def send_v3(label: str, op: int, data: bytes, *, chunked: bool = False) -> bool:
             self.event.clear()
             self.response = None
-            pkt = build_gcm_v3(op, data, self.aes_key)
-            log.info(f"BLE → {label} (V3 GCM, op=0x{op:02x}): {len(pkt)}B; data {len(data)}B {data[:32].hex()}{'…' if len(data) > 32 else ''}")
+            if chunked:
+                # SSID / password ops require the V1 chunked frame shape
+                # `[0x52][len][op][idx][total][data][cksum]`. They fit in
+                # one MTU=104 chunk, so we send a single idx=1/total=1 frame.
+                pkt = build_gcm_v3_chunked(op, data, idx=1, total=1, key=self.aes_key)
+            else:
+                pkt = build_gcm_v3(op, data, self.aes_key)
+            shape = "chunked" if chunked else "simple"
+            log.info(f"BLE → {label} (V3 GCM {shape}, op=0x{op:02x}): {len(pkt)}B; data {len(data)}B {data[:32].hex()}{'…' if len(data) > 32 else ''}")
             await self._write(pkt)
 
             def have_ack() -> bool:
@@ -754,10 +784,10 @@ class BLESession:
         results["mode"] = await send_v3("WIFI_TYPE", Cmd.WIFI_TYPE, bytes([mode_byte]))
         if not results["mode"]:
             return results
-        results["ssid"] = await send_v3("WIFI_SSID", Cmd.WIFI_SSID, ssid.encode("utf-8"))
+        results["ssid"] = await send_v3("WIFI_SSID", Cmd.WIFI_SSID, ssid.encode("utf-8"), chunked=True)
         if not results["ssid"]:
             return results
-        results["password"] = await send_v3("WIFI_PWD", Cmd.WIFI_PWD, password.encode("utf-8"))
+        results["password"] = await send_v3("WIFI_PWD", Cmd.WIFI_PWD, password.encode("utf-8"), chunked=True)
         if not results["password"]:
             return results
         # Country body matches the V1 layout: 0x01 prefix + ascii country + 0x00 suffix.
