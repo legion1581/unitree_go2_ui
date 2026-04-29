@@ -20,12 +20,6 @@ interface RobotInfo {
   ap_mac: string;
   protocol: string;
   address: string;
-  // Per-path SN values (only populated when the corresponding fetch path
-  // returned). Used to label the displayed SN with its source and to
-  // cross-validate F1 vs GCM agreement.
-  f1_sn_partial?: string;
-  sn_gcm?: string | null;
-  sn_v1v2?: string | null;
 }
 interface RemoteState {
   lx: number; ly: number; rx: number; ry: number;
@@ -413,12 +407,9 @@ export class BtPopover {
     subHeader.textContent = 'Robot';
     this.robotBody.appendChild(subHeader);
 
-    // Connected header + info. The BLE address is also useful as a MAC
-    // placeholder when binding the robot — V3 firmware (G1 ≥ 1.5.1)
-    // doesn't expose AP MAC over plain V1/V2 BLE, so the bind form needs
-    // a paste source. Hand the user a Copy button. The heartbeat label
-    // increments on every status push so the user sees the BLE link is
-    // alive even when no fields are changing.
+    // Connected header + info. The heartbeat label increments on every
+    // status push so the user can see the BLE link is alive even when
+    // no on-screen values are changing.
     const info = document.createElement('div');
     info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
     const addrText = document.createElement('span');
@@ -466,37 +457,17 @@ export class BtPopover {
       const snVal = rInfo.serial_number || '';
       const macVal = rInfo.ap_mac || '';
       infoRows.innerHTML = '';
-      // SN row + a small "(from F1)" / "(F1 ✓ GCM)" / "(V1/V2)" tag so the
-      // user can see which path produced the SN. If F1 and GCM disagree we
-      // flag it explicitly — that'd indicate either a stale AES key or a
-      // truncated F1 read.
-      const snRow = this.infoRowWithCopy('SN:', snVal, 'data-sn');
-      const tag = this.snSourceTag(rInfo);
-      if (tag) {
-        const tagSpan = document.createElement('span');
-        tagSpan.style.cssText = `font-size:10px;color:${tag.color};margin-left:6px;`;
-        tagSpan.textContent = `(${tag.label})`;
-        // Insert the tag before the Copy button so the row stays compact.
-        const copyBtn = snRow.querySelector('button');
-        if (copyBtn) snRow.insertBefore(tagSpan, copyBtn);
-        else snRow.appendChild(tagSpan);
-      }
-      infoRows.appendChild(snRow);
+      infoRows.appendChild(this.infoRowWithCopy('SN:', snVal, 'data-sn'));
       infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
-      // /info returning a real AP MAC on V3 firmware proves the per-device
-      // AES key is decrypting frames correctly (the F1 fallback only
-      // populates SN, never AP MAC). That's our signal to ungate WiFi.
+      // On V3 firmware, /info returning a real AP MAC proves the AES key
+      // is decrypting frames correctly (the F1 fallback path populates SN
+      // only, never AP MAC). That's our signal to ungate the WiFi form.
       this.gcmDecodeWorks = !!macVal;
       this.refreshWifiGate();
       const proto = document.createElement('div');
       proto.setAttribute('data-proto-row', '');
       proto.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}`;
       infoRows.appendChild(proto);
-      const hint = document.createElement('div');
-      hint.setAttribute('data-v3-info-hint', '');
-      hint.style.cssText = 'display:none;font-size:10px;color:#666;font-style:italic;line-height:1.4;margin-top:2px;';
-      hint.textContent = 'SN / AP MAC over V3 firmware need GCM-encrypted commands — not yet implemented. Until then: read SN off the robot\u2019s label, and use the BLE address above as the MAC placeholder when binding.';
-      infoRows.appendChild(hint);
       renderProtoRow();
     };
 
@@ -530,12 +501,6 @@ export class BtPopover {
       this.v3Supported = v3Supported;
       this.refreshWifiGate();
       renderProtoRow();
-      const hint = infoRows.querySelector<HTMLElement>('[data-v3-info-hint]');
-      if (hint && v3Supported) {
-        const sn = infoRows.querySelector<HTMLElement>('[data-sn]')?.textContent?.trim();
-        const mac = infoRows.querySelector<HTMLElement>('[data-mac]')?.textContent?.trim();
-        if (sn === '\u2014' || mac === '\u2014') hint.style.display = '';
-      }
       if (!v3Supported) {
         v3Rows.remove();
         aesGate.wrap.remove();
@@ -735,29 +700,13 @@ export class BtPopover {
     } catch { /* leave previous values in place */ }
   }
 
-  /** Pick a small "(source)" tag for the SN field that tells the user
-   *  which BLE path produced the value. The combined F1/AES tag was
-   *  dropped — when both paths agree (the common case) the cross-check
-   *  is redundant, and a mismatch is rare enough to surface only via
-   *  logs. Returns null if there's no SN at all. */
-  private snSourceTag(rInfo: RobotInfo): { label: string; color: string } | null {
-    const f1 = (rInfo.f1_sn_partial || '').trim();
-    const gcm = (rInfo.sn_gcm || '').trim();
-    const v12 = (rInfo.sn_v1v2 || '').trim();
-    if (!f1 && !gcm && !v12) return null;
-    if (gcm) return { label: 'V3 AES', color: '#66bb6a' };
-    if (v12) return { label: 'V1/V2', color: '#66bb6a' };
-    if (f1) return { label: 'from V3 F1', color: '#888' };
-    return null;
-  }
-
   /**
-   * Build an AES-128 key gate input. The popup uses this to gate the WiFi
-   * form (and, eventually, the SN/MAC fetch path) on V3 firmware. State is
-   * not tied to a specific SN here — the BT popup doesn't know the SN until
-   * a V3 GCM-encrypted GET_SN response can be decrypted, which is the very
-   * thing this key unlocks. We just keep the last entered key in memory and
-   * fall back to any cached entry from the Account device tile.
+   * Build the AES-128 key input. On V3 firmware (G1 ≥ 1.5.1) the per-device
+   * 16-byte key gates SN / AP MAC fetches and the WiFi form, since all
+   * those ops are AES-GCM-encrypted. The key is keyed by SN — but we don't
+   * know the SN before the key decrypts the first GET_SN, so we just
+   * surface the last-used key (or any single cached entry from the Account
+   * page) and let the user paste/edit.
    */
   private buildAesGate(): { wrap: HTMLElement; isReady: () => boolean; onChange: (cb: (ready: boolean) => void) => void } {
     const wrap = document.createElement('div');

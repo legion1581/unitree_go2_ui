@@ -2,12 +2,17 @@
 
 V3 is a small extension to the V1/V2 BLE protocol introduced on the Unitree G1. It runs over the **same** GATT service and characteristics (FFE0 / FFE1 / FFE2 — see [bluetooth-v1-v2.md § Service UUIDs](bluetooth-v1-v2.md#service-uuids)) and coexists on the same connection: a single notify subscription receives both V1/V2 (encrypted) and V3 (unencrypted) frames, distinguished by their first byte.
 
-V3 currently exposes two read-only commands:
+V3 introduces two distinct categories of frames on top of V1/V2:
+
+1. **Plaintext probe frames** — `0xF1` (device-ID) and `0xF2` (RSA-wrapped key blob). Magic-prefixed, unencrypted, used before any AES key is established.
+2. **AES-128-GCM-wrapped command frames** — every legacy V1/V2 op (`GET_SN`, `GET_AP_MAC`, `WIFI_TYPE`, `WIFI_SSID`, `WIFI_PWD`, `COUNTRY`, …) is now AES-GCM-encrypted with a per-device 16-byte key. The plaintext payload inside the GCM envelope is the same `[0x52][len][op][…][cksum]` shape used on V1/V2, so the inner dispatcher is unchanged once decrypted.
+
+The plaintext probe path:
 
 - `0xF1` — historically named `VERSION` in the apk's enum, but the response carries the **device serial number** along with a small header (BLE module version byte + a flag byte). On G1 ≥ 1.5.1 this is what the apk uses to identify the robot before any GCM-encrypted command exchange — see [F1 Layout](#f1-version--device-id) below.
 - `0xF2` — historically named `GCM_KEY`, but the response is **not** a plain AES key — it's a 256-byte RSA-encrypted blob (344 base64 chars) that the cloud server-side decrypts to derive the per-device 16-byte AES-128 key used for WebRTC `data2=3` authentication and for GCM-wrapping V1/V2 BLE commands.
 
-Unlike V1/V2, V3 frames are **not** AES-CFB encrypted. They are framed with a fixed magic prefix that lets receivers tell them apart from V1/V2 ciphertext.
+Plaintext F1/F2 frames are not AES-CFB encrypted; they are framed with a fixed magic prefix so receivers can tell them apart from V1/V2 ciphertext. GCM-wrapped command frames have no magic prefix — they are demuxed from V1/V2 ciphertext by attempting GCM-decrypt first when an AES key is loaded.
 
 ## Firmware Compatibility
 
@@ -26,6 +31,9 @@ A client targeting both robot families must:
 - [Magic Prefix](#magic-prefix)
 - [Packet Format](#packet-format)
 - [Commands](#commands)
+- [GCM Command Frames](#gcm-command-frames)
+- [Authenticated Handshake](#authenticated-handshake)
+- [WiFi Configuration Flow](#wifi-configuration-flow)
 - [GCM Key Usage](#gcm-key-usage)
 - [Coexistence With V1/V2](#coexistence-with-v1v2)
 - [Quick Reference](#quick-reference)
@@ -166,6 +174,84 @@ The on-robot key file is `/unitree/etc/key/aes_key.bin` — but it's the
 returns to the client (and stores as `dev.key`) is what's actually used
 for `data2=3` SDP authentication and for GCM-wrapping V1/V2 BLE commands.
 
+## GCM Command Frames
+
+Once an AES-128 key is loaded, every V1/V2 command op the firmware accepts (`GET_SN`, `GET_AP_MAC`, `WIFI_TYPE`, `WIFI_SSID`, `WIFI_PWD`, `COUNTRY`, …) is wrapped in an AES-GCM envelope before being written to the V1 (`FFE2`) characteristic. The robot's replies come back through the same channel using the same envelope.
+
+### Envelope Layout
+
+Both directions share one wire format:
+
+```
+[nonce_len(1)] [nonce(12)] [tag_len(1)] [tag(16)]
+[cipher_len(1)] [ciphertext(N)] [outer_cksum(1)]
+```
+
+- `nonce_len` is always `0x0c` (12) and `tag_len` is always `0x10` (16). They are still on the wire because the firmware parses the lengths rather than hard-coding them.
+- `outer_cksum` is `(-sum(body)) & 0xFF`, computed over every byte from `nonce_len` through the last ciphertext byte (i.e. excluding the checksum itself).
+- `ciphertext` decrypts under `AES.GCM(key, nonce)` to a V1/V2 *inner* frame whose first byte is the request marker (`0x52` from app, `0x51` from robot).
+
+### Inner-Frame Shapes
+
+There are two inner shapes, mirroring V1's simple/chunked split:
+
+```
+simple   = [0x52|0x51] [len] [op] [data...] [inner_cksum]
+chunked  = [0x52|0x51] [len] [op] [idx] [total] [data...] [inner_cksum]
+```
+
+`len` is the inner frame length including the trailing checksum. `inner_cksum` is `(-sum(prev bytes)) & 0xFF`.
+
+### Which Ops Use Which Shape
+
+The V3 firmware is strict about this — sending the wrong shape causes the request to be silently dropped:
+
+| Op | Shape | Notes |
+|---|---|---|
+| `GET_SN` (`0x02`) | simple | empty data |
+| `WIFI_TYPE` (`0x03`) | simple | 1-byte data: `0x01`=AP, `0x02`=STA |
+| `WIFI_SSID` (`0x04`) | **chunked** | UTF-8 SSID; fits single chunk under MTU=104 |
+| `WIFI_PWD` (`0x05`) | **chunked** | UTF-8 password; fits single chunk under MTU=104 |
+| `COUNTRY` (`0x06`) | simple | `<country_utf8> ‖ <open_byte>` — see [WiFi flow](#wifi-configuration-flow) |
+| `GET_AP_MAC` (`0x07`) | simple | empty data |
+| `GET_TIME_3` (`0x0b`) | simple | handshake init from app, empty data |
+| `CHECK_3` (`0x0c`) | simple | handshake reply, 8-byte BE timestamp+1 |
+
+Even for ops where chunking isn't strictly necessary (the data is small and fits in one MTU), the firmware still pattern-matches on the inner-frame shape; SSID and password must use the chunked layout with `idx=1, total=1` or the request is dropped.
+
+## Authenticated Handshake
+
+Before the robot will respond to any GCM-wrapped command, the app must complete a tiny handshake that proves it holds the AES-128 key and is roughly time-synchronised:
+
+1. App writes `GET_TIME_3` (op `0x0b`, simple inner, GCM-wrapped). Empty data payload.
+2. Robot replies with `op=0x0b` carrying an **8-byte big-endian uint64 timestamp** (Unix seconds).
+3. App writes `CHECK_3` (op `0x0c`, simple inner, GCM-wrapped) with the same timestamp **+1** as 8 BE bytes.
+4. Robot replies with `op=0x0c, result=0x01` if the value matches; further GCM ops are now accepted.
+
+The endianness is non-obvious — the apk reads it via `ByteBuffer.getLong()` (BE) but a few BLE wire references suggest little-endian; the firmware accepts BE only.
+
+After this exchange the AES key is "armed" and `GET_SN` / `GET_AP_MAC` / WiFi ops will be answered. The handshake is done once per BLE connection.
+
+## WiFi Configuration Flow
+
+WiFi config is a five-step sequence, all GCM-wrapped:
+
+1. `WIFI_TYPE` (simple, 1-byte data: `0x01`=AP, `0x02`=STA).
+2. `WIFI_SSID` (chunked).
+3. `WIFI_PWD` (chunked).
+4. `COUNTRY` (simple) — payload is `<country_utf8> ‖ <open_byte>` where `open_byte=0x02` opens the AP / kicks the STA join, and `0x01` closes the AP. **This frame is not optional in AP mode** — without it the robot stores the credentials but never brings the AP up. It's also what triggers the actual radio change.
+5. **Wait for unsolicited push** of `op=0x08, result=0x01` (the apk calls this `BleResultEvent type="9"`). This is the real success signal — COUNTRY's `0x06` ack only means "config accepted, opening AP / connecting now". Robot sends `op=0x08, result=<non-1>` on failure (e.g. `0x04` for an AP that couldn't start). 40-second timeout in the apk.
+
+Each of steps 1–4 acks with `[0x51][len][op][result][inner_cksum]`. `result==0x01` means accepted, anything else is a per-step rejection.
+
+```
+APP  → WIFI_TYPE  (op 0x03) ──► robot  ◄── ack op 0x03 result 0x01
+APP  → WIFI_SSID  (op 0x04) ──► robot  ◄── ack op 0x04 result 0x01
+APP  → WIFI_PWD   (op 0x05) ──► robot  ◄── ack op 0x05 result 0x01
+APP  → COUNTRY    (op 0x06) ──► robot  ◄── ack op 0x06 result 0x01     (config accepted)
+                                       ◄── push op 0x08 result 0x01    (AP up / STA joined)
+```
+
 ## GCM Key Usage
 
 The key returned by `0xF2` is the secret used for `data2=3` WebRTC SDP authentication. The Unitree app derives a session nonce from the SDP offer/answer, encrypts it with this key under AES-128-GCM, and includes the ciphertext + tag in the signaling payload. The robot decrypts and validates the nonce before establishing the WebRTC peer connection.
@@ -178,23 +264,41 @@ The key is per-device and not user-secret in the strong sense (the robot freely 
 
 ## Coexistence With V1/V2
 
-V3 does **not** replace V1/V2. The standard handshake (`HANDSHAKE`/`0x01` with `"unitree"`) is still required to bring the connection into a usable state, and WiFi configuration / serial number / AP MAC fetches still go through V1/V2. V3 is purely additive.
+The V1/V2 `HANDSHAKE` / `0x01` SECRET exchange is still required at connect time to bring the link into a usable state — V3 firmware answers it with an unsolicited F1 frame instead of the legacy AES-CFB reply, but the app must still send it.
 
-A correctly-implemented notify handler dispatches per-frame:
+After connect, the picture differs by firmware:
+
+- **G1 ≥ 1.5.1.** Plaintext F1/F2 frames flow alongside GCM-wrapped command frames. The legacy V1/V2 AES-CFB path is **not** used for `GET_SN` / `GET_AP_MAC` / WiFi ops on this firmware — those have all moved into the GCM envelope. Sending a V1/V2 AES-CFB request here is silently dropped.
+- **G1 < 1.5.1, all Go2.** No V3 at all. `GET_SN` / `GET_AP_MAC` / WiFi flow stay on the V1/V2 AES-CFB path documented in [bluetooth-v1-v2.md](bluetooth-v1-v2.md).
+
+A correctly-implemented notify handler therefore demuxes three classes of inbound frame:
 
 ```python
 def on_notify(raw: bytes) -> None:
+    # 1) V3 plaintext (F1/F2): magic-prefixed, no encryption.
     if len(raw) >= 5 and raw[:5] == b"\x00UT25":
-        handle_v3(raw)              # plaintext, V3 dispatcher
-    else:
-        plain = aes_cfb_decrypt(raw)
-        if len(plain) >= 4 and plain[0] == 0x51:
-            handle_v1_v2(plain)     # standard V1/V2 response
+        handle_v3_plaintext(raw)
+        return
+
+    # 2) V3 GCM-wrapped command response — try this first when an AES key
+    #    is loaded. Returns the inner V1/V2 frame on success.
+    if aes_key is not None:
+        plain = gcm_decrypt(raw, aes_key)
+        if plain is not None:
+            handle_v1_v2_inner(plain)
+            return
+
+    # 3) Legacy V1/V2 AES-CFB ciphertext.
+    plain = aes_cfb_decrypt(raw)
+    if len(plain) >= 4 and plain[0] == 0x51:
+        handle_v1_v2_inner(plain)
 ```
 
-Routing V3 frames to the AES decryptor is a frequent porting bug — the decrypted output looks valid (random bytes), no exception is raised, and the framework silently drops the result because the first byte isn't `0x51`.
+Routing V3 plaintext frames to the AES-CFB decryptor is a frequent porting bug — the decrypted output looks valid (random bytes), no exception is raised, and the framework silently drops the result because the first byte isn't `0x51`.
 
 ## Quick Reference
+
+### Plaintext probe frames
 
 | Constant | Value |
 |---|---|
@@ -204,8 +308,29 @@ Routing V3 frames to the AES decryptor is a frequent porting bug — the decrypt
 | GCM_KEY opcode | `0xF2` |
 | Checksum | `(-sum(bytes)) & 0xFF`, includes magic |
 | Encryption | None (plaintext) |
+
+### GCM-wrapped command ops (inner `0x52`/`0x51` frame)
+
+| Op | Name | Inner shape | Notes |
+|---|---|---|---|
+| `0x02` | GET_SN | simple | empty data |
+| `0x03` | WIFI_TYPE | simple | `0x01`=AP, `0x02`=STA |
+| `0x04` | WIFI_SSID | chunked | UTF-8 |
+| `0x05` | WIFI_PWD | chunked | UTF-8 |
+| `0x06` | COUNTRY | simple | `<country_utf8> ‖ <0x02 open / 0x01 close>` |
+| `0x07` | GET_AP_MAC | simple | empty data |
+| `0x08` | (push) | simple | unsolicited "AP up / STA joined" success — `result=0x01` |
+| `0x0b` | GET_TIME_3 | simple | handshake init / robot timestamp reply (8 BE bytes) |
+| `0x0c` | CHECK_3 | simple | handshake reply with timestamp+1 (8 BE bytes) |
+
+### Misc
+
+| Constant | Value |
+|---|---|
 | Min firmware | G1 1.5.1 |
-| GCM key length | 44 ASCII chars (unpadded base64; 33 raw bytes when decoded) |
-| GCM key file (on-robot) | `/unitree/etc/key/aes_key.bin` |
+| Min MTU | 32 (negotiate 104 to match the apk) |
+| AES key length | 16 bytes (32 hex chars) |
+| Per-device AES key file (on-robot) | `/unitree/etc/key/aes_key.bin` (RSA-wrapped, not raw) |
+| Cloud key source | `device/bind/list` → `dev.key` (32 hex chars) |
 
 For scanning, V1/V2 commands, and WiFi configuration, see [bluetooth-v1-v2.md](bluetooth-v1-v2.md). For the BLE remote control and the WebRTC relay that forwards its inputs to the robot, see [remote-control.md](remote-control.md).
