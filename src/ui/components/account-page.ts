@@ -438,7 +438,7 @@ export class AccountPage {
 
     const blurb = document.createElement('div');
     blurb.style.cssText = 'font-size:11px;color:#888;line-height:1.5;margin-bottom:10px;';
-    blurb.textContent = 'Paste any SN + the 44-char BLE GCM key from the BT popup. Hits device/bindExtData directly with the apk wire shape (sn=RSA-encrypted, extData=plain). Independent of bound state — useful for confirming whether the cloud accepts the call only for unbound devices.';
+    blurb.innerHTML = 'Paste any SN + the BLE <code style="color:#aaa;">extData</code> blob (344 ASCII chars, RSA-encrypted, base64) from the BT popup. Hits <code style="color:#aaa;">device/bindExtData</code> directly with the apk wire shape (<code style="color:#aaa;">sn=RSA(SN)</code>, <code style="color:#aaa;">extData=blob</code>). Requires the device to be currently bound to your account — unbound returns <code style="color:#aaa;">code:1000 "无权限"</code>.';
     sec.appendChild(blurb);
 
     const snInput = this.input('SN', 'text');
@@ -447,8 +447,8 @@ export class AccountPage {
     snInput.input.autocomplete = 'off';
     sec.appendChild(snInput.wrapper);
 
-    const gcmInput = this.input('BLE GCM Key (44-char base64)', 'text');
-    gcmInput.input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+    const gcmInput = this.input('extData (344-char base64, RSA-encrypted)', 'text');
+    gcmInput.input.placeholder = 'iXhI9rjscc//ao4QeJxfD016jTAXw8gq/sBQl9Pxyc…';
     gcmInput.input.spellcheck = false;
     gcmInput.input.autocomplete = 'off';
     sec.appendChild(gcmInput.wrapper);
@@ -492,7 +492,7 @@ export class AccountPage {
     const sec = this.section('AES-128 Key (data2=3)');
     const blurb = document.createElement('div');
     blurb.style.cssText = 'font-size:11px;color:#888;margin:-2px 0 10px;line-height:1.5;';
-    blurb.textContent = 'Required by G1 firmware ≥1.5.1 to authenticate the WebRTC SDP handshake. Paste the 44-char BLE GCM key from the BT popover and click Derive — the cloud trades it for this 16-byte AES-128 key.';
+    blurb.textContent = 'Required by G1 firmware ≥1.5.1 to authenticate the WebRTC SDP handshake. Paste the 344-char extData blob (RSA-encrypted; from the BT popup, requires MTU=104) and click Derive — the cloud trades it for this 16-byte AES-128 key.';
     sec.appendChild(blurb);
 
     const display = document.createElement('div');
@@ -546,7 +546,7 @@ export class AccountPage {
     input.type = 'text';
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.placeholder = 'BLE GCM key (44-char base64)';
+    input.placeholder = 'extData blob (344-char base64)';
     input.className = 'acct-input';
     input.style.cssText = 'flex:1;padding:6px 10px;font-family:monospace;font-size:11px;box-sizing:border-box;';
     inputRow.appendChild(input);
@@ -801,7 +801,7 @@ export class AccountPage {
     const aliasInput = this.input('Alias', 'text');
     const macInput = this.input('AP MAC (xx:xx:xx:xx:xx:xx)', 'text');
     const remarkInput = this.input('Remark (optional)', 'text');
-    const extInput = this.input('BLE GCM Key (44-char base64 — from BT popup)', 'text');
+    const extInput = this.input('extData blob (344-char base64 — from BT popup, requires MTU=104)', 'text');
     extInput.input.spellcheck = false;
     extInput.input.autocomplete = 'off';
     extInput.input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';

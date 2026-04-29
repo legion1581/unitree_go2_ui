@@ -496,26 +496,33 @@ class BLESession:
         return True
 
     async def get_serial_number(self) -> Optional[str]:
-        # V3 (G1 ≥ 1.5.1) path: send a GCM-encrypted GET_SN. The reply path
-        # in `_on_notify` decodes the response and sets `sn_result`. If we
-        # have only the F1-embedded partial SN (because MTU exchange failed
-        # or AES key isn't set yet), fall back to that — useful as a hint.
+        """Resolve the SN. Path depends on detected firmware:
+          • V1/V2 (Go2 / pre-1.5.1 G1) — AES-CFB GET_SN, chunked reply.
+          • V3 (G1 ≥ 1.5.1) — GCM-encrypted GET_SN if we have the AES key,
+            otherwise return the SN already harvested from the F1 frame
+            payload. We deliberately don't chase the V1/V2 path on V3
+            firmware since it always times out and adds 5s of latency.
+        """
         self.sn_result = None
         self.sn_chunks.clear()
         self.event.clear()
+        is_v3 = self.v3_version is not None
 
-        if self.aes_key is not None:
-            pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
-            await self._write(pkt)
-            try:
-                await asyncio.wait_for(self.event.wait(), 5.0)
-            except asyncio.TimeoutError:
-                pass
-            if self.sn_result:
-                return self.sn_result
-            # GCM command sent but no reply — fall through to other paths.
+        if is_v3:
+            if self.aes_key is not None:
+                pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
+                await self._write(pkt)
+                try:
+                    await asyncio.wait_for(self.event.wait(), 3.0)
+                except asyncio.TimeoutError:
+                    pass
+                if self.sn_result:
+                    return self.sn_result
+            # Whether we tried GCM or skipped it, the F1-embedded SN is the
+            # fast and correct fallback on V3 firmware.
+            return self.f1_sn_partial or None
 
-        # Legacy V1/V2 GET_SN (AES-CFB) — works on Go2 / pre-1.5.1 G1.
+        # V1/V2 firmware: AES-CFB GET_SN with chunked reply.
         pkt = build_simple(Cmd.GET_SN)
         await self._write(pkt)
         try:
@@ -523,21 +530,23 @@ class BLESession:
         except asyncio.TimeoutError:
             pass
         await asyncio.sleep(0.5)
-        if self.sn_result:
-            return self.sn_result
-
-        # Last resort: return whatever the F1 frame embedded. Truncated by
-        # MTU=23 to ~7 chars but better than nothing.
-        return self.f1_sn_partial or None
+        return self.sn_result
 
     async def get_ap_mac(self) -> Optional[str]:
-        if self.aes_key is not None:
+        is_v3 = self.v3_version is not None
+
+        if is_v3:
+            if self.aes_key is None:
+                # No way to fetch AP MAC on V3 firmware without the per-
+                # device AES key — return None fast, don't waste 5s on a
+                # V1/V2 GET_AP_MAC the firmware will silently drop.
+                return None
             self.event.clear()
             self.response = None
             pkt = build_gcm_v3(Cmd.GET_AP_MAC, b"", self.aes_key)
             await self._write(pkt)
             try:
-                await asyncio.wait_for(self.event.wait(), 5.0)
+                await asyncio.wait_for(self.event.wait(), 3.0)
             except asyncio.TimeoutError:
                 pass
             resp = self.response
@@ -545,6 +554,7 @@ class BLESession:
                 mac_bytes = resp[3:resp[1] - 1]
                 if len(mac_bytes) == 6:
                     return ":".join(f"{b:02X}" for b in mac_bytes)
+            return None
 
         pkt = build_simple(Cmd.GET_AP_MAC)
         resp = await self._write_and_wait(pkt)

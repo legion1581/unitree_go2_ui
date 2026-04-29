@@ -484,7 +484,15 @@ export class BtPopover {
         v3Rows.appendChild(row);
       }
       if (gcm.supported && gcm.key) {
-        v3Rows.appendChild(this.keyRow('GCM Key (b64):', gcm.key));
+        // What F2 actually returns is a 256-byte RSA-encrypted blob (344
+        // chars b64), not a plain key. Under MTU<32 the F2 chunks get
+        // truncated to ~44 chars total — flag that so the user knows the
+        // payload is unusable for bindExtData.
+        const isFull = gcm.key.length >= 300;
+        v3Rows.appendChild(this.keyRow(
+          isFull ? 'extData (344B RSA):' : `extData (TRUNCATED ${gcm.key.length} ch — MTU exchange failed):`,
+          gcm.key,
+        ));
       }
       aesGate.wrap.style.display = '';
     };
