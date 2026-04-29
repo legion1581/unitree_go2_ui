@@ -133,10 +133,21 @@ function formatG1MotorMetric(m: RobotStatus['motorStates'][number], metricIdx: n
       const t = m.temperature?.[1];
       return typeof t === 'number' ? `${Math.round(t)}°C` : '—';
     }
-    case 5: { // Errors — non-zero motorstate or reserve[2] flags
+    case 5: { // Errors — motorstate is a bitfield of error flags;
+      // reserve[2] only selects WHICH error table to look up. If
+      // motorstate is 0, the motor is healthy regardless of reserve[2]
+      // (matches RobotStringKt.getMotorErrorsByReserve in the apk).
       const ms = m.motorstate ?? 0;
-      const r2 = m.reserve?.[2] ?? 0;
-      return ms === 0 && r2 === 0 ? 'OK' : `e${ms}/${r2}`;
+      if (ms === 0) return 'OK';
+      const bits: number[] = [];
+      let x = ms;
+      let bit = 0;
+      while (x > 0 && bit < 32) {
+        if (x & 1) bits.push(bit);
+        x >>>= 1;
+        bit++;
+      }
+      return bits.length > 0 ? `e${bits.join(',')}` : `e${ms}`;
     }
     default:
       return '—';
@@ -299,16 +310,20 @@ export class StatusPage {
     if (this.system.serialNumber) {
       systemRows.push(this.row('Serial Number', 'sys-sn'));
     }
-    systemRows.push(
-      this.row('Hardware Version', 'sys-hw'),
-      this.row('Software Version', 'sys-sw'),
-    );
+    // Hardware Version stays in System (it's a board-level identity);
+    // Software Version is firmware-y, so live it inside the Firmware
+    // section on G1 alongside Motion Mode.
+    systemRows.push(this.row('Hardware Version', 'sys-hw'));
+    if (cloudApi.family !== 'G1') {
+      systemRows.push(this.row('Software Version', 'sys-sw'));
+    }
     content.appendChild(this.buildSection('System', systemRows));
 
-    // Motion Mode is its own section (Software Version moved into System).
-    content.appendChild(this.buildSection('Firmware', [
-      this.row('Motion Mode', 'fw-mode'),
-    ]));
+    const firmwareRows: HTMLElement[] = [this.row('Motion Mode', 'fw-mode')];
+    if (cloudApi.family === 'G1') {
+      firmwareRows.unshift(this.row('Software Version', 'sys-sw'));
+    }
+    content.appendChild(this.buildSection('Firmware', firmwareRows));
 
     // Battery
     const batPctRow = this.row('Charge', 'bat-pct');
@@ -566,7 +581,8 @@ export class StatusPage {
     const makeCallout = (idx: number, name: string, side: 'left' | 'right', y: number): HTMLElement => {
       const box = document.createElement('div');
       const x = side === 'left' ? 0 : SLOT_W + IMG_W;
-      box.style.cssText = `position:absolute;width:${SLOT_W}px;left:${x}px;top:${y - 12}px;text-align:${side === 'left' ? 'right' : 'left'};font-size:11px;font-family:monospace;color:#e0e0e0;padding:0 6px;box-sizing:border-box;`;
+      box.style.cssText = `position:absolute;width:${SLOT_W}px;left:${x}px;top:${y - 12}px;text-align:${side === 'left' ? 'right' : 'left'};font-size:11px;font-family:monospace;padding:0 6px;box-sizing:border-box;`;
+      box.className = 'g1-motor-callout';
       box.title = name;
       box.innerHTML = `<div data-motor-val>—</div>`;
       figure.appendChild(box);

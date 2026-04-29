@@ -2355,6 +2355,10 @@ html[data-theme="light"] .acct-info-label { color: #5a6170; }
 html[data-theme="light"] .acct-info-value { color: #1a1d23; }
 html[data-theme="light"] .acct-info-copy  { color: #8b92a0; }
 
+/* G1 motor callouts — value text flanking the humanoid PNG. */
+.g1-motor-callout { color: #e0e0e0; }
+html[data-theme="light"] .g1-motor-callout { color: #1a1d23; }
+
 /* File-input "Choose file" button — light */
 html[data-theme="light"] .acct-file-input::file-selector-button {
   background: #ffffff;
