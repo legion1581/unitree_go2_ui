@@ -296,20 +296,22 @@ class BLESession:
         parse the uint64 timestamp out of the inner frame, add 1, encrypt
         a CHECK_3 (0x0c) reply with the AES key, and write it. The robot
         accepts subsequent GET_AP_MAC / GET_SN only after this exchange.
-        Triggered both by the unsolicited probe and by the response to our
-        kickoff GET_TIME_3 send in `_kick_v3_handshake`."""
+
+        The timestamp is **big-endian** — verified against a live G1 v1.5.1
+        where the response bytes `00 00 00 00 69 f2 8b 31` decode as
+        BE → 1777503025 (current Unix time), LE → 3.5e18 (nonsense).
+        Echoing back as LE here would make the firmware reject CHECK_3.
+        """
         if self.aes_key is None or self._device is None or self._loop is None:
             return
         try:
             data = plain[3:plain[1] - 1]
             if len(data) < 8:
                 return
-            ts = int.from_bytes(data[:8], "little")
-            reply_data = (ts + 1).to_bytes(8, "little")
+            ts = int.from_bytes(data[:8], "big")
+            reply_data = (ts + 1).to_bytes(8, "big")
             pkt = build_gcm_v3(0x0c, reply_data, self.aes_key)
             log.info(f"V3 CHECK_3 reply: ts={ts}+1 ({len(pkt)}B)")
-            # Off-thread the BLE write — `_write_sync` blocks on pygatt and
-            # we're already on the asyncio loop here.
             self._loop.run_in_executor(None, self._write_sync, pkt)
         except Exception as e:
             log.warning(f"V3 CHECK_3 reply failed: {e}")
