@@ -4,8 +4,8 @@ V3 is a small extension to the V1/V2 BLE protocol introduced on the Unitree G1. 
 
 V3 currently exposes two read-only commands:
 
-- `VERSION` (`0xF1`) — fetch the BLE module version string.
-- `GCM_KEY` (`0xF2`) — fetch the per-device AES-128-GCM key used for WebRTC `data2=3` authentication.
+- `0xF1` — historically named `VERSION` in the apk's enum, but the response carries the **device serial number** along with a small header (BLE module version byte + a flag byte). On G1 ≥ 1.5.1 this is what the apk uses to identify the robot before any GCM-encrypted command exchange — see [F1 Layout](#f1-version--device-id) below.
+- `0xF2` — historically named `GCM_KEY`, but the response is **not** a plain AES key — it's a 256-byte RSA-encrypted blob (344 base64 chars) that the cloud server-side decrypts to derive the per-device 16-byte AES-128 key used for WebRTC `data2=3` authentication and for GCM-wrapping V1/V2 BLE commands.
 
 Unlike V1/V2, V3 frames are **not** AES-CFB encrypted. They are framed with a fixed magic prefix that lets receivers tell them apart from V1/V2 ciphertext.
 
@@ -119,9 +119,26 @@ def on_v3_frame(raw: bytes) -> tuple[int, str] | None:
 | VERSION | `0xF1` | (none) | Single frame: `[magic][F1][version_byte][needShowNetSwitch_flag][reserved(4)][sn_len(1)][sn_ascii][cksum]` — **the SN is embedded** length-prefixed at offset 12. Truncated to 7 chars under MTU=23; full 16 chars under MTU=104. Also pushed in response to the V1/V2 SECRET handshake. |
 | GCM_KEY | `0xF2` | (none) | 344 ASCII chars of base64 (256 raw bytes, RSA-encrypted), delivered as 4 chunks. Truncated to 11 chars/chunk under MTU=23. |
 
-### `0xF1` VERSION
+### `0xF1` VERSION / Device-ID
 
-Returns the BLE module version string the robot reports for itself. Useful as a probe: a successful response confirms the robot speaks V3, so a client can decide whether to attempt `0xF2` and whether to enable V3-dependent UI.
+Despite the name, this command's response carries the **device serial number** along with a small header (BLE module version + a flag byte). It's both a "do you speak V3?" probe *and* the canonical way to identify the connected robot before any AES key is established — the apk's `dogSn` field is set straight from this frame on G1 ≥ 1.5.1.
+
+#### F1 Layout
+
+```
+[0..4]  magic        (5)   00 55 54 32 35
+[5]     opcode       (1)   F1
+[6]     version      (1)   03  ← BLE module version (0x03 = V3)
+[7]     flags        (1)   bit 0 = needShowNetSwitch
+[8..11] reserved     (4)   00 00 00 00
+[12]    sn_len       (1)   length of the SN that follows (typically 0x10 = 16)
+[13..]  sn_ascii     (N)   ASCII SN bytes (e.g. "E21D6000PBF9ELG5")
+[last]  cksum        (1)   (-sum(prev bytes)) & 0xFF
+```
+
+Full size = `13 + sn_len + 1`. For a 16-char SN that's **30 bytes**, which fits comfortably under MTU=104 but is **truncated to 20 bytes (only 7 chars of SN) under default MTU=23**. Negotiate MTU first if you want the full SN out of this frame.
+
+The frame is pushed unsolicited in response to the V1/V2 SECRET handshake — clients don't need to send `build_v3(0xF1)` explicitly to get it.
 
 ### `0xF2` GCM_KEY
 

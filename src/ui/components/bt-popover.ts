@@ -665,6 +665,14 @@ export class BtPopover {
 
     const listeners: Array<(ready: boolean) => void> = [];
     let lastReady = false;
+    // True for the very first refresh() call (programmatic pre-fill from
+    // localStorage on popup open). On that call we still POST the key to
+    // the backend so it has it, but we DON'T invalidate the panel cache —
+    // otherwise every popup re-open wipes the SN / GCM key / FW version
+    // we already painted from cache and replaces them with a "Loading…"
+    // flash. User-typed changes (subsequent refresh calls) still
+    // invalidate so the user sees a fresh fetch.
+    let initialPopulate = true;
     const refresh = (): void => {
       const v = input.value.trim();
       const ready = /^[0-9a-fA-F]{32}$/.test(v);
@@ -681,13 +689,8 @@ export class BtPopover {
       if (ready !== lastReady) {
         lastReady = ready;
         if (ready) {
-          // Persist last entered key so a popup re-open prefills it.
           try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
-          // Push the key into the BLE backend so it can GCM-decrypt
-          // subsequent V3 frames (and respond to the firmware's 0x0b
-          // timestamp probe). Then refetch /info — the second call should
-          // come back with the GCM-decrypted SN / AP MAC if everything
-          // lines up. Errors are surfaced inline.
+          const wasInitial = initialPopulate;
           (async () => {
             try {
               const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
@@ -699,12 +702,12 @@ export class BtPopover {
               }
               status.textContent = '✓ key sent';
               status.style.color = '#66bb6a';
-              // Trigger a fresh /info on the connected robot. The popup
-              // listens to status updates from the backend and will
-              // re-render when fields change; the simplest way to force a
-              // re-render is to invalidate the cache and call updateRobot.
-              robotPanelCache.delete(this.robotStatus.address);
-              this.updateRobotSection();
+              if (!wasInitial) {
+                // User-edited key — invalidate cache and re-render so
+                // /info gets re-fetched with GCM-decrypted SN / MAC.
+                robotPanelCache.delete(this.robotStatus.address);
+                this.updateRobotSection();
+              }
             } catch (e) {
               status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
               status.style.color = '#e57373';
@@ -721,6 +724,7 @@ export class BtPopover {
       if (last) input.value = last;
     }
     refresh();
+    initialPopulate = false;
 
     return {
       wrap,
