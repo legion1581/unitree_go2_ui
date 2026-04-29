@@ -352,11 +352,28 @@ export class AccountPage {
       this.content.appendChild(grid);
 
       if (!devices.length) {
+        // Friendlier empty state — the account is fine, just nothing bound.
+        // Account / Info / Debug tabs at the top still work; we want this to
+        // feel like a starting point, not an error.
         const empty = document.createElement('div');
-        empty.style.cssText = 'color:#555;text-align:center;padding:40px 0;';
-        empty.textContent = 'No robots bound to your account.';
+        empty.style.cssText = 'color:#888;text-align:center;padding:30px 16px;border:1px dashed #2a2d35;border-radius:8px;margin-top:8px;';
+        empty.innerHTML = `
+          <div style="font-size:14px;color:#bbb;margin-bottom:6px;">No robots bound to this account yet.</div>
+          <div style="font-size:11px;line-height:1.5;color:#777;max-width:340px;margin:0 auto 14px;">Click <strong>+ Add</strong> above to register one, or jump to another tab — your login is active.</div>
+        `;
+        const cta = document.createElement('button');
+        cta.className = 'acct-btn acct-btn-primary';
+        cta.style.cssText = 'padding:6px 16px;font-size:12px;';
+        cta.textContent = '+ Add a robot';
+        cta.addEventListener('click', () => this.showBindForm());
+        empty.appendChild(cta);
         this.content.appendChild(empty);
       }
+
+      // Free-standing "Test bindExtData" panel — independent of any tile, so
+      // we can poke the endpoint with bound or unbound SNs to figure out
+      // when the cloud will accept the call.
+      this.content.appendChild(this.buildBindExtDataTester());
     } catch (e) {
       this.content.innerHTML = `<div style="color:#ef5350;padding:20px;">Error: ${e instanceof Error ? e.message : String(e)}</div>`;
     }
@@ -407,6 +424,60 @@ export class AccountPage {
 
     tile.appendChild(btns);
     return tile;
+  }
+
+  /**
+   * Standalone "Test bindExtData" panel. Independent of the per-tile flow —
+   * lets the user paste any SN (bound or unbound) plus a BLE GCM key, and
+   * fires `device/bindExtData` to figure out when the cloud will accept the
+   * call. Useful while the endpoint's contract is still under investigation.
+   */
+  private buildBindExtDataTester(): HTMLElement {
+    const sec = this.section('Test device/bindExtData');
+    sec.style.marginTop = '20px';
+
+    const blurb = document.createElement('div');
+    blurb.style.cssText = 'font-size:11px;color:#888;line-height:1.5;margin-bottom:10px;';
+    blurb.textContent = 'Paste any SN + the 44-char BLE GCM key from the BT popup. Hits device/bindExtData directly with the apk wire shape (sn=RSA-encrypted, extData=plain). Independent of bound state — useful for confirming whether the cloud accepts the call only for unbound devices.';
+    sec.appendChild(blurb);
+
+    const snInput = this.input('SN', 'text');
+    snInput.input.placeholder = 'E21D6000PBF9ELG5';
+    snInput.input.spellcheck = false;
+    snInput.input.autocomplete = 'off';
+    sec.appendChild(snInput.wrapper);
+
+    const gcmInput = this.input('BLE GCM Key (44-char base64)', 'text');
+    gcmInput.input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+    gcmInput.input.spellcheck = false;
+    gcmInput.input.autocomplete = 'off';
+    sec.appendChild(gcmInput.wrapper);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:11px;color:#888;margin:6px 0;min-height:16px;font-family:monospace;word-break:break-all;';
+    sec.appendChild(status);
+
+    const btn = this.button('Call device/bindExtData', async () => {
+      const sn = snInput.input.value.trim();
+      const gcm = gcmInput.input.value.trim();
+      if (!sn) { status.style.color = '#e57373'; status.textContent = 'SN required.'; return; }
+      if (!gcm) { status.style.color = '#e57373'; status.textContent = 'GCM key required.'; return; }
+      btn.disabled = true;
+      status.style.color = '#888';
+      status.textContent = 'Calling…';
+      try {
+        const aes = await deriveAesKey(sn, gcm);
+        status.style.color = '#66bb6a';
+        status.textContent = `Success — AES-128 key (${aes.length} chars): ${aes}`;
+      } catch (e) {
+        status.style.color = '#e57373';
+        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    sec.appendChild(btn);
+    return sec;
   }
 
   /**

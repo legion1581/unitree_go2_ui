@@ -23,6 +23,19 @@ interface RemoteState {
   rssi: number;
 }
 
+// Module-level cache for the popup's /info + /v3/* results, keyed by the
+// connected BLE address. Survives close/reopen so the panel can paint the
+// last-known values immediately and re-fetch in the background, instead of
+// always flashing through a "Loading robot info…" → fetch cycle.
+type V3Probe = { version: string | null; supported: boolean };
+type V3KeyProbe = { key: string | null; supported: boolean };
+type CachedRobotPanel = {
+  info?: RobotInfo;
+  v3Ver?: V3Probe;
+  v3Gcm?: V3KeyProbe;
+};
+const robotPanelCache: Map<string, CachedRobotPanel> = new Map();
+
 export class BtPopover {
   private overlay: HTMLElement;
   private panel: HTMLElement;
@@ -110,6 +123,33 @@ export class BtPopover {
     btn.style.cssText = `padding:6px 12px;font-size:12px;border-radius:5px;cursor:pointer;font-weight:500;`;
     btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  /**
+   * Compact info row with an optional Copy button. Used for SN / AP MAC so
+   * the user can grab those values into the bind form quickly. Renders a
+   * dash if `value` is empty (no copy button in that case).
+   */
+  private infoRowWithCopy(label: string, value: string, dataAttr?: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-height:18px;';
+    const lbl = document.createElement('span');
+    lbl.style.color = '#666';
+    lbl.style.flexShrink = '0';
+    lbl.textContent = label;
+    const val = document.createElement('span');
+    if (dataAttr) val.setAttribute(dataAttr, '');
+    val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    if (value) {
+      val.title = value;
+      val.textContent = value;
+    } else {
+      val.style.color = '#555';
+      val.textContent = '\u2014';
+    }
+    row.append(lbl, val);
+    if (value) row.appendChild(this.copyButton(value));
+    return row;
   }
 
   private keyRow(label: string, value: string): HTMLDivElement {
@@ -313,6 +353,9 @@ export class BtPopover {
     this.robotBody.innerHTML = '';
     if (!this.robotStatus.connected) {
       this.robotBody.style.display = 'none';
+      // Drop any stale cache for the previously-connected robot so a fresh
+      // connection re-fetches /info instead of painting old values.
+      robotPanelCache.delete(this.lastRenderedRobotAddr);
       this.updateEmptyPlaceholder();
       return;
     }
@@ -337,11 +380,16 @@ export class BtPopover {
     if (this.robotStatus.address) info.appendChild(this.copyButton(this.robotStatus.address));
     this.robotBody.appendChild(info);
 
-    // Info rows (serial number, AP MAC) — lazy loaded
+    // Info rows (serial number, AP MAC) — lazy loaded.
     const infoRows = document.createElement('div');
     infoRows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
-    infoRows.innerHTML = `<div>Loading robot info...</div>`;
     this.robotBody.appendChild(infoRows);
+
+    // Use cached values for an instant render, then fall through to fetch.
+    const cached = robotPanelCache.get(currentAddr) || {};
+    if (!cached.info) {
+      infoRows.innerHTML = '<div>Loading robot info...</div>';
+    }
 
     // /info gives us the V1/V2 transport label; /v3/* tells us whether the
     // V3 GCM-key extension is also present. Surface the protocol row as
@@ -356,33 +404,46 @@ export class BtPopover {
       cell.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto + suffix)}`;
     };
 
-    this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
+    const renderInfoRows = (rInfo: RobotInfo): void => {
       // Map the backend's protocol token to a human-readable version label.
       // V1 = legacy FFE0 service (Go2 < 1.1.11, all G1). V2 = Nordic UART
       // (Go2 >= 1.1.11). See docs/bluetooth-v1-v2.md.
       baseProto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
                 : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
                 : (rInfo.protocol || '—');
-      const snVal = rInfo.serial_number || '—';
-      const macVal = rInfo.ap_mac || '—';
-      // On V3 firmware, GET_SN / GET_AP_MAC require the per-device 16-byte
-      // AES-128 key (and BLE MTU negotiation to 104) — neither of which the
-      // backend currently does. Surface a hint so the empty fields aren't
-      // mysterious.
-      infoRows.innerHTML = `
-        <div><span style="color:#666;">SN:</span> <span data-sn>${this.esc(snVal)}</span></div>
-        <div><span style="color:#666;">AP MAC:</span> <span data-mac>${this.esc(macVal)}</span></div>
-        <div data-proto-row><span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}</div>
-        <div data-v3-info-hint style="display:none;font-size:10px;color:#666;font-style:italic;line-height:1.4;margin-top:2px;">SN / AP MAC over V3 firmware need GCM-encrypted commands — not yet implemented. Until then: read SN off the robot's label, and use the BLE address above as the MAC placeholder when binding.</div>
-      `;
+      const snVal = rInfo.serial_number || '';
+      const macVal = rInfo.ap_mac || '';
+      infoRows.innerHTML = '';
+      // SN row — copy button when present, dash when not.
+      infoRows.appendChild(this.infoRowWithCopy('SN:', snVal, 'data-sn'));
+      infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
+      const proto = document.createElement('div');
+      proto.setAttribute('data-proto-row', '');
+      proto.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}`;
+      infoRows.appendChild(proto);
+      const hint = document.createElement('div');
+      hint.setAttribute('data-v3-info-hint', '');
+      hint.style.cssText = 'display:none;font-size:10px;color:#666;font-style:italic;line-height:1.4;margin-top:2px;';
+      hint.textContent = 'SN / AP MAC over V3 firmware need GCM-encrypted commands — not yet implemented. Until then: read SN off the robot\u2019s label, and use the BLE address above as the MAC placeholder when binding.';
+      infoRows.appendChild(hint);
       renderProtoRow();
-    }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
+    };
+
+    if (cached.info) renderInfoRows(cached.info);
+    this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
+      robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), info: rInfo });
+      renderInfoRows(rInfo);
+    }).catch(() => {
+      if (!cached.info) infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>';
+    });
 
     // V3 info (G1 firmware 1.5.1+; not on Go2): module version + per-device GCM key for WebRTC auth.
     // Both endpoints return `supported:false` on unsupported firmware; in that case we hide the section.
     const v3Rows = document.createElement('div');
     v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
-    v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
+    if (!cached.v3Ver && !cached.v3Gcm) {
+      v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
+    }
     this.robotBody.appendChild(v3Rows);
 
     // AES-128 paste field — only useful on V3 firmware. We mount a hidden
@@ -392,20 +453,14 @@ export class BtPopover {
     aesGate.wrap.style.display = 'none';
     this.robotBody.appendChild(aesGate.wrap);
 
-    Promise.all([
-      this.fetchJSON<{ key: string | null; supported: boolean }>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false })),
-      this.fetchJSON<{ version: string | null; supported: boolean }>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false })),
-    ]).then(([gcm, ver]) => {
+    const renderV3 = (gcm: V3KeyProbe, ver: V3Probe): void => {
       v3Supported = gcm.supported || ver.supported;
       renderProtoRow();
-      // Reveal the V3 hint only on V3 firmware AND when the corresponding
-      // /info field came back empty (the V1/V2 path sometimes works on
-      // older firmware variants).
       const hint = infoRows.querySelector<HTMLElement>('[data-v3-info-hint]');
       if (hint && v3Supported) {
         const sn = infoRows.querySelector<HTMLElement>('[data-sn]')?.textContent?.trim();
         const mac = infoRows.querySelector<HTMLElement>('[data-mac]')?.textContent?.trim();
-        if (sn === '—' || mac === '—') hint.style.display = '';
+        if (sn === '\u2014' || mac === '\u2014') hint.style.display = '';
       }
       if (!v3Supported) {
         v3Rows.remove();
@@ -419,12 +474,18 @@ export class BtPopover {
         v3Rows.appendChild(row);
       }
       if (gcm.supported && gcm.key) {
-        // The robot returns the key as 44 unpadded-base64 characters; we show
-        // it as-is so the user can copy and paste it into the device tile to
-        // fetch the derived 16-byte AES key from `device/bindExtData`.
         v3Rows.appendChild(this.keyRow('GCM Key (b64):', gcm.key));
       }
       aesGate.wrap.style.display = '';
+    };
+
+    if (cached.v3Ver && cached.v3Gcm) renderV3(cached.v3Gcm, cached.v3Ver);
+    Promise.all([
+      this.fetchJSON<V3KeyProbe>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false }) as V3KeyProbe),
+      this.fetchJSON<V3Probe>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false }) as V3Probe),
+    ]).then(([gcm, ver]) => {
+      robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), v3Gcm: gcm, v3Ver: ver });
+      renderV3(gcm, ver);
     });
 
     // WiFi config — gated on V3 firmware until a valid AES-128 key is provided.
