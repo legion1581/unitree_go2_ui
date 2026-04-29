@@ -78,7 +78,7 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
   const snEncrypted = rsaEncrypt(sn0, publicKey);
   console.log(`[bindExtData] snEncrypted length=${snEncrypted.length} (b64)`);
 
-  const aesKey = await cloudApi.bindExtData(gcm0, snEncrypted);
+  const aesKey = await cloudApi.bindExtData(gcm0, sn0, snEncrypted);
   if (!aesKey) throw new Error('bindExtData returned empty key');
 
   setCachedAesKey(sn0, aesKey);

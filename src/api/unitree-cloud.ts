@@ -529,9 +529,20 @@ export class UnitreeCloudAPI {
    * AES-128 key used in WebRTC `data2=3` SDP authentication. The SN must
    * be RSA-encrypted with the cloud's public key (see `getPubKey`).
    * Response is the derived key as a hex string.
+   *
+   * Note: we send both `sn=<plain>` and `sk=<rsa-encrypted-sn>`. The 1.9.3
+   * apk only sets the encrypted blob in `sn`, but the cloud's error message
+   * (`"sk decode error"`) and every other RSA-using endpoint
+   * (`webrtc/account`, `webrtc/connect`, `getOfferByServer`) consume `sk`
+   * for the encrypted secret. Sending both is a no-op for the apk path and
+   * fixes the contract for stricter / newer servers.
    */
-  async bindExtData(extData: string, snEncrypted: string): Promise<string> {
-    return (await this.post<string>('device/bindExtData', { extData, sn: snEncrypted })) || '';
+  async bindExtData(extData: string, sn: string, snEncrypted: string): Promise<string> {
+    return (await this.post<string>('device/bindExtData', {
+      extData,
+      sn,
+      sk: snEncrypted,
+    })) || '';
   }
 
   async updateDevice(sn: string, alias: string, remark = ''): Promise<void> {
