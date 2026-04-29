@@ -790,14 +790,14 @@ class BLESession:
         results["password"] = await send_v3("WIFI_PWD", Cmd.WIFI_PWD, password.encode("utf-8"), chunked=True)
         if not results["password"]:
             return results
-        # Country only applies in STA mode (joining an AP). When the robot
-        # is hosting an AP, the regulatory write is rejected (result=0x02)
-        # and the APK skips the step entirely — match that here.
-        if ap_mode:
-            results["country"] = True
-            return results
-        # Country body matches the V1 layout: 0x01 prefix + ascii country + 0x00 suffix.
-        country_payload = bytes([0x01]) + country.encode("utf-8") + bytes([0x00])
+        # COUNTRY (0x06) does double duty on V3: payload is
+        # `<country_utf8> || <open_byte>` where open_byte=0x02 starts the
+        # AP broadcasting and 0x01 marks STA / closed-AP. The APK always
+        # sends this frame as the final step — without it the robot stores
+        # the credentials but never actually brings the AP up. (See
+        # BluetoothService.java:578-612 in the decompiled APK.)
+        open_byte = 0x02 if ap_mode else 0x01
+        country_payload = country.encode("utf-8") + bytes([open_byte])
         results["country"] = await send_v3("COUNTRY", Cmd.COUNTRY, country_payload)
         return results
 
