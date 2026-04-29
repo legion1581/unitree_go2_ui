@@ -3,7 +3,7 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
-import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey, testRsaPipeline } from '../../api/aes-key-derive';
+import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -512,29 +512,6 @@ export class AccountPage {
       }
     });
 
-    // Diagnostic: ping webrtc/account with the same RSA pipeline. If THAT
-    // also returns "sk decode error", RSA itself is broken on our side; if
-    // it returns code=100, the bindExtData failure is endpoint-specific.
-    const testRow = document.createElement('div');
-    testRow.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed #1a1d23;display:flex;gap:6px;align-items:center;';
-    const testBtn = document.createElement('button');
-    testBtn.className = 'acct-btn acct-btn-secondary';
-    testBtn.style.cssText = 'padding:4px 10px;font-size:11px;';
-    testBtn.textContent = 'Test RSA (webrtc/account)';
-    const testStatus = document.createElement('span');
-    testStatus.style.cssText = 'font-size:11px;color:#888;';
-    testRow.append(testBtn, testStatus);
-    sec.appendChild(testRow);
-    testBtn.addEventListener('click', async () => {
-      testBtn.disabled = true;
-      testStatus.style.color = '#888';
-      testStatus.textContent = 'Calling webrtc/account…';
-      const res = await testRsaPipeline(dev.sn);
-      testStatus.style.color = res.ok ? '#66bb6a' : '#e57373';
-      testStatus.textContent = res.detail;
-      testBtn.disabled = false;
-    });
-
     return sec;
   }
 
@@ -631,20 +608,34 @@ export class AccountPage {
       // 44-char BLE GCM key here and we POST device/bindExtData.
       this.content.appendChild(this.buildAesSection(dev));
 
-      // Danger zone
+      // Danger zone — unbind goes through `device/unbind` with an RSA-
+      // encrypted SN (same convention as device/bind / device/bindExtData).
       const danger = this.section('Danger Zone');
       danger.style.borderColor = '#c62828';
       const unbindBtn = document.createElement('button');
       unbindBtn.className = 'acct-btn acct-btn-danger';
       unbindBtn.textContent = 'Unbind Robot';
+      const unbindStatus = document.createElement('span');
+      unbindStatus.style.cssText = 'margin-left:10px;font-size:12px;';
       unbindBtn.addEventListener('click', async () => {
-        if (!confirm(`Unbind ${dev.sn}?`)) return;
+        if (!confirm(`Unbind ${dev.sn}?\n\nThis removes the cloud-side binding (alias, mac, AES-128 key). You'll need to re-bind to use the robot from this account again.`)) return;
+        unbindBtn.disabled = true;
+        unbindStatus.style.color = '#888';
+        unbindStatus.textContent = 'Encrypting SN…';
         try {
-          await cloudApi.unbindDevice(dev.sn);
+          const snEncrypted = await rsaEncryptSn(dev.sn);
+          unbindStatus.textContent = 'Calling device/unbind…';
+          await cloudApi.unbindDevice(snEncrypted);
+          clearCachedAesKey(dev.sn);
           this.switchTab('devices');
-        } catch (e) { alert(String(e)); }
+        } catch (e) {
+          unbindStatus.style.color = '#e57373';
+          unbindStatus.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+          unbindBtn.disabled = false;
+        }
       });
       danger.appendChild(unbindBtn);
+      danger.appendChild(unbindStatus);
       this.content.appendChild(danger);
     } catch (e) {
       this.content.innerHTML = '';
@@ -705,6 +696,20 @@ export class AccountPage {
     } catch { /* ignore */ }
   }
 
+  /**
+   * Bind form — mirrors the apk's `device/bind` payload:
+   *   sn        — RSA-wrapped serial number (we wrap on submit)
+   *   mac       — robot AP MAC (on V3 firmware this needs the BLE V3 GCM
+   *               command path; for now the user pastes it, e.g. from a
+   *               previous device entry's `dev.mac` or the robot label)
+   *   alias     — display name
+   *   remark    — free-text notes
+   *   extData   — 44-char base64 BLE GCM key (paste from BT popup)
+   *
+   * On success the cloud derives the 16-byte AES-128 key from `extData` and
+   * surfaces it as `dev.key` on the next `device/bind/list` — that's the
+   * value the WebRTC frontend then consumes as `appKeyBytes` for `data2=3`.
+   */
   private showBindForm(): void {
     this.content.innerHTML = '';
     const backLink = document.createElement('button');
@@ -715,16 +720,57 @@ export class AccountPage {
     this.content.appendChild(backLink);
 
     const s = this.section('Bind New Robot');
+
+    const blurb = document.createElement('div');
+    blurb.style.cssText = 'font-size:11px;color:#888;line-height:1.5;margin-bottom:10px;';
+    blurb.innerHTML = 'Pair the robot via BLE first. Copy the GCM key from the BT popup, then paste it below along with the SN and AP MAC. Submitting will register the robot to your account and have the cloud derive the AES-128 key — visible as <code style="color:#b3c0ff;">dev.key</code> on the next devices list refresh.';
+    s.appendChild(blurb);
+
     const snInput = this.input('Serial Number', 'text');
-    const aliasInput = this.input('Alias (optional)', 'text');
+    const aliasInput = this.input('Alias', 'text');
+    const macInput = this.input('AP MAC (xx:xx:xx:xx:xx:xx)', 'text');
+    const remarkInput = this.input('Remark (optional)', 'text');
+    const extInput = this.input('BLE GCM Key (44-char base64 — from BT popup)', 'text');
+    extInput.input.spellcheck = false;
+    extInput.input.autocomplete = 'off';
+    extInput.input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+
     s.appendChild(snInput.wrapper);
     s.appendChild(aliasInput.wrapper);
-    s.appendChild(this.button('Bind Robot', async () => {
+    s.appendChild(macInput.wrapper);
+    s.appendChild(remarkInput.wrapper);
+    s.appendChild(extInput.wrapper);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:11px;color:#888;margin:6px 0;min-height:14px;';
+    s.appendChild(status);
+
+    const submit = this.button('Bind Robot', async () => {
+      const sn = snInput.input.value.trim();
+      const mac = macInput.input.value.trim();
+      const alias = aliasInput.input.value.trim();
+      const remark = remarkInput.input.value.trim();
+      const extData = extInput.input.value.trim();
+      if (!sn) { status.style.color = '#e57373'; status.textContent = 'Serial Number required.'; return; }
+      if (!extData) { status.style.color = '#e57373'; status.textContent = 'BLE GCM Key required (paste from BT popup).'; return; }
+      submit.disabled = true;
+      status.style.color = '#888';
+      status.textContent = 'Encrypting SN…';
       try {
-        await cloudApi.bindDevice(snInput.input.value.trim(), aliasInput.input.value.trim());
-        this.switchTab('devices');
-      } catch (e) { alert(String(e)); }
-    }));
+        const snEncrypted = await rsaEncryptSn(sn);
+        status.textContent = 'Calling device/bind…';
+        await cloudApi.bindDevice(snEncrypted, mac, alias, remark, extData);
+        status.style.color = '#66bb6a';
+        status.textContent = 'Bound — refreshing devices list.';
+        // Brief delay so the user sees the success state before jumping back.
+        setTimeout(() => this.switchTab('devices'), 600);
+      } catch (e) {
+        status.style.color = '#e57373';
+        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+        submit.disabled = false;
+      }
+    });
+    s.appendChild(submit);
     this.content.appendChild(s);
   }
 

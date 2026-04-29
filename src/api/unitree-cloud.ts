@@ -507,12 +507,31 @@ export class UnitreeCloudAPI {
     return (await this.get<RobotDevice[]>('device/bind/list')) || [];
   }
 
-  async bindDevice(sn: string, alias = ''): Promise<void> {
-    await this.post('device/bind', { sn, alias, mac: '', remark: '' });
+  /**
+   * `device/bind` — initial bind for a new robot. The `sn` field carries the
+   * RSA-encrypted SN (caller is expected to wrap it via `rsaEncryptSn`); the
+   * other fields are plain. `extData` is the 44-char base64 BLE GCM key, and
+   * the cloud uses it on this initial-bind path to populate `dev.key` (the
+   * 16-byte AES-128 derive used for `data2=3`). Subsequent calls to
+   * `device/bind/list` will return `dev.key` directly, which means
+   * `bindExtData` isn't needed for normal operation.
+   */
+  async bindDevice(snEncrypted: string, mac: string, alias: string, remark: string, extData: string): Promise<void> {
+    await this.post('device/bind', {
+      sn: snEncrypted,
+      mac,
+      alias,
+      remark,
+      extData,
+    });
   }
 
-  async unbindDevice(sn: string): Promise<void> {
-    await this.post('device/unbind', { sn });
+  /**
+   * `device/unbind` — same RSA-encrypted-SN convention as bind/bindExtData.
+   * Caller wraps the SN via `rsaEncryptSn` before calling.
+   */
+  async unbindDevice(snEncrypted: string): Promise<void> {
+    await this.post('device/unbind', { sn: snEncrypted });
   }
 
   async getDeviceOnlineStatus(sn: string): Promise<boolean> {

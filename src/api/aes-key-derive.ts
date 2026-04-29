@@ -101,34 +101,16 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
 }
 
 /**
- * Diagnostic helper: hit `webrtc/account`, the apk-verified endpoint that
- * uses the same RSA-encrypted-payload pattern as `device/bindExtData`. If
- * this returns successfully, our RSA encryption pipeline is fine and any
- * failure on `bindExtData` is endpoint-specific (auth scope, region, etc).
- * If this also fails with `"sk decode error"`, RSA itself is the problem.
- *
- * Body: `sn=<plain>&sk=<RSA(random_aes_key)>`. Response is AES-CBC of
- * TurnServerInfo, which we don't need — we only check the `code`.
+ * RSA-encrypt the SN with the cloud's RSA public key (PKCS#1 v1.5 padding,
+ * matching the apk's `RSAUtil.encodeString`). Used by every endpoint that
+ * accepts an RSA-wrapped SN — `device/bind`, `device/unbind`,
+ * `device/bindExtData`. Caller passes the result through as the `sn` field.
  */
-export async function testRsaPipeline(sn: string): Promise<{ ok: boolean; detail: string }> {
+export async function rsaEncryptSn(sn: string): Promise<string> {
   const sn0 = sn.trim();
-  if (!sn0) return { ok: false, detail: 'SN missing' };
-
+  if (!sn0) throw new Error('SN missing');
   const pubKeyB64 = await cloudApi.getPubKey();
-  if (!pubKeyB64) return { ok: false, detail: 'system/pubKey returned empty body' };
-
+  if (!pubKeyB64) throw new Error('system/pubKey returned empty body');
   const publicKey = loadPublicKey(pubKeyB64.trim());
-  // Reuse the same random-AES-key generator used elsewhere.
-  const { generateAesKey } = await import('../crypto/aes');
-  const aesKey = generateAesKey();
-  const sk = rsaEncrypt(aesKey, publicKey, 'PKCS1-V1_5');
-  console.log(`[testRSA] sn='${sn0}', sk length=${sk.length}, modulus=${publicKey.n.bitLength()}-bit`);
-
-  try {
-    const data = await cloudApi.post<string>('webrtc/account', { sn: sn0, sk });
-    return { ok: true, detail: `webrtc/account OK, response data length=${data?.length ?? 0}` };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, detail: `webrtc/account failed: ${msg}` };
-  }
+  return rsaEncrypt(sn0, publicKey, 'PKCS1-V1_5');
 }
