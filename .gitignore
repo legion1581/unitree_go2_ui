@@ -2,5 +2,6 @@ _frontend_1.11.4/
 reverse_engineer/
 INSTRUCTIONS.md
 test/
+tests/
 node_modules/
 dist/
