@@ -115,6 +115,11 @@ class BLESession:
         self.v3_event = asyncio.Event()
         self.v3_chunks: dict[int, dict[int, bytes]] = {}
         self.v3_results: dict[int, str] = {}
+        # F1 frames are NOT chunked: [magic][F1][version][needShowNetSwitch][cksum].
+        # On G1 ≥1.5.1, the firmware answers the V1/V2 SECRET handshake with one
+        # of these instead of an AES-CFB reply, so we record the version byte
+        # separately and signal v3_event the same way chunked F2 frames do.
+        self.v3_version: Optional[int] = None
 
     @property
     def connected(self) -> bool:
@@ -241,6 +246,13 @@ class BLESession:
         self._adapter = None
         self._connected = False
         self.address = ""
+        self.protocol = "unknown"
+        self.response = None
+        self.sn_chunks.clear()
+        self.sn_result = None
+        self.v3_chunks.clear()
+        self.v3_results.clear()
+        self.v3_version = None
 
     def _write_sync(self, packet: bytes) -> None:
         if self._device:
@@ -261,10 +273,60 @@ class BLESession:
             return None
         return self.response
 
+    async def _wait_v1_or_v3(self, timeout: float) -> bool:
+        """Wait for either a V1/V2 AES-CFB reply (sets `self.event`) or any
+        V3 frame (sets `self.v3_event`). Returns True if either fires."""
+        v1 = asyncio.create_task(self.event.wait())
+        v3 = asyncio.create_task(self.v3_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {v1, v3}, timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            return bool(done)
+        finally:
+            for t in (v1, v3):
+                if not t.done():
+                    t.cancel()
+
+    def _classify_handshake(self) -> bool:
+        """Inspect what arrived during the handshake wait and update
+        `self.protocol`. Returns True if the response is a recognized
+        handshake reply."""
+        if self.response is not None and len(self.response) >= 4 and self.response[2] == int(Cmd.HANDSHAKE):
+            self.protocol = f"{self.protocol}+v{self.response[3]}"
+            return True
+        if self.v3_version is not None:
+            self.protocol = f"{self.protocol}+v3"
+            return True
+        return False
+
     async def handshake(self) -> bool:
-        pkt = build_chunked(Cmd.HANDSHAKE, b"unitree", idx=1, total=1)
-        resp = await self._write_and_wait(pkt)
-        return resp is not None and len(resp) > 3 and resp[3] == 0x01
+        """Send the V1/V2 SECRET handshake. The robot answers with either:
+          • A V1/V2 AES-CFB reply (legacy Go2 / G1 < 1.5.1) — bytes are
+            [0x51, len, 0x01 (op echo), version, …]; or
+          • A V3 F1 (VERSION) frame (G1 ≥ 1.5.1) — magic-prefixed plaintext
+            announcing the BLE module version (typically 3).
+        If neither arrives, fall back to an explicit V3 VERSION request to
+        cover V3-only firmware that ignores legacy SECRET frames."""
+        self.event.clear()
+        self.v3_event.clear()
+        self.response = None
+        self.v3_version = None
+        self.v3_results.pop(Cmd.V3_VERSION, None)
+
+        await self._write(build_chunked(Cmd.HANDSHAKE, b"unitree", idx=1, total=1))
+        if await self._wait_v1_or_v3(5.0) and self._classify_handshake():
+            return True
+
+        # Fallback: explicit V3 VERSION probe.
+        self.v3_event.clear()
+        self.v3_version = None
+        await self._write(build_v3(Cmd.V3_VERSION))
+        if await self._wait_v1_or_v3(2.0) and self._classify_handshake():
+            return True
+
+        return False
 
     async def get_serial_number(self) -> Optional[str]:
         self.sn_result = None
@@ -288,19 +350,36 @@ class BLESession:
         return None
 
     def _handle_v3_response(self, raw: bytes):
-        """Reassemble a V3 chunked response.
+        """Parse a V3 frame.
 
-        Frame: [V3_MAGIC(5)] [cmd] [chunk_idx] [total_chunks] [data...] [checksum]
-        Single-chunk responses also use this layout with idx=total=1.
+        Two layouts share the same magic prefix:
+          F1 (VERSION):  [magic(5)] [0xF1] [version] [needShowNetSwitch] [cksum]
+                         — fixed 9 bytes, NOT chunked. On G1 firmware ≥1.5.1
+                         this is what arrives in response to the V1/V2 SECRET
+                         handshake instead of an AES-CFB reply.
+          F2 (GCM_KEY):  [magic(5)] [0xF2] [chunk_idx] [total] [data…] [cksum]
+                         — chunked; reassemble until idx == total.
         """
-        # Minimum: magic(5) + cmd + idx + total + cksum = 9 bytes
-        if len(raw) < len(V3_MAGIC) + 4:
+        if len(raw) < len(V3_MAGIC) + 2:
             return
         if (sum(raw) & 0xFF) != 0:
             log.warning(f"V3 checksum mismatch ({len(raw)} bytes, cmd 0x{raw[5]:02X})")
             return
 
         cmd = raw[5]
+
+        if cmd == Cmd.V3_VERSION:
+            if len(raw) < len(V3_MAGIC) + 4:
+                return
+            self.v3_version = raw[6]
+            self.v3_results[Cmd.V3_VERSION] = str(raw[6])
+            log.info(f"V3 firmware detected (BLE module version {raw[6]})")
+            if self._loop:
+                self._loop.call_soon_threadsafe(self.v3_event.set)
+            return
+
+        if len(raw) < len(V3_MAGIC) + 4:
+            return
         idx = raw[6]
         total = raw[7]
         data = raw[8:-1]
