@@ -9,6 +9,7 @@ Runs alongside the Vite dev server — proxied through /ble-api/*.
 import asyncio
 import json
 import logging
+import secrets
 import struct
 import time
 from contextlib import asynccontextmanager
@@ -90,6 +91,72 @@ def build_v3(instruction: int) -> bytes:
     return payload + bytes([checksum])
 
 
+# ─── V3 GCM encryption / decryption (G1 firmware ≥1.5.1) ────────────
+#
+# Wire format produced by `formatSendData3` and consumed by `parseByte3`
+# in the apk's BleUtils3Kt.kt:
+#
+#   build_gcm_v3(op, data, key) ->
+#     [nonce_len(1)] [nonce(12)] [tag_len(1)] [tag(16)]
+#     [cipher_len(1)] [ciphertext(N)] [outer_cksum(1)]
+#
+# where ciphertext = AES-GCM(key, nonce, plaintext) and `plaintext` is the
+# usual V1/V2 inner frame: `[0x52][len][op][data][inner_cksum]`.
+#
+# Decryption reverses this: parse the header, do AES-GCM-decrypt, return
+# the plaintext V1/V2 frame for the existing dispatcher to handle.
+
+def build_gcm_v3(op: int, data: bytes, key: bytes) -> bytes:
+    """Build a V3 GCM-wrapped command for sending over BLE on G1 ≥ 1.5.1."""
+    inner_len = len(data) + 4  # 0x52 + len + op + data + cksum
+    inner = bytes([0x52, inner_len, op]) + data
+    inner_cksum = (-sum(inner)) & 0xFF
+    plaintext = inner + bytes([inner_cksum])
+
+    nonce = secrets.token_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+
+    body = (
+        bytes([len(nonce)]) + nonce +
+        bytes([len(tag)]) + tag +
+        bytes([len(ciphertext)]) + ciphertext
+    )
+    outer_cksum = (-sum(body)) & 0xFF
+    return body + bytes([outer_cksum])
+
+
+def decrypt_gcm_v3(raw: bytes, key: bytes) -> Optional[bytes]:
+    """Reverse of build_gcm_v3. Returns the inner V1/V2 plaintext frame
+    (with leading 0x52) on success, None on header / decryption failure."""
+    # Minimum: nonce_len(1)+nonce(12)+tag_len(1)+tag(16)+cipher_len(1)+1 byte ciphertext+cksum = 32
+    if len(raw) < 32:
+        return None
+    nonce_len = raw[0]
+    if nonce_len != 12 or len(raw) < 1 + nonce_len + 1:
+        return None
+    nonce = raw[1:1 + nonce_len]
+
+    tag_len = raw[1 + nonce_len]
+    if tag_len != 16 or len(raw) < 2 + nonce_len + tag_len + 1:
+        return None
+    tag_start = 2 + nonce_len
+    tag = raw[tag_start:tag_start + tag_len]
+
+    cipher_len_idx = tag_start + tag_len
+    cipher_len = raw[cipher_len_idx]
+    cipher_start = cipher_len_idx + 1
+    if len(raw) < cipher_start + cipher_len:
+        return None
+    ciphertext = raw[cipher_start:cipher_start + cipher_len]
+
+    try:
+        cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+        return cipher.decrypt_and_verify(ciphertext, tag)
+    except Exception:
+        return None
+
+
 # ─── BLE Session ──────────────────────────────────────────────────────
 
 class BLESession:
@@ -120,6 +187,16 @@ class BLESession:
         # of these instead of an AES-CFB reply, so we record the version byte
         # separately and signal v3_event the same way chunked F2 frames do.
         self.v3_version: Optional[int] = None
+        # 16-byte AES-128 key derived from the BLE GCM key (44-char base64) +
+        # bound SN by `device/bindExtData`. When set, V3 (G1 ≥1.5.1) frames
+        # that aren't magic-prefixed are GCM-decrypted with this key and
+        # routed through the V1/V2 dispatcher.
+        self.aes_key: Optional[bytes] = None
+        # SN bytes extracted from the F1 frame's payload (bytes 12 onward,
+        # length-prefixed). Truncated to whatever the BLE MTU allowed —
+        # default MTU=23 caps it at the first 7 chars. After we negotiate
+        # MTU=104 in `_connect_sync`, expect the full 16-char SN here.
+        self.f1_sn_partial: str = ""
 
     @property
     def connected(self) -> bool:
@@ -130,23 +207,57 @@ class BLESession:
         to signal the asyncio event."""
         raw = bytes(value)
 
-        # V3 frames are unencrypted and start with V3_MAGIC. Handle before AES
-        # decryption (which would turn them into garbage).
+        # V3 frames (F1/F2) are unencrypted and start with V3_MAGIC.
         if len(raw) >= len(V3_MAGIC) and raw[:len(V3_MAGIC)] == V3_MAGIC:
             self._handle_v3_response(raw)
             return
 
-        try:
-            plain = ble_decrypt(raw)
-        except Exception:
+        # V3 GCM-wrapped responses: G1 ≥ 1.5.1 firmware sends V1/V2-style
+        # frames AES-GCM-encrypted with the per-device 16-byte key. Try the
+        # GCM decrypt first when an AES key is available; fall back to the
+        # legacy V1/V2 AES-CFB path if GCM doesn't apply.
+        plain: Optional[bytes] = None
+        if self.aes_key is not None:
+            plain = decrypt_gcm_v3(raw, self.aes_key)
+            if plain is not None:
+                log.info(f"V3 GCM-decrypted {len(raw)}B → {len(plain)}B inner: {plain.hex()}")
+
+        if plain is None:
+            try:
+                plain = ble_decrypt(raw)
+            except Exception:
+                return
+
+        if len(plain) < 4:
             return
-        if len(plain) < 4 or plain[0] != 0x51:
+
+        # V1/V2 frame: response marker 0x51, command-issued frame: 0x52.
+        # GCM-decrypted V3 frames carry the 0x52 echo of the V1/V2 inner.
+        marker = plain[0]
+        if marker not in (0x51, 0x52):
             return
 
         instruction = plain[2]
 
-        # SN comes in chunks
+        # G1 V3 timestamp request (op 0x0b) — robot pushes this when it
+        # wants the app to authenticate by echoing timestamp+1 as CHECK_3
+        # (op 0x0c). Without this exchange GET_AP_MAC / GET_SN never fire.
+        if instruction == 0x0b and self.aes_key is not None and self._loop:
+            self._loop.call_soon_threadsafe(self._reply_check3, plain)
+            return
+
+        # SN comes in chunks (V1 path uses chunked frames; V3 GCM path
+        # delivers the SN inline in op-0x02 responses).
         if instruction == Cmd.GET_SN and len(plain) >= 6:
+            # V3 GCM path: data is a contiguous string at bytes[3 : plain[1]-1].
+            if self.aes_key is not None and len(plain) > 4:
+                sn_bytes = plain[3:plain[1] - 1]
+                self.sn_result = sn_bytes.decode("utf-8", errors="replace").rstrip("\x00").strip()
+                log.info(f"V3 GET_SN result: {self.sn_result!r}")
+                if self._loop:
+                    self._loop.call_soon_threadsafe(self.event.set)
+                return
+            # Legacy V1 chunked path
             chunk_idx = plain[3]
             total = plain[4]
             chunk_data = plain[5:plain[1] - 1]
@@ -163,6 +274,27 @@ class BLESession:
         self.response = plain
         if self._loop:
             self._loop.call_soon_threadsafe(self.event.set)
+
+    def _reply_check3(self, plain: bytes) -> None:
+        """Asyncio-loop-side handler for the V3 0x0b timestamp request:
+        parse the uint64 timestamp out of the inner frame, add 1, encrypt
+        a CHECK_3 (0x0c) reply with the AES key, and write it. This is
+        the same handshake step the apk does in BleDataHandler — without
+        it the firmware won't issue subsequent GET_AP_MAC / GET_SN."""
+        if self.aes_key is None or self._device is None:
+            return
+        try:
+            # plain[1] = total length; data = plain[3 : plain[1]-1]
+            data = plain[3:plain[1] - 1]
+            if len(data) < 8:
+                return
+            ts = int.from_bytes(data[:8], "little")
+            reply_data = (ts + 1).to_bytes(8, "little")
+            pkt = build_gcm_v3(0x0c, reply_data, self.aes_key)
+            log.info(f"V3 CHECK_3 reply: ts={ts}+1 ({len(pkt)}B)")
+            asyncio.get_event_loop().run_in_executor(None, self._write_sync, pkt)
+        except Exception as e:
+            log.warning(f"V3 CHECK_3 reply failed: {e}")
 
     def _on_disconnect(self, event=None):
         log.info("Robot disconnected (pygatt callback)")
@@ -219,6 +351,17 @@ class BLESession:
         # Subscribe to notifications
         self._device.subscribe(self.notify_uuid, callback=self._on_notify)
 
+        # Negotiate MTU=104 to match the apk. Default MTU=23 limits notify
+        # payloads to 20 bytes, which truncates F1 (which embeds the SN at
+        # offset 12) and makes V3 GCM frames (>20 bytes wrapped) unusable.
+        # pygatt's gatttool backend exposes exchange_mtu(); some firmwares
+        # silently ignore it but the call shouldn't error out the connect.
+        try:
+            self._device.exchange_mtu(104)
+            log.info("MTU exchange to 104 succeeded")
+        except Exception as e:
+            log.info(f"MTU exchange skipped: {e}")
+
         try:
             self._device.register_disconnect_callback(self._on_disconnect)
         except Exception:
@@ -253,6 +396,8 @@ class BLESession:
         self.v3_chunks.clear()
         self.v3_results.clear()
         self.v3_version = None
+        self.aes_key = None
+        self.f1_sn_partial = ""
 
     def _write_sync(self, packet: bytes) -> None:
         if self._device:
@@ -328,10 +473,43 @@ class BLESession:
 
         return False
 
+    def set_aes_key(self, hex_key: str) -> bool:
+        """Install the per-device AES-128 key (32 hex chars) used to GCM-
+        decrypt V3 firmware replies. Returns True on success."""
+        h = hex_key.strip().lower()
+        if not h or len(h) % 2 != 0:
+            return False
+        try:
+            raw = bytes.fromhex(h)
+        except ValueError:
+            return False
+        if len(raw) not in (16, 24, 32):
+            return False
+        self.aes_key = raw
+        log.info(f"V3 AES key set ({len(raw)} bytes)")
+        return True
+
     async def get_serial_number(self) -> Optional[str]:
+        # V3 (G1 ≥ 1.5.1) path: send a GCM-encrypted GET_SN. The reply path
+        # in `_on_notify` decodes the response and sets `sn_result`. If we
+        # have only the F1-embedded partial SN (because MTU exchange failed
+        # or AES key isn't set yet), fall back to that — useful as a hint.
         self.sn_result = None
         self.sn_chunks.clear()
         self.event.clear()
+
+        if self.aes_key is not None:
+            pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
+            await self._write(pkt)
+            try:
+                await asyncio.wait_for(self.event.wait(), 5.0)
+            except asyncio.TimeoutError:
+                pass
+            if self.sn_result:
+                return self.sn_result
+            # GCM command sent but no reply — fall through to other paths.
+
+        # Legacy V1/V2 GET_SN (AES-CFB) — works on Go2 / pre-1.5.1 G1.
         pkt = build_simple(Cmd.GET_SN)
         await self._write(pkt)
         try:
@@ -339,9 +517,29 @@ class BLESession:
         except asyncio.TimeoutError:
             pass
         await asyncio.sleep(0.5)
-        return self.sn_result
+        if self.sn_result:
+            return self.sn_result
+
+        # Last resort: return whatever the F1 frame embedded. Truncated by
+        # MTU=23 to ~7 chars but better than nothing.
+        return self.f1_sn_partial or None
 
     async def get_ap_mac(self) -> Optional[str]:
+        if self.aes_key is not None:
+            self.event.clear()
+            self.response = None
+            pkt = build_gcm_v3(Cmd.GET_AP_MAC, b"", self.aes_key)
+            await self._write(pkt)
+            try:
+                await asyncio.wait_for(self.event.wait(), 5.0)
+            except asyncio.TimeoutError:
+                pass
+            resp = self.response
+            if resp and len(resp) >= 4 and resp[2] == Cmd.GET_AP_MAC:
+                mac_bytes = resp[3:resp[1] - 1]
+                if len(mac_bytes) == 6:
+                    return ":".join(f"{b:02X}" for b in mac_bytes)
+
         pkt = build_simple(Cmd.GET_AP_MAC)
         resp = await self._write_and_wait(pkt)
         if resp and len(resp) > 4:
@@ -375,20 +573,19 @@ class BLESession:
                 return
             self.v3_version = raw[6]
             self.v3_results[Cmd.V3_VERSION] = str(raw[6])
-            # The F1 frame is delivered as a 20-byte notification on V3
-            # firmware (default BLE MTU=23 → 20-byte payload). Our parser
-            # only consumes the first 9 bytes (magic+F1+ver+flag+cksum) but
-            # the apk's `dogSn` is set from BLE GET_SN somewhere — and we
-            # don't see that fire on V3. Suspect the SN may be packed into
-            # the F1 payload itself; dump the full frame so we can see
-            # what's in bytes 8..-1 (the 11 bytes past our parse).
             log.info(f"V3 F1 frame: {len(raw)}B {raw.hex()}")
-            try:
-                tail = raw[8:].rstrip(b"\x00")
-                if tail:
-                    log.info(f"V3 F1 tail (bytes 8..end): {tail.hex()} | ascii={tail.decode('ascii', errors='replace')!r}")
-            except Exception:
-                pass
+            # F1 layout (G1 ≥ 1.5.1):
+            #   [0..4] magic | [5] 0xF1 | [6] version | [7] needShowNetSwitch
+            #   [8..11] reserved (zeros)              | [12] sn_len
+            #   [13..13+sn_len) ASCII SN              | trailing checksum
+            # On default MTU=23 the notify is 20 bytes total so we only see
+            # the first 7 SN chars. After MTU=104 the full SN fits.
+            if len(raw) >= 14:
+                sn_len = raw[12]
+                if 1 <= sn_len <= 64:
+                    sn_bytes = raw[13:13 + sn_len]
+                    self.f1_sn_partial = sn_bytes.decode("ascii", errors="replace").rstrip("\x00")
+                    log.info(f"V3 F1 SN field (len={sn_len}, got {len(sn_bytes)}B): {self.f1_sn_partial!r}")
             log.info(f"V3 firmware detected (BLE module version {raw[6]})")
             if self._loop:
                 self._loop.call_soon_threadsafe(self.v3_event.set)
@@ -923,7 +1120,26 @@ async def info():
         "ap_mac": mac,
         "protocol": session.protocol,
         "address": session.address,
+        # Partial SN harvested from the F1 frame's payload (truncated by
+        # MTU=23 if exchange_mtu didn't take). Useful as a hint when
+        # `serial_number` came back null because we don't have the AES key
+        # yet to GCM-decrypt the GET_SN reply.
+        "f1_sn_partial": session.f1_sn_partial,
     }
+
+
+@app.post("/v3/aes-key")
+async def v3_set_aes_key(key: str):
+    """Install the per-device AES-128 key (32 hex chars) used to decrypt
+    V3 (G1 ≥ 1.5.1) GCM-wrapped BLE frames. Once set, subsequent /info
+    calls fetch SN / AP MAC via GCM-encrypted GET_SN / GET_AP_MAC; the
+    backend also auto-replies to the firmware's 0x0b timestamp probe with
+    a CHECK_3 (0x0c) so the V3 command chain unblocks."""
+    if not session.connected:
+        raise HTTPException(400, "Not connected")
+    if not session.set_aes_key(key):
+        raise HTTPException(400, "Invalid AES key (expected 32/48/64 hex chars)")
+    return {"ok": True, "key_bytes": len(session.aes_key) if session.aes_key else 0}
 
 
 @app.get("/v3/gcm-key")

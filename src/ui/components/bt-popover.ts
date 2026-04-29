@@ -15,7 +15,7 @@ interface ScanResult {
   remotes: Array<{ name: string; address: string; rssi: number | null }>;
 }
 interface AdapterInfo { name: string; address: string; up: boolean; type: string; }
-interface RobotInfo { serial_number: string; ap_mac: string; protocol: string; address: string; }
+interface RobotInfo { serial_number: string; ap_mac: string; protocol: string; address: string; f1_sn_partial?: string; }
 interface RemoteState {
   lx: number; ly: number; rx: number; ry: number;
   buttons: Record<string, boolean>;
@@ -416,6 +416,16 @@ export class BtPopover {
       infoRows.innerHTML = '';
       // SN row — copy button when present, dash when not.
       infoRows.appendChild(this.infoRowWithCopy('SN:', snVal, 'data-sn'));
+      // F1 frames embed the SN at offset 12 with a length prefix; under
+      // BLE MTU=23 only the first 7 chars survive. Surface that partial
+      // value as a hint when SN itself is empty (it was already useful
+      // diagnostic during reverse engineering).
+      if (!snVal && rInfo.f1_sn_partial) {
+        const hint = document.createElement('div');
+        hint.style.cssText = 'font-size:10px;color:#777;margin-left:18px;';
+        hint.innerHTML = `<span style="color:#666;">F1 hint:</span> <code style="color:#aaa;">${this.esc(rInfo.f1_sn_partial)}</code> (truncated by MTU)`;
+        infoRows.appendChild(hint);
+      }
       infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
       const proto = document.createElement('div');
       proto.setAttribute('data-proto-row', '');
@@ -662,10 +672,36 @@ export class BtPopover {
       }
       if (ready !== lastReady) {
         lastReady = ready;
-        // Persist last entered key so a popup re-open prefills it. Keyed
-        // under a sentinel "_last" entry; reading code can pick it up too.
         if (ready) {
+          // Persist last entered key so a popup re-open prefills it.
           try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
+          // Push the key into the BLE backend so it can GCM-decrypt
+          // subsequent V3 frames (and respond to the firmware's 0x0b
+          // timestamp probe). Then refetch /info — the second call should
+          // come back with the GCM-decrypted SN / AP MAC if everything
+          // lines up. Errors are surfaced inline.
+          (async () => {
+            try {
+              const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+              if (!resp.ok) {
+                const body = await resp.text();
+                status.textContent = `key rejected: ${body.slice(0, 60)}`;
+                status.style.color = '#e57373';
+                return;
+              }
+              status.textContent = '✓ key sent';
+              status.style.color = '#66bb6a';
+              // Trigger a fresh /info on the connected robot. The popup
+              // listens to status updates from the backend and will
+              // re-render when fields change; the simplest way to force a
+              // re-render is to invalidate the cache and call updateRobot.
+              robotPanelCache.delete(this.robotStatus.address);
+              this.updateRobotSection();
+            } catch (e) {
+              status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
+              status.style.color = '#e57373';
+            }
+          })();
         }
         for (const cb of listeners) cb(ready);
       }
