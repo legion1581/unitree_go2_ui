@@ -62,10 +62,18 @@ Total: **7 bytes**, written unencrypted to the V1 (FFE2) or V2 (NUS TX) write ch
 
 ### Robot → Client (Response)
 
-V3 responses are chunked. Each notification carries one chunk of a larger payload:
+The two opcodes use **different** response layouts:
+
+**`0xF1` VERSION** — single, fixed-size frame (not chunked):
 
 ```
-[0x00] [0x55] [0x54] [0x32] [0x35] [command] [chunk_idx] [total_chunks] [data...] [checksum]
+[0x00] [0x55] [0x54] [0x32] [0x35] [0xF1] [version_byte] [needShowNetSwitch] [cksum]
+```
+
+**`0xF2` GCM_KEY** — chunked. Each notification carries one chunk of a larger payload:
+
+```
+[0x00] [0x55] [0x54] [0x32] [0x35] [0xF2] [chunk_idx] [total_chunks] [data...] [checksum]
 ```
 
 | Field | Size | Description |
@@ -74,10 +82,10 @@ V3 responses are chunked. Each notification carries one chunk of a larger payloa
 | Command | 1 | Echoed opcode |
 | Chunk Index | 1 | 1-based index of this chunk |
 | Total Chunks | 1 | Total number of chunks |
-| Data | 0-N | Chunk payload |
-| Checksum | 1 | `(-sum(magic..data)) & 0xFF` |
+| Data | 0-N | Chunk payload (ASCII characters of the base64 key) |
+| Checksum | 1 | Per-chunk checksum |
 
-For short responses the robot may emit a single frame with `chunk_idx = total_chunks = 1`.
+> **Checksum note.** Frames are delivered inside fixed-MTU BLE notifications, which often carry padding past the logical frame end. The `(-sum(bytes)) & 0xFF` check therefore fails on real-world traces and the Unitree app skips it — trust the magic prefix and the opcode-specific layout instead.
 
 ### Reassembly
 
@@ -87,14 +95,17 @@ Buffer chunks per `command` until `len(received) == total_chunks`, then concaten
 buckets: dict[int, dict[int, bytes]] = {}
 
 def on_v3_frame(raw: bytes) -> tuple[int, str] | None:
-    if len(raw) < 9 or raw[:5] != b"\x00UT25":
+    if len(raw) < len(MAGIC) + 2 or raw[:5] != b"\x00UT25":
         return None
-    if (sum(raw) & 0xFF) != 0:                         # checksum
+    cmd = raw[5]
+    if cmd == 0xF1:
+        return cmd, str(raw[6])               # F1: not chunked
+    if len(raw) < len(MAGIC) + 4:
         return None
-    cmd, idx, total, data = raw[5], raw[6], raw[7], raw[8:-1]
+    idx, total, data = raw[6], raw[7], raw[8:-1]
     bucket = buckets.setdefault(cmd, {})
     bucket[idx] = data
-    if len(bucket) >= total:
+    if total > 0 and len(bucket) >= total:
         full = b"".join(bucket[i] for i in sorted(bucket)).rstrip(b"\x00").strip()
         del buckets[cmd]
         return cmd, full.decode("utf-8")
@@ -105,8 +116,8 @@ def on_v3_frame(raw: bytes) -> tuple[int, str] | None:
 
 | Command | ID | Request payload | Response payload |
 |---|---|---|---|
-| VERSION | `0xF1` | (none) | UTF-8 string — BLE module firmware version |
-| GCM_KEY | `0xF2` | (none) | 32-character hex ASCII (16-byte AES-128-GCM key) |
+| VERSION | `0xF1` | (none) | Single frame: `[magic][F1][version_byte][needShowNetSwitch_flag][cksum]` (not chunked). On G1 firmware ≥1.5.1 this is also pushed in response to the V1/V2 SECRET handshake. |
+| GCM_KEY | `0xF2` | (none) | 44 ASCII chars of unpadded base64, delivered as 4 F2 chunks of 11 chars each |
 
 ### `0xF1` VERSION
 
@@ -114,7 +125,9 @@ Returns the BLE module version string the robot reports for itself. Useful as a 
 
 ### `0xF2` GCM_KEY
 
-Returns a per-device AES-128-GCM key encoded as 32 ASCII hex characters (16 bytes). The key is generated on the robot at first boot and persisted in flash; it is the same on every read for the lifetime of the device.
+Returns the per-device GCM key as **44 ASCII characters of unpadded base64** (`A-Z`, `a-z`, `0-9`, `+`, `/`; trailing `=` is stripped). 44 unpadded base64 characters decode to 33 bytes — observed format on G1 firmware 1.5.1, e.g. `RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMUncli5kbTkeh`.
+
+The reply is delivered as 4 chunked F2 frames (`idx=1..4`, `total=4`), each carrying 11 ASCII characters of the base64 string in `[data]`. Concatenate them in `idx` order; do not decode per chunk. The key is generated on the robot at first boot and persisted in flash, so the same string is returned on every read.
 
 On the robot's filesystem the key is stored at `/unitree/etc/key/aes_key.bin` (verified against the on-robot `btgatt-server` binary).
 
@@ -157,7 +170,7 @@ Routing V3 frames to the AES decryptor is a frequent porting bug — the decrypt
 | Checksum | `(-sum(bytes)) & 0xFF`, includes magic |
 | Encryption | None (plaintext) |
 | Min firmware | G1 1.5.1 |
-| GCM key length | 16 bytes (32 hex chars) |
+| GCM key length | 44 ASCII chars (unpadded base64; 33 raw bytes when decoded) |
 | GCM key file (on-robot) | `/unitree/etc/key/aes_key.bin` |
 
 For scanning, V1/V2 commands, and WiFi configuration, see [bluetooth-v1-v2.md](bluetooth-v1-v2.md). For the BLE remote control and the WebRTC relay that forwards its inputs to the robot, see [remote-control.md](remote-control.md).
