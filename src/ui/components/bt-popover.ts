@@ -623,7 +623,7 @@ export class BtPopover {
       if (!ssid) { wifiStatus.textContent = 'SSID required'; wifiStatus.style.color = '#ef5350'; return; }
       applyBtn.disabled = true;
       applyBtn.textContent = 'Applying...';
-      wifiStatus.textContent = 'Sending...';
+      wifiStatus.textContent = 'Awaiting connection...';
       wifiStatus.style.color = '#4fc3f7';
       try {
         const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean> }>('/wifi', {
