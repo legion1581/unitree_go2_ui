@@ -720,7 +720,57 @@ class BLESession:
         """Fetch BLE module version string. Returns None on V3-unsupported firmware."""
         return await self._send_v3(Cmd.V3_VERSION)
 
+    async def _set_wifi_v3(self, ssid: str, password: str, ap_mode: bool, country: str) -> dict:
+        """V3 firmware (G1 ≥ 1.5.1) WiFi config: every op (WIFI_TYPE,
+        WIFI_SSID, WIFI_PWD, COUNTRY) is sent as a single GCM-encrypted
+        command using the per-device AES-128 key. The robot acks each one
+        with a `[0x51][len][op][result][cksum]` reply where result==0x01
+        indicates success. We loop on the shared event with a per-op
+        predicate to avoid being woken up by an unrelated reply."""
+        results: dict = {}
+        if self.aes_key is None:
+            return {"error": "AES-128 key not set on session"}
+
+        async def send_v3(label: str, op: int, data: bytes) -> bool:
+            self.event.clear()
+            self.response = None
+            pkt = build_gcm_v3(op, data, self.aes_key)
+            log.info(f"BLE → {label} (V3 GCM, op=0x{op:02x}): {len(pkt)}B; data {len(data)}B {data[:32].hex()}{'…' if len(data) > 32 else ''}")
+            await self._write(pkt)
+
+            def have_ack() -> bool:
+                r = self.response
+                return bool(r and len(r) >= 4 and r[2] == op)
+            await self._wait_until(have_ack, 8.0)
+            r = self.response
+            if r and len(r) >= 4 and r[2] == op:
+                ok = (r[3] == 0x01)
+                log.info(f"V3 {label} reply: result=0x{r[3]:02x} ({'ok' if ok else 'fail'})")
+                return ok
+            log.info(f"V3 {label} timed out (no op-0x{op:02x} reply within 8s)")
+            return False
+
+        mode_byte = 0x01 if ap_mode else 0x02
+        results["mode"] = await send_v3("WIFI_TYPE", Cmd.WIFI_TYPE, bytes([mode_byte]))
+        if not results["mode"]:
+            return results
+        results["ssid"] = await send_v3("WIFI_SSID", Cmd.WIFI_SSID, ssid.encode("utf-8"))
+        if not results["ssid"]:
+            return results
+        results["password"] = await send_v3("WIFI_PWD", Cmd.WIFI_PWD, password.encode("utf-8"))
+        if not results["password"]:
+            return results
+        # Country body matches the V1 layout: 0x01 prefix + ascii country + 0x00 suffix.
+        country_payload = bytes([0x01]) + country.encode("utf-8") + bytes([0x00])
+        results["country"] = await send_v3("COUNTRY", Cmd.COUNTRY, country_payload)
+        return results
+
     async def set_wifi(self, ssid: str, password: str, ap_mode: bool = False, country: str = "US") -> dict:
+        # V3 firmware uses GCM-wrapped commands; the V1/V2 AES-CFB path
+        # below would be silently dropped by the firmware.
+        if self.v3_version is not None:
+            return await self._set_wifi_v3(ssid, password, ap_mode, country)
+
         results = {}
 
         mode_byte = 0x01 if ap_mode else 0x02
