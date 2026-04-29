@@ -59,8 +59,24 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
   const pubKeyB64 = await cloudApi.getPubKey();
   if (!pubKeyB64) throw new Error('system/pubKey returned empty body');
 
-  const publicKey = loadPublicKey(pubKeyB64);
+  // Diagnostic: surface enough about the inputs to triage the
+  // "sk decode error" 500 from `device/bindExtData` without leaking the
+  // BLE key body. SN is fine to log — it's already in the URL bar of the
+  // device-detail page.
+  const pubKeyTrim = pubKeyB64.trim();
+  console.log(`[bindExtData] pubKey length=${pubKeyTrim.length}, head='${pubKeyTrim.slice(0, 32)}...', tail='...${pubKeyTrim.slice(-20)}'`);
+
+  let publicKey;
+  try {
+    publicKey = loadPublicKey(pubKeyTrim);
+  } catch (e) {
+    throw new Error(`pubKey parse failed: ${e instanceof Error ? e.message : String(e)} — first 32 chars: ${pubKeyTrim.slice(0, 32)}`);
+  }
+  const modulusBits = publicKey.n.bitLength();
+  console.log(`[bindExtData] modulus=${modulusBits}-bit, sn='${sn0}' (${sn0.length} chars), extData length=${gcm0.length}`);
+
   const snEncrypted = rsaEncrypt(sn0, publicKey);
+  console.log(`[bindExtData] snEncrypted length=${snEncrypted.length} (b64)`);
 
   const aesKey = await cloudApi.bindExtData(gcm0, snEncrypted);
   if (!aesKey) throw new Error('bindExtData returned empty key');
