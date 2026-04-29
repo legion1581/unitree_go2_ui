@@ -353,23 +353,25 @@ class BLESession:
         """Parse a V3 frame.
 
         Two layouts share the same magic prefix:
-          F1 (VERSION):  [magic(5)] [0xF1] [version] [needShowNetSwitch] [cksum]
-                         — fixed 9 bytes, NOT chunked. On G1 firmware ≥1.5.1
-                         this is what arrives in response to the V1/V2 SECRET
-                         handshake instead of an AES-CFB reply.
+          F1 (VERSION):  [magic(5)] [0xF1] [version] [needShowNetSwitch] …
+                         — single-frame; only the version + flag bytes are
+                         meaningful, the rest is padding/unused.
           F2 (GCM_KEY):  [magic(5)] [0xF2] [chunk_idx] [total] [data…] [cksum]
                          — chunked; reassemble until idx == total.
+
+        Checksums on V3 frames are not validated: the BLE notification often
+        carries padding past the logical frame end (frame size depends on
+        negotiated MTU), so a naive `sum % 256 == 0` check fails. The
+        Unitree app also skips this check — see BleDataHandler in the APK.
         """
         if len(raw) < len(V3_MAGIC) + 2:
             return
-        if (sum(raw) & 0xFF) != 0:
-            log.warning(f"V3 checksum mismatch ({len(raw)} bytes, cmd 0x{raw[5]:02X})")
-            return
 
         cmd = raw[5]
+        log.debug(f"V3 frame cmd=0x{cmd:02X} len={len(raw)}: {raw.hex()}")
 
         if cmd == Cmd.V3_VERSION:
-            if len(raw) < len(V3_MAGIC) + 4:
+            if len(raw) < len(V3_MAGIC) + 3:
                 return
             self.v3_version = raw[6]
             self.v3_results[Cmd.V3_VERSION] = str(raw[6])
@@ -382,18 +384,22 @@ class BLESession:
             return
         idx = raw[6]
         total = raw[7]
+        # Match the APK: data is bytes[8 : len-1] (last byte is the chunk
+        # checksum). UTF-8 decode tolerates trailing padding via rstrip below.
         data = raw[8:-1]
 
         bucket = self.v3_chunks.setdefault(cmd, {})
         bucket[idx] = data
+        log.info(f"V3 chunk cmd=0x{cmd:02X} idx={idx}/{total} +{len(data)}B → {data.hex()}")
 
         if total > 0 and len(bucket) >= total:
             assembled = b"".join(bucket[i] for i in sorted(bucket))
             try:
-                text = assembled.decode("utf-8").rstrip("\x00").strip()
-            except UnicodeDecodeError:
+                text = assembled.decode("utf-8", errors="replace").rstrip("\x00").strip()
+            except Exception:
                 text = assembled.hex()
             self.v3_results[cmd] = text
+            log.info(f"V3 reassembled cmd=0x{cmd:02X}: {text!r} ({len(text)} chars)")
             self.v3_chunks.pop(cmd, None)
             if self._loop:
                 self._loop.call_soon_threadsafe(self.v3_event.set)
