@@ -49,6 +49,19 @@ export class BtPopover {
   private remoteStatus: RemoteStatus = { connected: false, address: '', name: '' };
   private lastRenderedRemoteAddr = '';   // to avoid DOM rebuild when nothing changed
   private lastRenderedRobotAddr = '';
+  // Counts every status push the WS subscriber receives. Surface in the
+  // popup as a "♥ N" indicator so the user can see the BLE link / status
+  // monitor is alive even when no values are changing on screen. Reset
+  // each time a fresh BtPopover is constructed (popup open).
+  private heartbeatCount = 0;
+  private heartbeatLabel: HTMLElement | null = null;
+  // Last-seen V3 + GCM-decode state, used to gate the WiFi form. Reset
+  // when status changes to disconnected.
+  private v3Supported = false;
+  private gcmDecodeWorks = false;
+  // Wired by the WiFi form so the AES gate / /info refresh can re-enable
+  // it when V3 GCM actually starts decrypting.
+  private wifiGateApply: ((enabled: boolean) => void) | null = null;
   private connectingAddrs: Set<string> = new Set();  // addresses with an in-flight connect
   private unsubStatus: (() => void) | null = null;
   private unsubAdapters: (() => void) | null = null;
@@ -80,6 +93,8 @@ export class BtPopover {
 
     // Subscribe to backend topics — messages flow in via the shared singleton WS
     this.unsubStatus = btBackend().subscribe('status', (msg: { robot: RobotStatus; remote: RemoteStatus }) => {
+      this.heartbeatCount += 1;
+      if (this.heartbeatLabel) this.heartbeatLabel.textContent = `\u2665 ${this.heartbeatCount}`;
       this.robotStatus = msg.robot;
       this.remoteStatus = msg.remote;
       this.updateRobotSection();
@@ -356,6 +371,10 @@ export class BtPopover {
       // Drop any stale cache for the previously-connected robot so a fresh
       // connection re-fetches /info instead of painting old values.
       robotPanelCache.delete(this.lastRenderedRobotAddr);
+      // Reset gate state — a different robot may not even speak V3.
+      this.v3Supported = false;
+      this.gcmDecodeWorks = false;
+      this.wifiGateApply = null;
       this.updateEmptyPlaceholder();
       return;
     }
@@ -371,13 +390,20 @@ export class BtPopover {
     // Connected header + info. The BLE address is also useful as a MAC
     // placeholder when binding the robot — V3 firmware (G1 ≥ 1.5.1)
     // doesn't expose AP MAC over plain V1/V2 BLE, so the bind form needs
-    // a paste source. Hand the user a Copy button.
+    // a paste source. Hand the user a Copy button. The heartbeat label
+    // increments on every status push so the user sees the BLE link is
+    // alive even when no fields are changing.
     const info = document.createElement('div');
     info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
     const addrText = document.createElement('span');
     addrText.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
     info.appendChild(addrText);
     if (this.robotStatus.address) info.appendChild(this.copyButton(this.robotStatus.address));
+    this.heartbeatLabel = document.createElement('span');
+    this.heartbeatLabel.style.cssText = 'font-size:11px;color:#888;margin-left:auto;font-family:monospace;';
+    this.heartbeatLabel.title = 'Status heartbeats received from BLE backend';
+    this.heartbeatLabel.textContent = `\u2665 ${this.heartbeatCount}`;
+    info.appendChild(this.heartbeatLabel);
     this.robotBody.appendChild(info);
 
     // Info rows (serial number, AP MAC) — lazy loaded.
@@ -427,6 +453,11 @@ export class BtPopover {
         infoRows.appendChild(hint);
       }
       infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
+      // /info returning a real AP MAC on V3 firmware proves the per-device
+      // AES key is decrypting frames correctly (the F1 fallback only
+      // populates SN, never AP MAC). That's our signal to ungate WiFi.
+      this.gcmDecodeWorks = !!macVal;
+      this.refreshWifiGate();
       const proto = document.createElement('div');
       proto.setAttribute('data-proto-row', '');
       proto.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}`;
@@ -465,6 +496,8 @@ export class BtPopover {
 
     const renderV3 = (gcm: V3KeyProbe, ver: V3Probe): void => {
       v3Supported = gcm.supported || ver.supported;
+      this.v3Supported = v3Supported;
+      this.refreshWifiGate();
       renderProtoRow();
       const hint = infoRows.querySelector<HTMLElement>('[data-v3-info-hint]');
       if (hint && v3Supported) {
@@ -597,9 +630,11 @@ export class BtPopover {
     this.robotBody.appendChild(applyRow);
     this.robotBody.appendChild(wifiStatus);
 
-    // Disable the WiFi form on V3 firmware until a 32-hex AES-128 key is
-    // available. Disconnect stays clickable. Disabled state is updated as
-    // the user types into the AES gate.
+    // WiFi gate: V1/V2 firmware is always enabled; V3 firmware stays
+    // greyed out until BOTH a 32-hex AES-128 key is in the input AND
+    // /info has confirmed the key actually GCM-decrypts (real AP MAC
+    // back from the robot, not just the F1-extracted SN). Disconnect
+    // button stays clickable in either case.
     const setWifiEnabled = (enabled: boolean): void => {
       const dim = enabled ? '' : '0.4';
       [ssidInput.input, pwdInput.input, countrySelect.select, applyBtn].forEach((el) => {
@@ -610,8 +645,24 @@ export class BtPopover {
       });
       [staBtn, apBtn].forEach((b) => { b.disabled = !enabled; b.style.opacity = dim; });
     };
-    aesGate.onChange(setWifiEnabled);
-    setWifiEnabled(aesGate.isReady());
+    this.wifiGateApply = setWifiEnabled;
+    aesGate.onChange(() => this.refreshWifiGate());
+    // Initial gate evaluation — pulls v3Supported / gcmDecodeWorks from
+    // whatever the V3 + /info promises have set so far.
+    this.aesGateReady = aesGate.isReady;
+    this.refreshWifiGate();
+  }
+
+  /** Re-evaluate the WiFi form's enabled state from the current
+   *  (v3Supported, gcmDecodeWorks, aesGateReady) tuple. Cheap, idempotent.
+   *  V1/V2 firmware: always enabled.
+   *  V3 firmware: enabled iff AES key is 32 hex chars AND /info has
+   *  returned a real AP MAC (proof the key decrypts). */
+  private aesGateReady: () => boolean = () => false;
+  private refreshWifiGate(): void {
+    if (!this.wifiGateApply) return;
+    const enabled = !this.v3Supported || (this.aesGateReady() && this.gcmDecodeWorks);
+    this.wifiGateApply(enabled);
   }
 
   /**
