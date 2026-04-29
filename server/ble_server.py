@@ -290,14 +290,14 @@ class BLESession:
                     t.cancel()
 
     def _classify_handshake(self) -> bool:
-        """Inspect what arrived during the handshake wait and update
-        `self.protocol`. Returns True if the response is a recognized
-        handshake reply."""
+        """Inspect what arrived during the handshake wait. Returns True if
+        a recognized handshake reply was seen. We deliberately don't mutate
+        `self.protocol` here — the transport label (ffe0/nus) stays clean,
+        and V3 detection is surfaced separately via `/v3/version` so the
+        UI doesn't end up with a doubled suffix."""
         if self.response is not None and len(self.response) >= 4 and self.response[2] == int(Cmd.HANDSHAKE):
-            self.protocol = f"{self.protocol}+v{self.response[3]}"
             return True
         if self.v3_version is not None:
-            self.protocol = f"{self.protocol}+v3"
             return True
         return False
 

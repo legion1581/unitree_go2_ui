@@ -22,6 +22,25 @@ interface RemoteState {
   rssi: number;
 }
 
+/**
+ * Decode the BLE-returned GCM key (44 ASCII chars of unpadded base64,
+ * representing 33 raw bytes — see docs/bluetooth-v3.md) to lowercase hex
+ * for display. Returns null if the input doesn't look like base64.
+ */
+function decodeKeyToHex(b64: string): string | null {
+  try {
+    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+    const bin = atob(padded);
+    let hex = '';
+    for (let i = 0; i < bin.length; i++) {
+      hex += bin.charCodeAt(i).toString(16).padStart(2, '0');
+    }
+    return hex;
+  } catch {
+    return null;
+  }
+}
+
 export class BtPopover {
   private overlay: HTMLElement;
   private panel: HTMLElement;
@@ -109,6 +128,21 @@ export class BtPopover {
     btn.style.cssText = `padding:6px 12px;font-size:12px;border-radius:5px;cursor:pointer;font-weight:500;`;
     btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  private keyRow(label: string, value: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;';
+    const lbl = document.createElement('span');
+    lbl.style.color = '#666';
+    lbl.style.flexShrink = '0';
+    lbl.textContent = label;
+    const val = document.createElement('span');
+    val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    val.title = value;
+    val.textContent = value;
+    row.append(lbl, val, this.copyButton(value));
+    return row;
   }
 
   private copyButton(text: string): HTMLButtonElement {
@@ -372,18 +406,14 @@ export class BtPopover {
         v3Rows.appendChild(row);
       }
       if (gcm.supported && gcm.key) {
-        const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;';
-        const lbl = document.createElement('span');
-        lbl.style.color = '#666';
-        lbl.textContent = 'GCM Key:';
-        const val = document.createElement('span');
-        val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
-        val.title = gcm.key;
-        val.textContent = gcm.key;
-        const copy = this.copyButton(gcm.key);
-        row.append(lbl, val, copy);
-        v3Rows.appendChild(row);
+        // The robot returns the key as 44 unpadded-base64 characters (33 raw
+        // bytes when decoded). Show both forms with copy buttons so the user
+        // can paste either into other tools without round-tripping by hand.
+        const decoded = decodeKeyToHex(gcm.key);
+        v3Rows.appendChild(this.keyRow('GCM Key (b64):', gcm.key));
+        if (decoded) {
+          v3Rows.appendChild(this.keyRow('GCM Key (hex):', decoded));
+        }
       }
     });
 
