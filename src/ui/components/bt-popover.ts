@@ -633,7 +633,7 @@ export class BtPopover {
         wifiStatus.textContent = 'Awaiting connection...';
       }, 4000);
       try {
-        const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean> }>('/wifi', {
+        const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean>; error: string | null }>('/wifi', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, password: pwdInput.input.value, ap_mode: apMode, country: countrySelect.select.value }),
@@ -641,9 +641,25 @@ export class BtPopover {
         if (resp.success) {
           wifiStatus.textContent = 'WiFi configured';
           wifiStatus.style.color = '#66bb6a';
+        } else if (resp.error) {
+          // The backend already mapped the failed step + result code to a
+          // human message — prefer it over the raw key list.
+          wifiStatus.textContent = resp.error;
+          wifiStatus.style.color = '#ff9800';
         } else {
-          const failed = Object.entries(resp.details).filter(([, v]) => !v).map(([k]) => k).join(', ');
-          wifiStatus.textContent = `Failed: ${failed}`;
+          // Pre-ready failure (TYPE/SSID/PWD/COUNTRY rejected by the
+          // firmware). Map the failed key to a human label.
+          const stepLabels: Record<string, string> = {
+            mode: 'set mode',
+            ssid: 'set SSID',
+            password: 'set password',
+            country: 'apply country / start AP',
+          };
+          const failed = Object.entries(resp.details)
+            .filter(([, v]) => v === false)
+            .map(([k]) => stepLabels[k] || k)
+            .join(', ');
+          wifiStatus.textContent = failed ? `Failed at: ${failed}` : 'Failed';
           wifiStatus.style.color = '#ff9800';
         }
       } catch (e) {
@@ -720,18 +736,15 @@ export class BtPopover {
   }
 
   /** Pick a small "(source)" tag for the SN field that tells the user
-   *  which BLE path produced the value, and whether F1 and GCM
-   *  cross-validate. Returns null if there's no SN at all. */
+   *  which BLE path produced the value. The combined F1/AES tag was
+   *  dropped — when both paths agree (the common case) the cross-check
+   *  is redundant, and a mismatch is rare enough to surface only via
+   *  logs. Returns null if there's no SN at all. */
   private snSourceTag(rInfo: RobotInfo): { label: string; color: string } | null {
     const f1 = (rInfo.f1_sn_partial || '').trim();
     const gcm = (rInfo.sn_gcm || '').trim();
     const v12 = (rInfo.sn_v1v2 || '').trim();
     if (!f1 && !gcm && !v12) return null;
-    if (f1 && gcm) {
-      return f1 === gcm
-        ? { label: 'F1 ✓ AES', color: '#66bb6a' }
-        : { label: `F1≠AES (F1=${f1})`, color: '#e57373' };
-    }
     if (gcm) return { label: 'V3 AES', color: '#66bb6a' };
     if (v12) return { label: 'V1/V2', color: '#66bb6a' };
     if (f1) return { label: 'from V3 F1', color: '#888' };

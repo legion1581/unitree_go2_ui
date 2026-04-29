@@ -248,13 +248,13 @@ class BLESession:
         if self.aes_key is not None and self.v3_version is not None:
             plain = decrypt_gcm_v3(raw, self.aes_key)
             if plain is not None:
-                log.info(f"V3 GCM-decrypted {len(raw)}B → {len(plain)}B inner: {plain.hex()}")
+                log.debug(f"V3 GCM-decrypted {len(raw)}B → {len(plain)}B inner: {plain.hex()}")
             else:
                 # Helpful diagnostic: a non-magic notify on V3 firmware that
                 # didn't GCM-decode is probably either (a) wrong AES key, or
                 # (b) something else entirely. Log the first 32B so the user
                 # can tell us what came in.
-                log.info(f"V3 GCM decrypt FAILED on {len(raw)}B notify (first 32B: {raw[:32].hex()})")
+                log.debug(f"V3 GCM decrypt FAILED on {len(raw)}B notify (first 32B: {raw[:32].hex()})")
 
         if plain is None:
             try:
@@ -553,7 +553,7 @@ class BLESession:
         if self.aes_key is None or not self.connected:
             return
         pkt = build_gcm_v3(0x0b, b"", self.aes_key)
-        log.info(f"BLE → GET_TIME_3 (V3 handshake init, op=0x0b): {len(pkt)}B {pkt[:32].hex()}{'…' if len(pkt) > 32 else ''}")
+        log.debug(f"BLE → GET_TIME_3 (V3 handshake init, op=0x0b): {len(pkt)}B {pkt[:32].hex()}{'…' if len(pkt) > 32 else ''}")
         await self._write(pkt)
 
     async def _wait_until(self, predicate, total_timeout: float) -> bool:
@@ -595,7 +595,7 @@ class BLESession:
             if self.aes_key is not None:
                 self.sn_gcm = None
                 pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
-                log.info(f"BLE → GET_SN (V3 GCM, op=0x02): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
+                log.debug(f"BLE → GET_SN (V3 GCM, op=0x02): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
                 await self._write(pkt)
                 # Loop on the shared event because CHECK_3 acks can fire it
                 # before our SN reply arrives; only stop when sn_result has
@@ -609,7 +609,7 @@ class BLESession:
         # V1/V2 firmware: AES-CFB GET_SN with chunked reply.
         self.sn_v1v2 = None
         pkt = build_simple(Cmd.GET_SN)
-        log.info(f"BLE → GET_SN (V1/V2 AES-CFB, op=0x02): {len(pkt)}B {pkt.hex()}")
+        log.debug(f"BLE → GET_SN (V1/V2 AES-CFB, op=0x02): {len(pkt)}B {pkt.hex()}")
         await self._write(pkt)
         await self._wait_until(lambda: self.sn_result is not None, 5.0)
         await asyncio.sleep(0.5)
@@ -624,7 +624,7 @@ class BLESession:
             self.event.clear()
             self.response = None
             pkt = build_gcm_v3(Cmd.GET_AP_MAC, b"", self.aes_key)
-            log.info(f"BLE → GET_AP_MAC (V3 GCM, op=0x07): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
+            log.debug(f"BLE → GET_AP_MAC (V3 GCM, op=0x07): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
             await self._write(pkt)
             # Loop on event until self.response holds the actual GET_AP_MAC
             # reply (op 0x07). Earlier CHECK_3 acks that share the event
@@ -643,7 +643,7 @@ class BLESession:
             return None
 
         pkt = build_simple(Cmd.GET_AP_MAC)
-        log.info(f"BLE → GET_AP_MAC (V1/V2 AES-CFB, op=0x07): {len(pkt)}B {pkt.hex()}")
+        log.debug(f"BLE → GET_AP_MAC (V1/V2 AES-CFB, op=0x07): {len(pkt)}B {pkt.hex()}")
         resp = await self._write_and_wait(pkt)
         if resp and len(resp) > 4:
             mac_bytes = resp[3:resp[1] - 1]
@@ -678,7 +678,7 @@ class BLESession:
                 return
             self.v3_version = raw[6]
             self.v3_results[Cmd.V3_VERSION] = str(raw[6])
-            log.info(f"V3 F1 frame: {len(raw)}B {raw.hex()}")
+            log.debug(f"V3 F1 frame: {len(raw)}B {raw.hex()}")
             # F1 layout (G1 ≥ 1.5.1):
             #   [0..4] magic | [5] 0xF1 | [6] version | [7] needShowNetSwitch
             #   [8..11] reserved (zeros)              | [12] sn_len
@@ -706,7 +706,7 @@ class BLESession:
 
         bucket = self.v3_chunks.setdefault(cmd, {})
         bucket[idx] = data
-        log.info(f"V3 chunk cmd=0x{cmd:02X} idx={idx}/{total} +{len(data)}B → {data.hex()}")
+        log.debug(f"V3 chunk cmd=0x{cmd:02X} idx={idx}/{total} +{len(data)}B → {data.hex()}")
 
         if total > 0 and len(bucket) >= total:
             assembled = b"".join(bucket[i] for i in sorted(bucket))
@@ -765,7 +765,7 @@ class BLESession:
             else:
                 pkt = build_gcm_v3(op, data, self.aes_key)
             shape = "chunked" if chunked else "simple"
-            log.info(f"BLE → {label} (V3 GCM {shape}, op=0x{op:02x}): {len(pkt)}B; data {len(data)}B {data[:32].hex()}{'…' if len(data) > 32 else ''}")
+            log.debug(f"BLE → {label} (V3 GCM {shape}, op=0x{op:02x}): {len(pkt)}B; data {len(data)}B {data[:32].hex()}{'…' if len(data) > 32 else ''}")
             await self._write(pkt)
 
             def have_ack() -> bool:
@@ -816,12 +816,17 @@ class BLESession:
         await self._wait_until(have_ready, 40.0)
         r = self.response
         if r and len(r) >= 4 and r[0] == 0x51 and r[2] == 0x08:
-            ok = (r[3] == 0x01)
-            log.info(f"V3 AP_READY (op=0x08): result=0x{r[3]:02x} ({'ok' if ok else 'fail'})")
+            code = r[3]
+            ok = (code == 0x01)
+            log.info(f"V3 AP_READY (op=0x08): result=0x{code:02x} ({'ok' if ok else 'fail'})")
             results["ready"] = ok
+            if not ok:
+                action = "AP failed to start" if ap_mode else "Failed to join WiFi"
+                results["error"] = f"{action} (robot returned code 0x{code:02x})"
         else:
             log.info("V3 AP_READY (op=0x08) timed out within 40s — AP may still come up async")
             results["ready"] = False
+            results["error"] = "Timed out waiting for the robot's ready signal (40 s)"
         return results
 
     async def set_wifi(self, ssid: str, password: str, ap_mode: bool = False, country: str = "US") -> dict:
@@ -1366,8 +1371,9 @@ async def set_wifi(req: WifiRequest):
     if not session.connected:
         raise HTTPException(400, "Not connected")
     results = await session.set_wifi(req.ssid, req.password, req.ap_mode, req.country)
-    success = all(results.values())
-    return {"success": success, "details": results}
+    error = results.pop("error", None) if isinstance(results, dict) else None
+    success = all(v for v in results.values() if isinstance(v, bool))
+    return {"success": success, "details": results, "error": error}
 
 
 # ─── Remote Control Routes ───────────────────────────────────────────
