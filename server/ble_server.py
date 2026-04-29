@@ -292,15 +292,15 @@ class BLESession:
             self._loop.call_soon_threadsafe(self.event.set)
 
     def _reply_check3(self, plain: bytes) -> None:
-        """Asyncio-loop-side handler for the V3 0x0b timestamp request:
+        """Asyncio-loop-side handler for the V3 0x0b timestamp response:
         parse the uint64 timestamp out of the inner frame, add 1, encrypt
-        a CHECK_3 (0x0c) reply with the AES key, and write it. This is
-        the same handshake step the apk does in BleDataHandler — without
-        it the firmware won't issue subsequent GET_AP_MAC / GET_SN."""
-        if self.aes_key is None or self._device is None:
+        a CHECK_3 (0x0c) reply with the AES key, and write it. The robot
+        accepts subsequent GET_AP_MAC / GET_SN only after this exchange.
+        Triggered both by the unsolicited probe and by the response to our
+        kickoff GET_TIME_3 send in `_kick_v3_handshake`."""
+        if self.aes_key is None or self._device is None or self._loop is None:
             return
         try:
-            # plain[1] = total length; data = plain[3 : plain[1]-1]
             data = plain[3:plain[1] - 1]
             if len(data) < 8:
                 return
@@ -308,7 +308,9 @@ class BLESession:
             reply_data = (ts + 1).to_bytes(8, "little")
             pkt = build_gcm_v3(0x0c, reply_data, self.aes_key)
             log.info(f"V3 CHECK_3 reply: ts={ts}+1 ({len(pkt)}B)")
-            asyncio.get_event_loop().run_in_executor(None, self._write_sync, pkt)
+            # Off-thread the BLE write — `_write_sync` blocks on pygatt and
+            # we're already on the asyncio loop here.
+            self._loop.run_in_executor(None, self._write_sync, pkt)
         except Exception as e:
             log.warning(f"V3 CHECK_3 reply failed: {e}")
 
@@ -493,7 +495,12 @@ class BLESession:
 
     def set_aes_key(self, hex_key: str) -> bool:
         """Install the per-device AES-128 key (32 hex chars) used to GCM-
-        decrypt V3 firmware replies. Returns True on success."""
+        decrypt V3 firmware replies. Returns True on success.
+
+        Caller is responsible for firing `_kick_v3_handshake()` afterwards
+        — the V3 firmware silently drops `GET_SN` / `GET_AP_MAC` /
+        `WIFI_*` until the handshake (GET_TIME_3 → robot timestamp →
+        CHECK_3) has completed."""
         h = hex_key.strip().lower()
         if not h or len(h) % 2 != 0:
             return False
@@ -504,8 +511,25 @@ class BLESession:
         if len(raw) not in (16, 24, 32):
             return False
         self.aes_key = raw
+        # Reset per-path SNs so old values aren't mistaken for a fresh
+        # GCM-decrypt success after a key change.
+        self.sn_gcm = None
         log.info(f"V3 AES key set ({len(raw)} bytes)")
         return True
+
+    async def _kick_v3_handshake(self) -> None:
+        """Send `GET_TIME_3` (op `0x0b`) GCM-encrypted with the current
+        AES key. This is what the apk does in response to its
+        `StartBleCheckEvent` (BluetoothService.java:614) — the robot
+        replies with a uint64 timestamp; our `_reply_check3` handler
+        then echoes timestamp+1 as `CHECK_3` (`0x0c`), completing the
+        handshake. Without this kick, V3 firmware ignores all
+        subsequent V1/V2-style command requests."""
+        if self.aes_key is None or not self.connected:
+            return
+        pkt = build_gcm_v3(0x0b, b"", self.aes_key)
+        log.info(f"BLE → GET_TIME_3 (V3 handshake init, op=0x0b): {len(pkt)}B {pkt[:32].hex()}{'…' if len(pkt) > 32 else ''}")
+        await self._write(pkt)
 
     async def get_serial_number(self) -> Optional[str]:
         """Resolve the SN. Path depends on detected firmware:
@@ -1175,14 +1199,16 @@ async def info():
 @app.post("/v3/aes-key")
 async def v3_set_aes_key(key: str):
     """Install the per-device AES-128 key (32 hex chars) used to decrypt
-    V3 (G1 ≥ 1.5.1) GCM-wrapped BLE frames. Once set, subsequent /info
-    calls fetch SN / AP MAC via GCM-encrypted GET_SN / GET_AP_MAC; the
-    backend also auto-replies to the firmware's 0x0b timestamp probe with
-    a CHECK_3 (0x0c) so the V3 command chain unblocks."""
+    V3 (G1 ≥ 1.5.1) GCM-wrapped BLE frames, then kick off the V3
+    handshake by sending `GET_TIME_3` (op `0x0b`). The robot responds
+    with a timestamp; our notify handler echoes back `CHECK_3` (`0x0c`)
+    and the firmware then accepts subsequent `GET_SN` / `GET_AP_MAC` /
+    `WIFI_*` commands."""
     if not session.connected:
         raise HTTPException(400, "Not connected")
     if not session.set_aes_key(key):
         raise HTTPException(400, "Invalid AES key (expected 32/48/64 hex chars)")
+    await session._kick_v3_handshake()
     return {"ok": True, "key_bytes": len(session.aes_key) if session.aes_key else 0}
 
 
