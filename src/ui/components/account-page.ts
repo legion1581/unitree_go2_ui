@@ -3,7 +3,7 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
-import { deriveAesKey, getCachedAesKey, clearCachedAesKey } from '../../api/aes-key-derive';
+import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey } from '../../api/aes-key-derive';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -304,6 +304,12 @@ export class AccountPage {
     this.content.innerHTML = '<div style="color:#666;padding:20px;">Loading devices...</div>';
     try {
       const devices = await cloudApi.listDevices();
+      // Seed the local AES-key cache from any cloud-stored keys so the
+      // data2=3 connect path doesn't have to prompt for SNs that have
+      // already been bound (e.g. via the official Unitree app).
+      for (const d of devices) {
+        if (d.key && d.key.trim()) setCachedAesKey(d.sn, d.key.trim());
+      }
       this.content.innerHTML = '';
 
       const hdr = document.createElement('div');
@@ -379,7 +385,7 @@ export class AccountPage {
     if (dev.model) this.infoRow(tile, 'Model', dev.model);
     if (dev.connIp) this.infoRow(tile, 'IP', dev.connIp, true);
     if (dev.connMode) this.infoRow(tile, 'Mode', dev.connMode);
-    if (dev.key) this.infoRow(tile, 'GCM Key', dev.key.length > 32 ? dev.key.slice(0, 32) + '...' : dev.key, true);
+    if (dev.key) this.infoRow(tile, 'AES-128 Key', dev.key.length > 32 ? dev.key.slice(0, 32) + '...' : dev.key, true);
 
     // Buttons row
     const btns = document.createElement('div');
@@ -399,93 +405,104 @@ export class AccountPage {
     shareBtn.addEventListener('click', () => this.showShareView(dev));
     btns.appendChild(shareBtn);
 
-    // AES-128 derive panel — opens inline below the tile when clicked.
-    // The SN is pulled from `dev` so the user only pastes the BLE GCM key.
-    // Cached keys are surfaced immediately so a re-visit doesn't require
-    // pasting again.
-    const aesBtn = document.createElement('button');
-    aesBtn.className = 'acct-btn acct-btn-secondary';
-    aesBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
-    aesBtn.textContent = 'AES Key';
-    btns.appendChild(aesBtn);
-
     tile.appendChild(btns);
-
-    const aesPanel = this.buildAesPanel(dev);
-    tile.appendChild(aesPanel);
-    aesBtn.addEventListener('click', () => {
-      aesPanel.style.display = aesPanel.style.display === 'none' ? 'block' : 'none';
-    });
     return tile;
   }
 
   /**
-   * Inline AES-128 derivation panel: paste BLE GCM key → POST bindExtData →
-   * show the 16-byte key with a Copy button. Result is cached per-SN in
-   * localStorage and reloaded on subsequent renders.
+   * Section that renders the device's AES-128 key state and a paste field
+   * for the BLE GCM key + Derive button. Used in the device-details view.
+   * Source of truth, in order:
+   *   1. dev.key                    — cloud-stored from a prior bind
+   *   2. localStorage cache         — derived in this app, persisted
+   *   3. paste-and-derive workflow  — sends device/bindExtData
    */
-  private buildAesPanel(dev: RobotDevice): HTMLElement {
-    const panel = document.createElement('div');
-    panel.style.cssText = 'display:none;margin-top:10px;padding:10px;border:1px solid #1a1d23;border-radius:6px;background:rgba(0,0,0,0.15);';
+  private buildAesSection(dev: RobotDevice): HTMLElement {
+    const sec = this.section('AES-128 Key (data2=3)');
+    const blurb = document.createElement('div');
+    blurb.style.cssText = 'font-size:11px;color:#888;margin:-2px 0 10px;line-height:1.5;';
+    blurb.textContent = 'Required by G1 firmware ≥1.5.1 to authenticate the WebRTC SDP handshake. Paste the 44-char BLE GCM key from the BT popover and click Derive — the cloud trades it for this 16-byte AES-128 key.';
+    sec.appendChild(blurb);
 
-    const lbl = document.createElement('div');
-    lbl.style.cssText = 'font-size:11px;color:#888;margin-bottom:6px;';
-    lbl.textContent = `Paste BLE GCM key (44-char base64) for SN ${dev.sn}:`;
-    panel.appendChild(lbl);
+    const display = document.createElement('div');
+    display.style.cssText = 'margin-bottom:10px;';
+    sec.appendChild(display);
+
+    const renderKey = (label: string, key: string): void => {
+      display.innerHTML = '';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'color:#888;font-size:11px;flex-shrink:0;';
+      lbl.textContent = label;
+      const val = document.createElement('span');
+      val.style.cssText = 'color:#66bb6a;font-family:monospace;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      val.title = key;
+      val.textContent = key;
+      row.append(lbl, val, this.copyBtn(key));
+      const clear = document.createElement('button');
+      clear.className = 'acct-btn acct-btn-secondary';
+      clear.style.cssText = 'padding:2px 8px;font-size:10px;';
+      clear.textContent = 'Clear cache';
+      clear.addEventListener('click', () => {
+        clearCachedAesKey(dev.sn);
+        renderEmpty();
+      });
+      row.appendChild(clear);
+      display.appendChild(row);
+    };
+
+    const renderEmpty = (): void => {
+      display.innerHTML = '<div style="color:#888;font-size:11px;">No key cached for this device — paste the BLE GCM key below.</div>';
+    };
+
+    // Initial state: cloud-returned key trumps local cache; otherwise show cached.
+    const initial = (dev.key && dev.key.trim()) || getCachedAesKey(dev.sn);
+    if (initial) {
+      // Mirror cloud key into the local cache so the connect path picks it
+      // up without a round-trip to the cloud.
+      if (dev.key) setCachedAesKey(dev.sn, dev.key.trim());
+      renderKey(dev.key ? 'From cloud:' : 'Cached:', initial.trim());
+    } else {
+      renderEmpty();
+    }
+
+    const inputRow = document.createElement('div');
+    inputRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    sec.appendChild(inputRow);
 
     const input = document.createElement('input');
     input.type = 'text';
     input.spellcheck = false;
     input.autocomplete = 'off';
-    input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+    input.placeholder = 'BLE GCM key (44-char base64)';
     input.className = 'acct-input';
-    input.style.cssText = 'width:100%;padding:6px 8px;font-family:monospace;font-size:11px;box-sizing:border-box;';
-    panel.appendChild(input);
-
-    const status = document.createElement('div');
-    status.style.cssText = 'font-size:11px;color:#888;margin-top:6px;font-family:monospace;word-break:break-all;';
-    panel.appendChild(status);
-
-    const renderResult = (key: string): void => {
-      status.innerHTML = '';
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:6px;';
-      const k = document.createElement('span');
-      k.style.cssText = 'flex:1;color:#66bb6a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      k.title = key;
-      k.textContent = `AES-128: ${key}`;
-      row.appendChild(k);
-      row.appendChild(this.copyBtn(key));
-      const clear = document.createElement('button');
-      clear.className = 'acct-btn acct-btn-secondary';
-      clear.style.cssText = 'padding:2px 8px;font-size:10px;';
-      clear.textContent = 'Clear';
-      clear.addEventListener('click', () => {
-        clearCachedAesKey(dev.sn);
-        status.textContent = 'Cleared cached key.';
-        input.value = '';
-      });
-      row.appendChild(clear);
-      status.appendChild(row);
-    };
-
-    const cached = getCachedAesKey(dev.sn);
-    if (cached) renderResult(cached);
+    input.style.cssText = 'flex:1;padding:6px 10px;font-family:monospace;font-size:11px;box-sizing:border-box;';
+    inputRow.appendChild(input);
 
     const submit = document.createElement('button');
     submit.className = 'acct-btn';
-    submit.style.cssText = 'margin-top:6px;padding:6px 14px;font-size:12px;';
+    submit.style.cssText = 'padding:6px 14px;font-size:12px;flex-shrink:0;';
     submit.textContent = 'Derive';
+    inputRow.appendChild(submit);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:11px;color:#888;margin-top:6px;min-height:14px;';
+    sec.appendChild(status);
+
     submit.addEventListener('click', async () => {
       const gcm = input.value.trim();
-      if (!gcm) { status.textContent = 'Paste the BLE GCM key first.'; return; }
+      if (!gcm) { status.style.color = '#e57373'; status.textContent = 'Paste the BLE GCM key first.'; return; }
       submit.disabled = true;
       submit.textContent = 'Deriving…';
       status.style.color = '#888';
       status.textContent = 'Calling device/bindExtData…';
       try {
         const aes = await deriveAesKey(dev.sn, gcm);
-        renderResult(aes);
+        status.style.color = '#66bb6a';
+        status.textContent = 'Derived & cached.';
+        input.value = '';
+        renderKey('Derived:', aes);
       } catch (e) {
         status.style.color = '#e57373';
         status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -494,8 +511,8 @@ export class AccountPage {
         submit.textContent = 'Derive';
       }
     });
-    panel.appendChild(submit);
-    return panel;
+
+    return sec;
   }
 
   private copyBtn(text: string): HTMLButtonElement {
@@ -540,7 +557,7 @@ export class AccountPage {
       if (dev.connMode) this.infoRow(s, 'Mode', dev.connMode);
       if (dev.code) this.infoRow(s, 'Code', dev.code, true);
       this.infoRow(s, 'Owner', dev.own === 1 ? 'Yes' : 'Shared');
-      if (dev.key) this.infoRow(s, 'GCM Key', dev.key, true);
+      if (dev.key) this.infoRow(s, 'AES-128 Key', dev.key, true);
       if (dev.remark) this.infoRow(s, 'Remark', dev.remark);
       this.content.appendChild(s);
 
@@ -583,6 +600,13 @@ export class AccountPage {
       } catch { /* ignore */ }
 
 
+
+      // AES-128 key — derive (or display) the per-device key used for the
+      // WebRTC `data2=3` SDP handshake. If the cloud already returned one
+      // on `device/bind/list` (i.e. the device was bound via the official
+      // app), it's pre-populated and cached; otherwise the user pastes the
+      // 44-char BLE GCM key here and we POST device/bindExtData.
+      this.content.appendChild(this.buildAesSection(dev));
 
       // Danger zone
       const danger = this.section('Danger Zone');
