@@ -217,10 +217,16 @@ class BLESession:
         # GCM decrypt first when an AES key is available; fall back to the
         # legacy V1/V2 AES-CFB path if GCM doesn't apply.
         plain: Optional[bytes] = None
-        if self.aes_key is not None:
+        if self.aes_key is not None and self.v3_version is not None:
             plain = decrypt_gcm_v3(raw, self.aes_key)
             if plain is not None:
                 log.info(f"V3 GCM-decrypted {len(raw)}B → {len(plain)}B inner: {plain.hex()}")
+            else:
+                # Helpful diagnostic: a non-magic notify on V3 firmware that
+                # didn't GCM-decode is probably either (a) wrong AES key, or
+                # (b) something else entirely. Log the first 32B so the user
+                # can tell us what came in.
+                log.info(f"V3 GCM decrypt FAILED on {len(raw)}B notify (first 32B: {raw[:32].hex()})")
 
         if plain is None:
             try:

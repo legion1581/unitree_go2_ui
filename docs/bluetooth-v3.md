@@ -116,8 +116,8 @@ def on_v3_frame(raw: bytes) -> tuple[int, str] | None:
 
 | Command | ID | Request payload | Response payload |
 |---|---|---|---|
-| VERSION | `0xF1` | (none) | Single frame: `[magic][F1][version_byte][needShowNetSwitch_flag][cksum]` (not chunked). On G1 firmware ≥1.5.1 this is also pushed in response to the V1/V2 SECRET handshake. |
-| GCM_KEY | `0xF2` | (none) | 44 ASCII chars of unpadded base64, delivered as 4 F2 chunks of 11 chars each |
+| VERSION | `0xF1` | (none) | Single frame: `[magic][F1][version_byte][needShowNetSwitch_flag][reserved(4)][sn_len(1)][sn_ascii][cksum]` — **the SN is embedded** length-prefixed at offset 12. Truncated to 7 chars under MTU=23; full 16 chars under MTU=104. Also pushed in response to the V1/V2 SECRET handshake. |
+| GCM_KEY | `0xF2` | (none) | 344 ASCII chars of base64 (256 raw bytes, RSA-encrypted), delivered as 4 chunks. Truncated to 11 chars/chunk under MTU=23. |
 
 ### `0xF1` VERSION
 
@@ -125,11 +125,29 @@ Returns the BLE module version string the robot reports for itself. Useful as a 
 
 ### `0xF2` GCM_KEY
 
-Returns the per-device GCM key as **44 ASCII characters of unpadded base64** (`A-Z`, `a-z`, `0-9`, `+`, `/`; trailing `=` is stripped). 44 unpadded base64 characters decode to 33 bytes — observed format on G1 firmware 1.5.1, e.g. `RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMUncli5kbTkeh`.
+> **Important: this is misnamed.** What the firmware returns is **not** an
+> AES-128-GCM key — it's a **2048-bit RSA-encrypted blob** (256 bytes,
+> base64-encoded as 344 chars including `==` padding) that wraps the actual
+> per-device key plus device metadata. The cloud's `device/bindExtData`
+> endpoint RSA-decrypts it server-side.
 
-The reply is delivered as 4 chunked F2 frames (`idx=1..4`, `total=4`), each carrying 11 ASCII characters of the base64 string in `[data]`. Concatenate them in `idx` order; do not decode per chunk. The key is generated on the robot at first boot and persisted in flash, so the same string is returned on every read.
+The reply is delivered as **4 chunked F2 frames** (`idx=1..4`, `total=4`).
+The data carried per chunk depends on the negotiated BLE MTU:
 
-On the robot's filesystem the key is stored at `/unitree/etc/key/aes_key.bin` (verified against the on-robot `btgatt-server` binary).
+| MTU | Notify size | Data per chunk | Reassembled length |
+|---|---|---|---|
+| 23 (default) | 20 B | 11 B | 44 chars (truncated) |
+| 104 (apk default) | 101 B | 86 B | 344 chars (full) |
+
+**You must negotiate MTU ≥ 32 to get the full payload** — the apk does
+`exchange_mtu(104)` immediately after subscribing to notifications. Under
+the default MTU=23 each chunk is truncated and the cloud subsequently
+fails to RSA-decrypt the input with `"sk decode error"`.
+
+The on-robot key file is `/unitree/etc/key/aes_key.bin` — but it's the
+*encrypted* package, not the raw AES-128 key. The 16-byte key the cloud
+returns to the client (and stores as `dev.key`) is what's actually used
+for `data2=3` SDP authentication and for GCM-wrapping V1/V2 BLE commands.
 
 ## GCM Key Usage
 
