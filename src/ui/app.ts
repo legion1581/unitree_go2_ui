@@ -517,8 +517,8 @@ export class App {
     }
     // Seed motor temp from cached state.
     if (this.robotState.motorStates.length > 0) {
-      const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
-      this.mappingPage.setMotorTemp(maxTemp);
+      const temps = this.robotState.motorStates.map((m) => m.temp).filter((t): t is number => Number.isFinite(t));
+      if (temps.length > 0) this.mappingPage.setMotorTemp(Math.max(...temps));
     }
     // Forward BT status changes so the inline BT icon stays in sync.
     this.mappingPage.setBtStatus(this.btStatus);
@@ -994,10 +994,13 @@ export class App {
         // G1's per-motor temperature is an array [casing, winding]; Go2's is
         // a scalar. The summary bar only ever needs one number — pick the
         // hotter of the two on G1 so 'Max Motor Temp' stays meaningful.
+        // Filter to finite numbers before Math.max — a dropped frame can
+        // surface as NaN/undefined and pollute the navbar.
         const tempArr = Array.isArray(m.temperature) ? m.temperature : undefined;
-        const tempScalar = tempArr
-          ? (tempArr.length > 0 ? Math.max(...tempArr) : 0)
-          : (typeof m.temperature === 'number' ? m.temperature : 0);
+        const finiteArr = tempArr ? tempArr.filter((t): t is number => Number.isFinite(t)) : undefined;
+        const tempScalar = finiteArr && finiteArr.length > 0
+          ? Math.max(...finiteArr)
+          : (Number.isFinite(m.temperature as number) ? (m.temperature as number) : 0);
         return {
           q: m.q ?? 0,
           dq: m.dq ?? 0,
@@ -1009,9 +1012,13 @@ export class App {
           motorstate: typeof m.motorstate === 'number' ? m.motorstate : undefined,
         };
       });
-      // Update nav bar max motor temp. Math.max(...[]) is -Infinity, so
-      // fall back to 0 on an empty motorStates array.
-      const temps = this.robotState.motorStates.map((m) => m.temp);
+      // Update nav bar max motor temp. Math.max(...[]) is -Infinity and
+      // Math.max(...[NaN, ...]) is NaN, so filter to finite numbers and
+      // fall back to 0 if nothing remains. Without this the navbar
+      // chip can read 'NaN°C' on a fresh G1 connection where motor
+      // temperatures arrive on the next frame after the array shape
+      // is already established.
+      const temps = this.robotState.motorStates.map((m) => m.temp).filter((t): t is number => Number.isFinite(t));
       const maxTemp = temps.length > 0 ? Math.max(...temps) : 0;
       this.navBar?.setMotorTemp(maxTemp);
       this.mappingPage?.setMotorTemp(maxTemp);

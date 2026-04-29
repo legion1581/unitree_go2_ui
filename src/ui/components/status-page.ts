@@ -82,44 +82,30 @@ function motorName(family: RobotFamily, idx: number): string {
   return motorNamesFor(family)[idx] ?? `M${String(idx).padStart(2, '0')}`;
 }
 
-// G1 motor visual layout — front-view, viewer's left = robot's right.
-// align='left' grows to the right of (x,y), 'right' to the left, 'center'
-// is symmetric. y is in the same 320×520 viewBox as the SVG figure.
-const G1_MOTOR_LAYOUT: Array<{ idx: number; name: string; x: number; y: number; align: 'left' | 'right' | 'center' }> = [
-  // Left leg (robot's left, viewer's right) — motors 0–5
-  { idx: 0,  name: 'L Hip P',  x: 215, y: 270, align: 'left' },
-  { idx: 1,  name: 'L Hip R',  x: 215, y: 295, align: 'left' },
-  { idx: 2,  name: 'L Hip Y',  x: 215, y: 320, align: 'left' },
-  { idx: 3,  name: 'L Knee',   x: 215, y: 372, align: 'left' },
-  { idx: 4,  name: 'L Ank P',  x: 215, y: 460, align: 'left' },
-  { idx: 5,  name: 'L Ank R',  x: 215, y: 485, align: 'left' },
-  // Right leg — motors 6–11
-  { idx: 6,  name: 'R Hip P',  x: 105, y: 270, align: 'right' },
-  { idx: 7,  name: 'R Hip R',  x: 105, y: 295, align: 'right' },
-  { idx: 8,  name: 'R Hip Y',  x: 105, y: 320, align: 'right' },
-  { idx: 9,  name: 'R Knee',   x: 105, y: 372, align: 'right' },
-  { idx: 10, name: 'R Ank P',  x: 105, y: 460, align: 'right' },
-  { idx: 11, name: 'R Ank R',  x: 105, y: 485, align: 'right' },
-  // Waist — motors 12–14 (center column above the pelvis bar)
-  { idx: 12, name: 'Waist Y',  x: 250, y: 158, align: 'left' },
-  { idx: 13, name: 'Waist R',  x: 250, y: 185, align: 'left' },
-  { idx: 14, name: 'Waist P',  x: 250, y: 212, align: 'left' },
-  // Left arm — motors 15–21
-  { idx: 15, name: 'L Sho P',  x: 268, y: 90,  align: 'left' },
-  { idx: 16, name: 'L Sho R',  x: 268, y: 115, align: 'left' },
-  { idx: 17, name: 'L Sho Y',  x: 268, y: 140, align: 'left' },
-  { idx: 18, name: 'L Elbow',  x: 268, y: 200, align: 'left' },
-  { idx: 19, name: 'L Wri R',  x: 268, y: 270, align: 'left' },
-  { idx: 20, name: 'L Wri P',  x: 268, y: 295, align: 'left' },
-  { idx: 21, name: 'L Wri Y',  x: 268, y: 320, align: 'left' },
-  // Right arm — motors 22–28
-  { idx: 22, name: 'R Sho P',  x: 52, y: 90,  align: 'right' },
-  { idx: 23, name: 'R Sho R',  x: 52, y: 115, align: 'right' },
-  { idx: 24, name: 'R Sho Y',  x: 52, y: 140, align: 'right' },
-  { idx: 25, name: 'R Elbow',  x: 52, y: 200, align: 'right' },
-  { idx: 26, name: 'R Wri R',  x: 52, y: 270, align: 'right' },
-  { idx: 27, name: 'R Wri P',  x: 52, y: 295, align: 'right' },
-  { idx: 28, name: 'R Wri Y',  x: 52, y: 320, align: 'right' },
+// G1 motor layout — extracted verbatim from the Explorer 1.9.3 apk's
+// res/layout/include_g1_29.xml. Each row pairs a 'left' and 'right'
+// callout (relative to the bg_robot image, which is the front-facing
+// motor_g1_29.png — viewer's left = robot's right). y values are the
+// constraintGuide_begin dip values from the source layout.
+//
+// Joint name comments use URDF order (matches the lowstate motor_state
+// array index that the callout renders).
+const G1_MOTOR_LAYOUT: Array<{ y: number; left: number | null; leftName?: string; right: number | null; rightName?: string }> = [
+  { y: 55,  left: 22, leftName: 'R Sho Pitch', right: 15, rightName: 'L Sho Pitch' },
+  { y: 84,  left: 23, leftName: 'R Sho Roll',  right: 16, rightName: 'L Sho Roll' },
+  { y: 120, left: 24, leftName: 'R Sho Yaw',   right: 17, rightName: 'L Sho Yaw' },
+  { y: 153, left: 25, leftName: 'R Elbow',     right: 18, rightName: 'L Elbow' },
+  { y: 189, left: 26, leftName: 'R Wrist Roll',right: 19, rightName: 'L Wrist Roll' },
+  { y: 218, left: 14, leftName: 'Waist Pitch', right: 13, rightName: 'Waist Roll' },
+  { y: 248, left: 27, leftName: 'R Wrist Pitch', right: 20, rightName: 'L Wrist Pitch' },
+  { y: 275, left: 28, leftName: 'R Wrist Yaw', right: 21, rightName: 'L Wrist Yaw' },
+  { y: 303, left: 7,  leftName: 'R Hip Roll',  right: 1,  rightName: 'L Hip Roll' },
+  { y: 330, left: 8,  leftName: 'R Hip Yaw',   right: 2,  rightName: 'L Hip Yaw' },
+  { y: 361, left: 6,  leftName: 'R Hip Pitch', right: 0,  rightName: 'L Hip Pitch' },
+  { y: 393, left: 9,  leftName: 'R Knee',      right: 3,  rightName: 'L Knee' },
+  { y: 432, left: 10, leftName: 'R Ankle Pitch', right: 4, rightName: 'L Ankle Pitch' },
+  { y: 472, left: 11, leftName: 'R Ankle Roll', right: 5, rightName: 'L Ankle Roll' },
+  { y: 502, left: null, right: 12, rightName: 'Waist Yaw' },
 ];
 
 /** Render a per-motor metric value to a short label. Mirrors the
@@ -424,15 +410,21 @@ export class StatusPage {
 
     content.appendChild(this.buildSection('Motor Data', [], motorBody));
 
-    // IMU
-    const imuRows: HTMLElement[] = [
-      this.row('Robot Mode', 'imu-mode'),
-      this.row('Gait Type', 'imu-gait'),
-      this.row('IMU Temperature', 'imu-temp'),
-      this.row('Position (x, y, z)', 'imu-pos'),
-      this.row('Velocity (x, y, z)', 'imu-vel'),
-    ];
-    content.appendChild(this.buildSection('IMU & Position', imuRows));
+    // IMU & Position is fed by rt/lf/sportmodestate which is a Go2-only
+    // concept (the G1 webview never subscribes to it; locomotion mode +
+    // gait + odom come from the arm/lowstate path instead). On G1 we
+    // already surface temperature + rpy in the dedicated Body / Crotch
+    // IMU sections below, so skip this section entirely.
+    if (family !== 'G1') {
+      const imuRows: HTMLElement[] = [
+        this.row('Robot Mode', 'imu-mode'),
+        this.row('Gait Type', 'imu-gait'),
+        this.row('IMU Temperature', 'imu-temp'),
+        this.row('Position (x, y, z)', 'imu-pos'),
+        this.row('Velocity (x, y, z)', 'imu-vel'),
+      ];
+      content.appendChild(this.buildSection('IMU & Position', imuRows));
+    }
 
     // G1 ships two IMUs. Surface them in their own section so the legacy
     // 'IMU & Position' block stays untouched for Go2. Source:
@@ -550,46 +542,40 @@ export class StatusPage {
     });
     parent.appendChild(tabRow);
 
-    // Humanoid SVG figure + 29 absolutely-positioned callouts.
-    // viewBox is 320 × 520; the container is the same so callouts can
-    // share the same coordinate space.
-    const figure = document.createElement('div');
-    figure.style.cssText = 'position:relative;width:320px;height:520px;margin:0 auto;';
-    figure.innerHTML = `
-      <svg width="320" height="520" viewBox="0 0 320 520" style="position:absolute;inset:0;" stroke="#5a6170" stroke-width="2" fill="none" stroke-linecap="round">
-        <circle cx="160" cy="50"  r="22" fill="#1a1d23" />
-        <line x1="160" y1="72" x2="160" y2="100" />
-        <line x1="115" y1="100" x2="205" y2="100" />
-        <line x1="160" y1="100" x2="160" y2="260" />
-        <line x1="120" y1="260" x2="200" y2="260" />
-        <!-- arms -->
-        <line x1="205" y1="100" x2="225" y2="200" />
-        <line x1="225" y1="200" x2="245" y2="290" />
-        <line x1="115" y1="100" x2="95"  y2="200" />
-        <line x1="95"  y1="200" x2="75"  y2="290" />
-        <!-- legs -->
-        <line x1="180" y1="260" x2="180" y2="370" />
-        <line x1="180" y1="370" x2="180" y2="475" />
-        <line x1="140" y1="260" x2="140" y2="370" />
-        <line x1="140" y1="370" x2="140" y2="475" />
-        <!-- joint dots -->
-        ${[[160,100],[205,100],[115,100],[225,200],[95,200],[245,290],[75,290],[160,230],[160,260],[180,260],[140,260],[180,370],[140,370],[180,475],[140,475]].map(([cx,cy]) => `<circle cx="${cx}" cy="${cy}" r="4" fill="#5a6170" stroke="none" />`).join('')}
-      </svg>
-    `;
+    // Humanoid figure: the actual PNG from the apk
+    // (res/drawable-xxhdpi/motor_g1_29.png, 870x2178 px). Used at 200x500 px
+    // here, matching the 201dp x 503dp it's drawn at in include_g1_29.xml.
+    // Callouts overlay on each side at the y values from that XML's
+    // constraintGuide_begin attributes.
+    const IMG_W = 200;
+    const IMG_H = 500;
+    const SLOT_W = 70;        // width of one callout column
+    const TOTAL_W = IMG_W + 2 * SLOT_W;
+    const TOTAL_H = IMG_H + 30; // a little extra so the y=502 row fits
 
-    const callouts = G1_MOTOR_LAYOUT;
+    const figure = document.createElement('div');
+    figure.style.cssText = `position:relative;width:${TOTAL_W}px;height:${TOTAL_H}px;margin:0 auto;`;
+
+    const img = document.createElement('img');
+    img.src = '/icons/g1/motor_humanoid_29.png';
+    img.alt = 'G1 humanoid';
+    img.style.cssText = `position:absolute;left:${SLOT_W}px;top:0;width:${IMG_W}px;height:${IMG_H}px;`;
+    figure.appendChild(img);
+
     this.g1Callouts = [];
-    for (const c of callouts) {
+    const makeCallout = (idx: number, name: string, side: 'left' | 'right', y: number): HTMLElement => {
       const box = document.createElement('div');
-      const w = 56;
-      box.style.cssText = `position:absolute;width:${w}px;text-align:${c.align};font-size:10px;line-height:1.25;font-family:monospace;color:#e0e0e0;pointer-events:none;`;
-      // Anchor: align='left' means box extends right of x; 'right' extends left of x; 'center' centered on x.
-      const left = c.align === 'left' ? c.x : c.align === 'right' ? c.x - w : c.x - w / 2;
-      box.style.left = `${left}px`;
-      box.style.top  = `${c.y - 6}px`;
-      box.innerHTML = `<div style="color:#666;font-weight:600;font-size:9px;">${this.esc(c.name)}</div><div data-motor-val>—</div>`;
+      const x = side === 'left' ? 0 : SLOT_W + IMG_W;
+      box.style.cssText = `position:absolute;width:${SLOT_W}px;left:${x}px;top:${y - 12}px;text-align:${side === 'left' ? 'right' : 'left'};font-size:11px;font-family:monospace;color:#e0e0e0;padding:0 6px;box-sizing:border-box;`;
+      box.title = name;
+      box.innerHTML = `<div data-motor-val>—</div>`;
       figure.appendChild(box);
-      this.g1Callouts.push({ el: box, idx: c.idx });
+      this.g1Callouts.push({ el: box, idx });
+      return box;
+    };
+    for (const row of G1_MOTOR_LAYOUT) {
+      if (row.left !== null) makeCallout(row.left, row.leftName ?? `M${row.left}`, 'left', row.y);
+      if (row.right !== null) makeCallout(row.right, row.rightName ?? `M${row.right}`, 'right', row.y);
     }
     parent.appendChild(figure);
   }
