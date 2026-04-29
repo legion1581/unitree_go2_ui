@@ -4,6 +4,7 @@
  */
 
 import { btBackend } from '../../api/bt-backend';
+import { getCachedAesKey, setCachedAesKey } from '../../api/aes-key-derive';
 
 const BLE_API = '/ble-api';
 
@@ -370,6 +371,14 @@ export class BtPopover {
     v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
     v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
     this.robotBody.appendChild(v3Rows);
+
+    // AES-128 paste field — only useful on V3 firmware. We mount a hidden
+    // wrapper here and surface it once V3 is detected. The presence of a
+    // valid 32-hex key is what gates the WiFi form below.
+    const aesGate = this.buildAesGate();
+    aesGate.wrap.style.display = 'none';
+    this.robotBody.appendChild(aesGate.wrap);
+
     Promise.all([
       this.fetchJSON<{ key: string | null; supported: boolean }>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false })),
       this.fetchJSON<{ version: string | null; supported: boolean }>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false })),
@@ -378,6 +387,7 @@ export class BtPopover {
       renderProtoRow();
       if (!v3Supported) {
         v3Rows.remove();
+        aesGate.wrap.remove();
         return;
       }
       v3Rows.innerHTML = '';
@@ -392,9 +402,12 @@ export class BtPopover {
         // fetch the derived 16-byte AES key from `device/bindExtData`.
         v3Rows.appendChild(this.keyRow('GCM Key (b64):', gcm.key));
       }
+      aesGate.wrap.style.display = '';
     });
 
-    // WiFi config
+    // WiFi config — gated on V3 firmware until a valid AES-128 key is provided.
+    // The aesGate field above publishes its state via `aesGate.isReady()`; we
+    // wire the form to listen so it disables/enables in real time.
     const wifiHeader = document.createElement('div');
     wifiHeader.style.cssText = 'font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;';
     wifiHeader.textContent = 'WiFi Configuration';
@@ -482,6 +495,111 @@ export class BtPopover {
     applyRow.appendChild(disc);
     this.robotBody.appendChild(applyRow);
     this.robotBody.appendChild(wifiStatus);
+
+    // Disable the WiFi form on V3 firmware until a 32-hex AES-128 key is
+    // available. Disconnect stays clickable. Disabled state is updated as
+    // the user types into the AES gate.
+    const setWifiEnabled = (enabled: boolean): void => {
+      const dim = enabled ? '' : '0.4';
+      [ssidInput.input, pwdInput.input, countrySelect.select, applyBtn].forEach((el) => {
+        (el as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = !enabled;
+      });
+      [ssidInput.wrap, pwdInput.wrap, countrySelect.wrap, applyBtn].forEach((el) => {
+        (el as HTMLElement).style.opacity = dim;
+      });
+      [staBtn, apBtn].forEach((b) => { b.disabled = !enabled; b.style.opacity = dim; });
+    };
+    aesGate.onChange(setWifiEnabled);
+    setWifiEnabled(aesGate.isReady());
+  }
+
+  /**
+   * Build an AES-128 key gate input. The popup uses this to gate the WiFi
+   * form (and, eventually, the SN/MAC fetch path) on V3 firmware. State is
+   * not tied to a specific SN here — the BT popup doesn't know the SN until
+   * a V3 GCM-encrypted GET_SN response can be decrypted, which is the very
+   * thing this key unlocks. We just keep the last entered key in memory and
+   * fall back to any cached entry from the Account device tile.
+   */
+  private buildAesGate(): { wrap: HTMLElement; isReady: () => boolean; onChange: (cb: (ready: boolean) => void) => void } {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px;padding:8px 10px;border:1px solid #2a2d35;border-radius:6px;background:rgba(0,0,0,0.15);';
+
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
+    lbl.textContent = 'AES-128 Key (required to unlock WiFi / SN / AP MAC)';
+    wrap.appendChild(lbl);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.placeholder = '32 hex characters';
+    input.className = 'bt-field';
+    input.style.cssText = 'flex:1;padding:6px 8px;font-family:monospace;font-size:11px;border-radius:4px;box-sizing:border-box;';
+    row.appendChild(input);
+
+    const status = document.createElement('span');
+    status.style.cssText = 'font-size:11px;min-width:54px;text-align:right;';
+    row.appendChild(status);
+
+    wrap.appendChild(row);
+
+    // Try to surface any AES key the user has already cached via the Account
+    // page (any device — the popup doesn't yet know which SN this BLE robot
+    // maps to, but offering the most recently cached key is a reasonable
+    // first guess). Stored under unitree_aes_keys_v1 → {sn: hex}.
+    let candidate = '';
+    try {
+      const raw = localStorage.getItem('unitree_aes_keys_v1');
+      if (raw) {
+        const obj = JSON.parse(raw) as Record<string, string>;
+        const entries = Object.entries(obj).filter(([, v]) => /^[0-9a-fA-F]{32}$/.test(v));
+        if (entries.length === 1) candidate = entries[0][1];
+      }
+    } catch { /* corrupt cache */ }
+    if (candidate) input.value = candidate;
+
+    const listeners: Array<(ready: boolean) => void> = [];
+    let lastReady = false;
+    const refresh = (): void => {
+      const v = input.value.trim();
+      const ready = /^[0-9a-fA-F]{32}$/.test(v);
+      if (ready) {
+        status.textContent = '✓ ready';
+        status.style.color = '#66bb6a';
+      } else if (v.length === 0) {
+        status.textContent = 'paste key';
+        status.style.color = '#888';
+      } else {
+        status.textContent = `${v.length}/32`;
+        status.style.color = '#ff9800';
+      }
+      if (ready !== lastReady) {
+        lastReady = ready;
+        // Persist last entered key so a popup re-open prefills it. Keyed
+        // under a sentinel "_last" entry; reading code can pick it up too.
+        if (ready) {
+          try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
+        }
+        for (const cb of listeners) cb(ready);
+      }
+    };
+    input.addEventListener('input', refresh);
+    // Use the "_last" sentinel as a fallback if no candidate was set.
+    if (!candidate) {
+      const last = getCachedAesKey('_last');
+      if (last) input.value = last;
+    }
+    refresh();
+
+    return {
+      wrap,
+      isReady: () => lastReady,
+      onChange: (cb) => { listeners.push(cb); },
+    };
   }
 
   private wifiInput(label: string, type: string): { wrap: HTMLElement; input: HTMLInputElement } {

@@ -8,7 +8,7 @@
  */
 
 import { cloudApi } from './unitree-cloud';
-import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
+import { loadPublicKey, rsaEncrypt, type RsaPadding } from '../crypto/rsa';
 
 const CACHE_KEY = 'unitree_aes_keys_v1';
 
@@ -75,12 +75,30 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
   const modulusBits = publicKey.n.bitLength();
   console.log(`[bindExtData] modulus=${modulusBits}-bit, sn='${sn0}' (${sn0.length} chars), extData length=${gcm0.length}`);
 
-  const snEncrypted = rsaEncrypt(sn0, publicKey);
-  console.log(`[bindExtData] snEncrypted length=${snEncrypted.length} (b64)`);
-
-  const aesKey = await cloudApi.bindExtData(gcm0, sn0, snEncrypted);
-  if (!aesKey) throw new Error('bindExtData returned empty key');
-
-  setCachedAesKey(sn0, aesKey);
-  return aesKey;
+  // Try each padding scheme in turn until one isn't rejected by the cloud.
+  // The 1.9.3 apk uses PKCS1-v1.5; some newer cloud rollouts appear to require
+  // OAEP. We log which one wins so it can be pinned later.
+  const schemes: RsaPadding[] = ['PKCS1-V1_5', 'OAEP-SHA1', 'OAEP-SHA256'];
+  let lastErr: unknown = null;
+  for (const padding of schemes) {
+    try {
+      const snEncrypted = rsaEncrypt(sn0, publicKey, padding);
+      console.log(`[bindExtData] trying padding=${padding} snEncrypted length=${snEncrypted.length}`);
+      const aesKey = await cloudApi.bindExtData(gcm0, sn0, snEncrypted);
+      if (!aesKey) throw new Error('empty key in response');
+      console.log(`[bindExtData] padding=${padding} succeeded → key length=${aesKey.length}`);
+      setCachedAesKey(sn0, aesKey);
+      return aesKey;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[bindExtData] padding=${padding} failed: ${msg}`);
+      lastErr = e;
+      // Only loop on cloud-side decode errors; bail immediately on network /
+      // cipher / other errors that wouldn't change with a different padding.
+      if (!msg.toLowerCase().includes('decode') && !msg.toLowerCase().includes('error 500')) {
+        throw e;
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('bindExtData rejected every RSA padding tried');
 }
