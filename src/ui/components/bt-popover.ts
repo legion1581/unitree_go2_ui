@@ -623,14 +623,21 @@ export class BtPopover {
       if (!ssid) { wifiStatus.textContent = 'SSID required'; wifiStatus.style.color = '#ef5350'; return; }
       applyBtn.disabled = true;
       applyBtn.textContent = 'Applying...';
-      wifiStatus.textContent = 'Awaiting connection...';
+      wifiStatus.textContent = 'Sending...';
       wifiStatus.style.color = '#4fc3f7';
+      // Send phase covers the four GCM-acked ops (TYPE/SSID/PWD/COUNTRY)
+      // — typically <4 s. After that the backend waits up to 40 s for the
+      // robot's op-0x08 ready push, so flip the label so the user knows
+      // we're now waiting on the robot, not the link.
+      const awaitTimer = window.setTimeout(() => {
+        wifiStatus.textContent = 'Awaiting connection...';
+      }, 4000);
       try {
         const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean> }>('/wifi', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, password: pwdInput.input.value, ap_mode: apMode, country: countrySelect.select.value }),
-        });
+        }, 60000);
         if (resp.success) {
           wifiStatus.textContent = 'WiFi configured';
           wifiStatus.style.color = '#66bb6a';
@@ -643,6 +650,7 @@ export class BtPopover {
         wifiStatus.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
         wifiStatus.style.color = '#ef5350';
       } finally {
+        clearTimeout(awaitTimer);
         applyBtn.disabled = false;
         applyBtn.textContent = 'Apply WiFi';
       }
