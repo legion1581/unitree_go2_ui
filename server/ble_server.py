@@ -533,6 +533,24 @@ class BLESession:
         log.info(f"BLE → GET_TIME_3 (V3 handshake init, op=0x0b): {len(pkt)}B {pkt[:32].hex()}{'…' if len(pkt) > 32 else ''}")
         await self._write(pkt)
 
+    async def _wait_until(self, predicate, total_timeout: float) -> bool:
+        """Wait for `predicate()` to become truthy by polling self.event.
+        The single shared event fires for every op, so we may wake up for
+        an unrelated reply (e.g. CHECK_3 ack while waiting for GET_SN).
+        Loop and re-check the predicate until it's satisfied or we run
+        out of total time."""
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + total_timeout
+        while loop.time() < deadline:
+            if predicate():
+                return True
+            try:
+                await asyncio.wait_for(self.event.wait(), max(0.05, deadline - loop.time()))
+            except asyncio.TimeoutError:
+                break
+            self.event.clear()
+        return predicate()
+
     async def get_serial_number(self) -> Optional[str]:
         """Resolve the SN. Path depends on detected firmware:
           • V1/V2 (Go2 / pre-1.5.1 G1) — AES-CFB GET_SN, chunked reply.
@@ -556,12 +574,13 @@ class BLESession:
                 pkt = build_gcm_v3(Cmd.GET_SN, b"", self.aes_key)
                 log.info(f"BLE → GET_SN (V3 GCM, op=0x02): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
                 await self._write(pkt)
-                try:
-                    await asyncio.wait_for(self.event.wait(), 3.0)
-                except asyncio.TimeoutError:
-                    log.info("BLE GET_SN (V3 GCM) timeout — no decrypt-able reply within 3s")
+                # Loop on the shared event because CHECK_3 acks can fire it
+                # before our SN reply arrives; only stop when sn_result has
+                # actually been populated.
+                await self._wait_until(lambda: self.sn_result is not None, 5.0)
                 if self.sn_result:
                     return self.sn_result
+                log.info("BLE GET_SN (V3 GCM) — no SN reply within 5s; falling back to F1 SN")
             return self.f1_sn_partial or None
 
         # V1/V2 firmware: AES-CFB GET_SN with chunked reply.
@@ -569,10 +588,7 @@ class BLESession:
         pkt = build_simple(Cmd.GET_SN)
         log.info(f"BLE → GET_SN (V1/V2 AES-CFB, op=0x02): {len(pkt)}B {pkt.hex()}")
         await self._write(pkt)
-        try:
-            await asyncio.wait_for(self.event.wait(), 5.0)
-        except asyncio.TimeoutError:
-            log.info("BLE GET_SN (V1/V2) timeout")
+        await self._wait_until(lambda: self.sn_result is not None, 5.0)
         await asyncio.sleep(0.5)
         return self.sn_result
 
@@ -581,19 +597,19 @@ class BLESession:
 
         if is_v3:
             if self.aes_key is None:
-                # No way to fetch AP MAC on V3 firmware without the per-
-                # device AES key — return None fast, don't waste 5s on a
-                # V1/V2 GET_AP_MAC the firmware will silently drop.
                 return None
             self.event.clear()
             self.response = None
             pkt = build_gcm_v3(Cmd.GET_AP_MAC, b"", self.aes_key)
             log.info(f"BLE → GET_AP_MAC (V3 GCM, op=0x07): {len(pkt)}B {pkt[:48].hex()}{'…' if len(pkt) > 48 else ''}")
             await self._write(pkt)
-            try:
-                await asyncio.wait_for(self.event.wait(), 3.0)
-            except asyncio.TimeoutError:
-                log.info("BLE GET_AP_MAC (V3 GCM) timeout — no decrypt-able reply within 3s")
+            # Loop on event until self.response holds the actual GET_AP_MAC
+            # reply (op 0x07). Earlier CHECK_3 acks that share the event
+            # would otherwise make us return None prematurely.
+            def have_mac() -> bool:
+                r = self.response
+                return bool(r and len(r) >= 4 and r[2] == Cmd.GET_AP_MAC)
+            await self._wait_until(have_mac, 5.0)
             resp = self.response
             if resp and len(resp) >= 4 and resp[2] == Cmd.GET_AP_MAC:
                 mac_bytes = resp[3:resp[1] - 1]

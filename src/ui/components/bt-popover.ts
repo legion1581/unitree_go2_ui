@@ -781,14 +781,11 @@ export class BtPopover {
 
     const listeners: Array<(ready: boolean) => void> = [];
     let lastReady = false;
-    // True for the very first refresh() call (programmatic pre-fill from
-    // localStorage on popup open). On that call we still POST the key to
-    // the backend so it has it, but we DON'T invalidate the panel cache —
-    // otherwise every popup re-open wipes the SN / GCM key / FW version
-    // we already painted from cache and replaces them with a "Loading…"
-    // flash. User-typed changes (subsequent refresh calls) still
-    // invalidate so the user sees a fresh fetch.
-    let initialPopulate = true;
+    // We always POST the key on transition-to-ready (initial pre-fill or
+    // user edit) AND always refresh /info afterwards. The earlier guard
+    // that skipped refreshInfo on initial pre-fill was wrong — without
+    // refresh, /info had already returned before the AES key was set, so
+    // SN/MAC stayed empty and the WiFi gate stayed disabled.
     const refresh = (): void => {
       const v = input.value.trim();
       const ready = /^[0-9a-fA-F]{32}$/.test(v);
@@ -806,7 +803,6 @@ export class BtPopover {
         lastReady = ready;
         if (ready) {
           try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
-          const wasInitial = initialPopulate;
           (async () => {
             try {
               const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
@@ -818,13 +814,12 @@ export class BtPopover {
               }
               status.textContent = '✓ key sent';
               status.style.color = '#66bb6a';
-              if (!wasInitial) {
-                // User-edited key. Refresh /info in place (no panel
-                // rebuild) so the SN / MAC update without ejecting focus
-                // from the input the user just typed in. Cache is also
-                // updated by refreshInfo().
-                this.refreshInfo();
-              }
+              // Always refresh /info — the earlier /info call (fired by
+              // the initial render) ran before the backend had the key,
+              // so SN/MAC came back empty. refreshInfo() updates only
+              // the SN/MAC rows in place, so it doesn't eject focus
+              // from the AES input on a user-typed change.
+              this.refreshInfo();
             } catch (e) {
               status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
               status.style.color = '#e57373';
@@ -848,7 +843,6 @@ export class BtPopover {
       if (last) input.value = last;
     }
     refresh();
-    initialPopulate = false;
 
     return {
       wrap,
