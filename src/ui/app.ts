@@ -16,6 +16,7 @@ import { btBackend } from '../api/bt-backend';
 import { cloudApi } from '../api/unitree-cloud';
 import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
+import { promptAesKey } from './components/aes-key-prompt';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
 import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
@@ -1438,7 +1439,10 @@ export class App {
         return;
       } else {
         if (!config.ip) throw new Error('IP address required');
-        this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep);
+        this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep, {
+          sn: config.serialNumber,
+          promptKey: (sn) => promptAesKey(sn),
+        });
       }
       this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
     } catch (err) {

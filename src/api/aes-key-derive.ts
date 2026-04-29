@@ -1,0 +1,70 @@
+/**
+ * Derive the 16-byte AES-128 key used for WebRTC `data2=3` SDP authentication
+ * by trading the BLE-returned GCM key (44-char base64) + SN through the
+ * `device/bindExtData` cloud endpoint.
+ *
+ * The result is cached per-SN in localStorage so a second connect to the same
+ * robot doesn't need to re-prompt for the BLE key.
+ */
+
+import { cloudApi } from './unitree-cloud';
+import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
+
+const CACHE_KEY = 'unitree_aes_keys_v1';
+
+type Cache = Record<string, string>;
+
+function readCache(): Cache {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    return raw ? (JSON.parse(raw) as Cache) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCache(cache: Cache): void {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)); } catch { /* full disk / private mode */ }
+}
+
+export function getCachedAesKey(sn: string): string | null {
+  return readCache()[sn] || null;
+}
+
+export function setCachedAesKey(sn: string, key: string): void {
+  const cache = readCache();
+  cache[sn] = key;
+  writeCache(cache);
+}
+
+export function clearCachedAesKey(sn: string): void {
+  const cache = readCache();
+  if (sn in cache) {
+    delete cache[sn];
+    writeCache(cache);
+  }
+}
+
+/**
+ * Fetch the cloud RSA pubkey, RSA-encrypt the SN, and POST it together with
+ * the BLE GCM key to `device/bindExtData`. On success caches and returns the
+ * 16-byte AES-128 key (hex string). Throws on network / API failure.
+ */
+export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<string> {
+  const sn0 = sn.trim();
+  const gcm0 = gcmKeyB64.trim();
+  if (!sn0) throw new Error('SN missing');
+  if (!gcm0) throw new Error('GCM key missing');
+
+  const pubKeyB64 = await cloudApi.getPubKey();
+  if (!pubKeyB64) throw new Error('system/pubKey returned empty body');
+
+  const publicKey = loadPublicKey(pubKeyB64);
+  const snEncrypted = rsaEncrypt(sn0, publicKey);
+
+  const aesKey = await cloudApi.bindExtData(gcm0, snEncrypted);
+  if (!aesKey) throw new Error('bindExtData returned empty key');
+
+  setCachedAesKey(sn0, aesKey);
+  return aesKey;
+}

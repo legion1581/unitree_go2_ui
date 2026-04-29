@@ -519,6 +519,21 @@ export class UnitreeCloudAPI {
     return !!(await this.get<boolean>('device/online/status', { sn }));
   }
 
+  /** Cloud-side RSA public key used to wrap the SN for `device/bindExtData`. */
+  async getPubKey(): Promise<string> {
+    return (await this.get<string>('system/pubKey')) || '';
+  }
+
+  /**
+   * Trade the 44-char base64 BLE-fetched GCM key + SN for the 16-byte
+   * AES-128 key used in WebRTC `data2=3` SDP authentication. The SN must
+   * be RSA-encrypted with the cloud's public key (see `getPubKey`).
+   * Response is the derived key as a hex string.
+   */
+  async bindExtData(extData: string, snEncrypted: string): Promise<string> {
+    return (await this.post<string>('device/bindExtData', { extData, sn: snEncrypted })) || '';
+  }
+
   async updateDevice(sn: string, alias: string, remark = ''): Promise<void> {
     await this.post('device/update', { sn, alias, remark });
   }

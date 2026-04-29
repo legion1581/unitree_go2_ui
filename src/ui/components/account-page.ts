@@ -3,6 +3,7 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
+import { deriveAesKey, getCachedAesKey, clearCachedAesKey } from '../../api/aes-key-derive';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -398,8 +399,122 @@ export class AccountPage {
     shareBtn.addEventListener('click', () => this.showShareView(dev));
     btns.appendChild(shareBtn);
 
+    // AES-128 derive panel — opens inline below the tile when clicked.
+    // The SN is pulled from `dev` so the user only pastes the BLE GCM key.
+    // Cached keys are surfaced immediately so a re-visit doesn't require
+    // pasting again.
+    const aesBtn = document.createElement('button');
+    aesBtn.className = 'acct-btn acct-btn-secondary';
+    aesBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
+    aesBtn.textContent = 'AES Key';
+    btns.appendChild(aesBtn);
+
     tile.appendChild(btns);
+
+    const aesPanel = this.buildAesPanel(dev);
+    tile.appendChild(aesPanel);
+    aesBtn.addEventListener('click', () => {
+      aesPanel.style.display = aesPanel.style.display === 'none' ? 'block' : 'none';
+    });
     return tile;
+  }
+
+  /**
+   * Inline AES-128 derivation panel: paste BLE GCM key → POST bindExtData →
+   * show the 16-byte key with a Copy button. Result is cached per-SN in
+   * localStorage and reloaded on subsequent renders.
+   */
+  private buildAesPanel(dev: RobotDevice): HTMLElement {
+    const panel = document.createElement('div');
+    panel.style.cssText = 'display:none;margin-top:10px;padding:10px;border:1px solid #1a1d23;border-radius:6px;background:rgba(0,0,0,0.15);';
+
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:11px;color:#888;margin-bottom:6px;';
+    lbl.textContent = `Paste BLE GCM key (44-char base64) for SN ${dev.sn}:`;
+    panel.appendChild(lbl);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+    input.className = 'acct-input';
+    input.style.cssText = 'width:100%;padding:6px 8px;font-family:monospace;font-size:11px;box-sizing:border-box;';
+    panel.appendChild(input);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:11px;color:#888;margin-top:6px;font-family:monospace;word-break:break-all;';
+    panel.appendChild(status);
+
+    const renderResult = (key: string): void => {
+      status.innerHTML = '';
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+      const k = document.createElement('span');
+      k.style.cssText = 'flex:1;color:#66bb6a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      k.title = key;
+      k.textContent = `AES-128: ${key}`;
+      row.appendChild(k);
+      row.appendChild(this.copyBtn(key));
+      const clear = document.createElement('button');
+      clear.className = 'acct-btn acct-btn-secondary';
+      clear.style.cssText = 'padding:2px 8px;font-size:10px;';
+      clear.textContent = 'Clear';
+      clear.addEventListener('click', () => {
+        clearCachedAesKey(dev.sn);
+        status.textContent = 'Cleared cached key.';
+        input.value = '';
+      });
+      row.appendChild(clear);
+      status.appendChild(row);
+    };
+
+    const cached = getCachedAesKey(dev.sn);
+    if (cached) renderResult(cached);
+
+    const submit = document.createElement('button');
+    submit.className = 'acct-btn';
+    submit.style.cssText = 'margin-top:6px;padding:6px 14px;font-size:12px;';
+    submit.textContent = 'Derive';
+    submit.addEventListener('click', async () => {
+      const gcm = input.value.trim();
+      if (!gcm) { status.textContent = 'Paste the BLE GCM key first.'; return; }
+      submit.disabled = true;
+      submit.textContent = 'Deriving…';
+      status.style.color = '#888';
+      status.textContent = 'Calling device/bindExtData…';
+      try {
+        const aes = await deriveAesKey(dev.sn, gcm);
+        renderResult(aes);
+      } catch (e) {
+        status.style.color = '#e57373';
+        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+      } finally {
+        submit.disabled = false;
+        submit.textContent = 'Derive';
+      }
+    });
+    panel.appendChild(submit);
+    return panel;
+  }
+
+  private copyBtn(text: string): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'acct-btn acct-btn-secondary';
+    b.style.cssText = 'padding:2px 8px;font-size:10px;flex-shrink:0;';
+    b.textContent = 'Copy';
+    b.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        const orig = b.textContent;
+        b.textContent = 'Copied';
+        setTimeout(() => { b.textContent = orig; }, 1200);
+      } catch {
+        b.textContent = 'Failed';
+        setTimeout(() => { b.textContent = 'Copy'; }, 1200);
+      }
+    });
+    return b;
   }
 
   private async showDeviceDetail(dev: RobotDevice): Promise<void> {

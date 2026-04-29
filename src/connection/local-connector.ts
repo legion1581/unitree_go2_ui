@@ -1,13 +1,16 @@
 import type { ConNotifyResponse, ConnectionCallbacks, SdpPayload } from '../types';
-import { aesEncrypt, aesDecrypt, aesGcmDecrypt, generateAesKey } from '../crypto/aes';
+import { aesEncrypt, aesDecrypt, aesGcmDecrypt, generateAesKey, hexToBytes } from '../crypto/aes';
 import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
 import { LOCAL_PORT, LOCAL_OFFER_PORT } from './modes';
 import { WebRTCConnection } from './webrtc';
 import { cloudApi } from '../api/unitree-cloud';
+import { getCachedAesKey, setCachedAesKey } from '../api/aes-key-derive';
 
 // Log prefix follows the active family at call time so a Go2 vs G1
 // connection attempt is distinguishable in DevTools.
 const tag = (): string => `[${cloudApi.family.toLowerCase()}]`;
+
+export type AesKeyPrompter = (sn: string) => Promise<string>;
 
 function proxyUrl(path: string): string {
   return `/robot-api${path}`;
@@ -31,9 +34,28 @@ function extractPathEnding(data1: string): string {
   return path;
 }
 
-async function decryptData1(resp: ConNotifyResponse): Promise<string> {
+async function decryptData1(
+  resp: ConNotifyResponse,
+  sn: string,
+  promptKey?: AesKeyPrompter,
+): Promise<string> {
   if (resp.data2 === 2) {
     return await aesGcmDecrypt(resp.data1);
+  }
+  if (resp.data2 === 3) {
+    // Per-device AES-128 key required (G1 ≥ 1.5.1). Pull from cache; if the
+    // user hasn't derived one yet, ask via `promptKey` and cache the result.
+    let aesHex = sn ? getCachedAesKey(sn) : null;
+    if (!aesHex) {
+      if (!promptKey) {
+        throw new Error('data2=3 needs an AES-128 key. Open Account → device tile → "AES Key" to derive one for this SN.');
+      }
+      aesHex = (await promptKey(sn)).trim();
+      if (!aesHex) throw new Error('AES-128 key required to decrypt con_notify');
+      if (sn) setCachedAesKey(sn, aesHex);
+    }
+    console.log(`${tag()} Using cached AES-128 key for SN ${sn || '<unknown>'}`);
+    return await aesGcmDecrypt(resp.data1, hexToBytes(aesHex));
   }
   return resp.data1;
 }
@@ -73,6 +95,7 @@ export async function connectLocal(
   mode: 'AP' | 'STA-L',
   callbacks: ConnectionCallbacks,
   onStep?: (msg: string) => void,
+  opts: { sn?: string; promptKey?: AesKeyPrompter } = {},
 ): Promise<WebRTCConnection> {
   console.log(`${tag()} Connecting to ${ip} in ${mode} mode...`);
 
@@ -98,7 +121,7 @@ export async function connectLocal(
 
     onStep?.('Exchanging SDP with robot...');
     if (method === 'new') {
-      answerSdp = await exchangeSdpNew(ip, sdpPayload);
+      answerSdp = await exchangeSdpNew(ip, sdpPayload, opts.sn ?? '', opts.promptKey);
     } else {
       answerSdp = await exchangeSdpOld(ip, sdpPayload);
     }
@@ -122,7 +145,12 @@ export async function connectLocal(
   }
 }
 
-async function exchangeSdpNew(ip: string, payload: SdpPayload): Promise<string> {
+async function exchangeSdpNew(
+  ip: string,
+  payload: SdpPayload,
+  sn: string,
+  promptKey?: AesKeyPrompter,
+): Promise<string> {
   const host = `${ip}:${LOCAL_PORT}`;
 
   // Step 1: con_notify — get public key
@@ -140,8 +168,7 @@ async function exchangeSdpNew(ip: string, payload: SdpPayload): Promise<string> 
   const notifyJson: ConNotifyResponse = JSON.parse(atob(notifyB64));
   console.log(`${tag()} con_notify response: data2=${notifyJson.data2}, data1 length=${notifyJson.data1.length}`);
 
-  // Decrypt data1 if encrypted (data2 === 2)
-  const data1 = await decryptData1(notifyJson);
+  const data1 = await decryptData1(notifyJson, sn, promptKey);
   console.log(`${tag()} Decrypted data1 length: ${data1.length}`);
 
   // Extract public key (strip 10-char padding each end)

@@ -22,25 +22,6 @@ interface RemoteState {
   rssi: number;
 }
 
-/**
- * Decode the BLE-returned GCM key (44 ASCII chars of unpadded base64,
- * representing 33 raw bytes — see docs/bluetooth-v3.md) to lowercase hex
- * for display. Returns null if the input doesn't look like base64.
- */
-function decodeKeyToHex(b64: string): string | null {
-  try {
-    const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
-    const bin = atob(padded);
-    let hex = '';
-    for (let i = 0; i < bin.length; i++) {
-      hex += bin.charCodeAt(i).toString(16).padStart(2, '0');
-    }
-    return hex;
-  } catch {
-    return null;
-  }
-}
-
 export class BtPopover {
   private overlay: HTMLElement;
   private panel: HTMLElement;
@@ -406,14 +387,10 @@ export class BtPopover {
         v3Rows.appendChild(row);
       }
       if (gcm.supported && gcm.key) {
-        // The robot returns the key as 44 unpadded-base64 characters (33 raw
-        // bytes when decoded). Show both forms with copy buttons so the user
-        // can paste either into other tools without round-tripping by hand.
-        const decoded = decodeKeyToHex(gcm.key);
+        // The robot returns the key as 44 unpadded-base64 characters; we show
+        // it as-is so the user can copy and paste it into the device tile to
+        // fetch the derived 16-byte AES key from `device/bindExtData`.
         v3Rows.appendChild(this.keyRow('GCM Key (b64):', gcm.key));
-        if (decoded) {
-          v3Rows.appendChild(this.keyRow('GCM Key (hex):', decoded));
-        }
       }
     });
 
