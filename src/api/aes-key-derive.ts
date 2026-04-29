@@ -1,28 +1,23 @@
 /**
  * Derive the 16-byte AES-128 key used for WebRTC `data2=3` SDP authentication.
  *
- * Wire-level flow (mirrors the `webrtc/account` pattern that the apk's
- * remote-connector already uses):
- *   1. Generate a random 16-byte AES key locally (32 hex chars, used as both
- *      the AES-CBC key passed to forge and the hex string sent to the server).
- *   2. RSA-encrypt that random key with the cloud's public RSA key (PKCS1
- *      v1.5; OAEP variants tried as fallbacks). The result is `sk`.
- *   3. POST `extData=<ble_gcm_key> & sn=<plain> & sk=<rsa-wrapped-key>` to
- *      `device/bindExtData`.
- *   4. The cloud returns AES-CBC-encrypted JSON. Decrypt with the random key
- *      and pull the 16-byte AES-128 key out of the resulting payload.
+ * Wire shape — verified against the apk's `device/bind`, `device/unbind`,
+ * and `device/bindExtData` (all pass RSA-encrypted SN as the `sn` field):
  *
- * The 1.9.3 apk's older single-field shape (`sn=RSA(SN)`) is rejected by
- * current servers with `"sk decode error"` — they universally expect `sk`
- * to be a wrapped session key.
+ *   POST device/bindExtData
+ *   extData=<44-char base64 BLE GCM key>
+ *   sn=<base64(RSA(public_key, plain SN))>
  *
- * The result is cached per-SN in localStorage so a second connect to the same
- * robot doesn't need to re-prompt for the BLE key.
+ * Response is `BaseResp<String>` where `data` is the 16-byte AES-128 key
+ * as a hex string. The 1.9.3 apk does no AES decryption on the response —
+ * it stores `baseResp.data` straight into `gcmKey` LiveData.
+ *
+ * Cached per-SN in localStorage so a second connect to the same robot
+ * doesn't need to re-derive.
  */
 
 import { cloudApi } from './unitree-cloud';
 import { loadPublicKey, rsaEncrypt, type RsaPadding } from '../crypto/rsa';
-import { aesDecrypt, generateAesKey } from '../crypto/aes';
 
 const CACHE_KEY = 'unitree_aes_keys_v1';
 
@@ -59,23 +54,6 @@ export function clearCachedAesKey(sn: string): void {
   }
 }
 
-/** Best-effort lookup of the 16-byte AES-128 key inside an arbitrary JSON
- * shape returned by the cloud. The apk's `Main3ViewModel.bindExtData` just
- * uses `baseResp.data` directly as a string, but `webrtc/account`-style
- * responses wrap the same value in `{ data: '<hex>' }` or
- * `{ key: '<hex>' }`. Accept both. */
-function extractAesKey(payload: unknown): string | null {
-  if (typeof payload === 'string') return payload.trim();
-  if (payload && typeof payload === 'object') {
-    const obj = payload as Record<string, unknown>;
-    for (const k of ['key', 'data', 'aesKey', 'gcmKey', 'extData']) {
-      const v = obj[k];
-      if (typeof v === 'string' && /^[0-9a-fA-F]{32,64}$/.test(v.trim())) return v.trim();
-    }
-  }
-  return null;
-}
-
 export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<string> {
   const sn0 = sn.trim();
   const gcm0 = gcmKeyB64.trim();
@@ -97,36 +75,16 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
   const modulusBits = publicKey.n.bitLength();
   console.log(`[bindExtData] modulus=${modulusBits}-bit, sn='${sn0}' (${sn0.length} chars), extData length=${gcm0.length}`);
 
-  // Random 16-byte AES key (32 hex chars). This is used both as `sk` (after
-  // RSA wrapping) and as the AES-CBC key for decrypting the response body.
-  const sessionAesKey = generateAesKey();
-
+  // Try each padding scheme in turn — the apk uses PKCS1-v1.5, but if the
+  // cloud has been updated to require OAEP we want to surface that quickly.
   const schemes: RsaPadding[] = ['PKCS1-V1_5', 'OAEP-SHA1', 'OAEP-SHA256'];
   let lastErr: unknown = null;
   for (const padding of schemes) {
     try {
-      const skWrapped = rsaEncrypt(sessionAesKey, publicKey, padding);
-      console.log(`[bindExtData] trying padding=${padding} sk length=${skWrapped.length}`);
-      const respData = await cloudApi.bindExtData(gcm0, sn0, skWrapped);
-      if (!respData) throw new Error('empty data in response');
-      // Cloud responds with AES-CBC-encrypted JSON; decrypt with our session key.
-      let decrypted: string;
-      try {
-        decrypted = await aesDecrypt(respData, sessionAesKey);
-      } catch (e) {
-        // Fallback: a few endpoints return the key plaintext if there's no
-        // pairing with `sk`. Try treating respData itself as the key.
-        if (/^[0-9a-fA-F]{32,64}$/.test(respData)) {
-          console.log(`[bindExtData] padding=${padding} succeeded (plaintext response)`);
-          setCachedAesKey(sn0, respData);
-          return respData;
-        }
-        throw new Error(`AES-decrypt failed: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      let parsed: unknown = decrypted;
-      try { parsed = JSON.parse(decrypted); } catch { /* not JSON, keep string */ }
-      const aesKey = extractAesKey(parsed);
-      if (!aesKey) throw new Error(`unexpected payload shape: ${decrypted.slice(0, 120)}`);
+      const snEncrypted = rsaEncrypt(sn0, publicKey, padding);
+      console.log(`[bindExtData] trying padding=${padding} snEncrypted length=${snEncrypted.length}`);
+      const aesKey = await cloudApi.bindExtData(gcm0, snEncrypted);
+      if (!aesKey) throw new Error('empty data in response');
       console.log(`[bindExtData] padding=${padding} succeeded → key length=${aesKey.length}`);
       setCachedAesKey(sn0, aesKey);
       return aesKey;
@@ -134,12 +92,43 @@ export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<strin
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[bindExtData] padding=${padding} failed: ${msg}`);
       lastErr = e;
-      // Only retry on cloud-side decode errors. Network / parsing errors
-      // wouldn't change between padding schemes.
       if (!msg.toLowerCase().includes('decode') && !msg.toLowerCase().includes('error 500')) {
         throw e;
       }
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('bindExtData rejected every RSA padding tried');
+}
+
+/**
+ * Diagnostic helper: hit `webrtc/account`, the apk-verified endpoint that
+ * uses the same RSA-encrypted-payload pattern as `device/bindExtData`. If
+ * this returns successfully, our RSA encryption pipeline is fine and any
+ * failure on `bindExtData` is endpoint-specific (auth scope, region, etc).
+ * If this also fails with `"sk decode error"`, RSA itself is the problem.
+ *
+ * Body: `sn=<plain>&sk=<RSA(random_aes_key)>`. Response is AES-CBC of
+ * TurnServerInfo, which we don't need — we only check the `code`.
+ */
+export async function testRsaPipeline(sn: string): Promise<{ ok: boolean; detail: string }> {
+  const sn0 = sn.trim();
+  if (!sn0) return { ok: false, detail: 'SN missing' };
+
+  const pubKeyB64 = await cloudApi.getPubKey();
+  if (!pubKeyB64) return { ok: false, detail: 'system/pubKey returned empty body' };
+
+  const publicKey = loadPublicKey(pubKeyB64.trim());
+  // Reuse the same random-AES-key generator used elsewhere.
+  const { generateAesKey } = await import('../crypto/aes');
+  const aesKey = generateAesKey();
+  const sk = rsaEncrypt(aesKey, publicKey, 'PKCS1-V1_5');
+  console.log(`[testRSA] sn='${sn0}', sk length=${sk.length}, modulus=${publicKey.n.bitLength()}-bit`);
+
+  try {
+    const data = await cloudApi.post<string>('webrtc/account', { sn: sn0, sk });
+    return { ok: true, detail: `webrtc/account OK, response data length=${data?.length ?? 0}` };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, detail: `webrtc/account failed: ${msg}` };
+  }
 }

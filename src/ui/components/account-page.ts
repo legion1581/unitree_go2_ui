@@ -3,7 +3,7 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
-import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey } from '../../api/aes-key-derive';
+import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey, testRsaPipeline } from '../../api/aes-key-derive';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -510,6 +510,29 @@ export class AccountPage {
         submit.disabled = false;
         submit.textContent = 'Derive';
       }
+    });
+
+    // Diagnostic: ping webrtc/account with the same RSA pipeline. If THAT
+    // also returns "sk decode error", RSA itself is broken on our side; if
+    // it returns code=100, the bindExtData failure is endpoint-specific.
+    const testRow = document.createElement('div');
+    testRow.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed #1a1d23;display:flex;gap:6px;align-items:center;';
+    const testBtn = document.createElement('button');
+    testBtn.className = 'acct-btn acct-btn-secondary';
+    testBtn.style.cssText = 'padding:4px 10px;font-size:11px;';
+    testBtn.textContent = 'Test RSA (webrtc/account)';
+    const testStatus = document.createElement('span');
+    testStatus.style.cssText = 'font-size:11px;color:#888;';
+    testRow.append(testBtn, testStatus);
+    sec.appendChild(testRow);
+    testBtn.addEventListener('click', async () => {
+      testBtn.disabled = true;
+      testStatus.style.color = '#888';
+      testStatus.textContent = 'Calling webrtc/account…';
+      const res = await testRsaPipeline(dev.sn);
+      testStatus.style.color = res.ok ? '#66bb6a' : '#e57373';
+      testStatus.textContent = res.detail;
+      testBtn.disabled = false;
     });
 
     return sec;
