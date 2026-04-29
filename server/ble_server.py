@@ -799,6 +799,29 @@ class BLESession:
         open_byte = 0x02 if ap_mode else 0x01
         country_payload = country.encode("utf-8") + bytes([open_byte])
         results["country"] = await send_v3("COUNTRY", Cmd.COUNTRY, country_payload)
+        if not results["country"]:
+            return results
+        # Final success signal: the robot pushes opcode 0x08 (`51 05 08 01
+        # …`) once the AP is actually broadcasting / the STA join has
+        # completed. The APK treats COUNTRY's 0x06 ack as "opening, please
+        # wait" and only declares success on this push (with a 40-s
+        # timeout). Match that — otherwise the UI reports success while
+        # the AP is still coming up. See BleDataHandler.java:182-183 +
+        # NetInputViewmodel.java:109-124 in the decompiled APK.
+        self.event.clear()
+        self.response = None
+        def have_ready() -> bool:
+            r = self.response
+            return bool(r and len(r) >= 4 and r[0] == 0x51 and r[2] == 0x08)
+        await self._wait_until(have_ready, 40.0)
+        r = self.response
+        if r and len(r) >= 4 and r[0] == 0x51 and r[2] == 0x08:
+            ok = (r[3] == 0x01)
+            log.info(f"V3 AP_READY (op=0x08): result=0x{r[3]:02x} ({'ok' if ok else 'fail'})")
+            results["ready"] = ok
+        else:
+            log.info("V3 AP_READY (op=0x08) timed out within 40s — AP may still come up async")
+            results["ready"] = False
         return results
 
     async def set_wifi(self, ssid: str, password: str, ap_mode: bool = False, country: str = "US") -> dict:
