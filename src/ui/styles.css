@@ -122,6 +122,51 @@ body {
   cursor: not-allowed;
 }
 
+/* Scan results dropdown — shown when the network scan finds >1 robot.
+   Caps at ~4 rows tall (each row ~36 px) so a network with many dogs
+   doesn't push the rest of the connection panel off-screen. */
+.scan-results {
+  margin-top: 6px;
+  max-height: 144px;
+  overflow-y: auto;
+  border: 1px solid #2a2d35;
+  border-radius: 6px;
+  background: #0a0c10;
+  display: flex;
+  flex-direction: column;
+}
+.scan-result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #1a1d23;
+  color: #e0e0e0;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+.scan-result-row:last-child { border-bottom: none; }
+.scan-result-row:hover { background: rgba(79, 195, 247, 0.08); }
+.scan-result-ip { font-family: monospace; color: #4fc3f7; }
+.scan-result-sn { font-family: monospace; font-size: 11px; color: #888; }
+
+html[data-theme="light"] .scan-results {
+  background: #ffffff;
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .scan-result-row {
+  color: #1a1d23;
+  border-bottom-color: #eef1f7;
+}
+html[data-theme="light"] .scan-result-row:hover { background: #eef1f7; }
+html[data-theme="light"] .scan-result-ip { color: #4a5ccf; }
+html[data-theme="light"] .scan-result-sn { color: #5a6170; }
+
 /* Auth toggle tabs (Remote mode: credentials vs token) */
 .auth-toggle-row {
   display: flex;

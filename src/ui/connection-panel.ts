@@ -1,6 +1,6 @@
 import type { ConnectionMode, ConnectionConfig } from '../types';
 import { MODE_LABELS, DEFAULT_AP_IP } from '../connection/modes';
-import { scanForRobots } from '../connection/network-scan';
+import { scanForRobots, type ScanResult } from '../connection/network-scan';
 import { cloudApi, FAMILY_LABEL, type RobotDevice } from '../api/unitree-cloud';
 import { buildCloudPrefsRow } from './components/cloud-prefs';
 
@@ -53,6 +53,7 @@ export class ConnectionPanel {
           <input type="text" id="ip-input" placeholder="192.168.12.1" />
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
+        <div id="scan-results" class="scan-results" style="display:none;"></div>
       </div>
       <div id="auth-toggle" class="form-group" style="display:none">
         <div class="auth-toggle-row">
@@ -362,25 +363,61 @@ export class ConnectionPanel {
     this.scanBtn.disabled = true;
     this.scanBtn.textContent = '...';
     this.setStatus('Scanning network...', 'info');
+    this.renderScanResults([]);  // clear stale list
 
     try {
       const results = await scanForRobots(cloudApi.family, (msg) => this.setStatus(msg, 'info'));
-      if (results.length > 0) {
-        const best = results[0];
-        this.ipInput.value = best.ip;
-        if (best.ip !== DEFAULT_AP_IP) {
+      if (results.length === 0) {
+        this.setStatus('No robots found on network', 'error');
+        return;
+      }
+      // Single hit: just populate the IP, no list needed.
+      if (results.length === 1) {
+        const only = results[0];
+        this.ipInput.value = only.ip;
+        if (only.ip !== DEFAULT_AP_IP) {
           this.modeSelect.value = 'STA-L';
           this.updateVisibility();
         }
-        this.setStatus(`Found robot at ${best.ip} (SN: ${best.sn || 'unknown'})`, 'success');
-      } else {
-        this.setStatus('No robots found on network', 'error');
+        this.setStatus(`Found robot at ${only.ip} (SN: ${only.sn || 'unknown'})`, 'success');
+        return;
       }
+      // Multiple hits: show the list and let the user click one.
+      this.modeSelect.value = 'STA-L';
+      this.updateVisibility();
+      this.setStatus(`Found ${results.length} robots — pick one`, 'success');
+      this.renderScanResults(results);
     } catch (err) {
       this.setStatus('Scan failed: ' + (err instanceof Error ? err.message : 'unknown'), 'error');
     } finally {
       this.scanBtn.disabled = false;
       this.scanBtn.textContent = 'Scan';
+    }
+  }
+
+  /** Render the scan-results dropdown. Empty array hides it. The list
+   *  caps at ~4 rows tall and scrolls beyond — taller lists keep the
+   *  rest of the connection panel from getting pushed off-screen. */
+  private renderScanResults(results: ScanResult[]): void {
+    const slot = this.container.querySelector('#scan-results') as HTMLElement;
+    if (!slot) return;
+    slot.innerHTML = '';
+    if (results.length === 0) {
+      slot.style.display = 'none';
+      return;
+    }
+    slot.style.display = '';
+    for (const r of results) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'scan-result-row';
+      row.innerHTML = `<span class="scan-result-ip">${r.ip}</span><span class="scan-result-sn">${r.sn || 'unknown'}</span>`;
+      row.addEventListener('click', () => {
+        this.ipInput.value = r.ip;
+        this.setStatus(`Selected ${r.ip} (SN: ${r.sn || 'unknown'})`, 'success');
+        this.renderScanResults([]);
+      });
+      slot.appendChild(row);
     }
   }
 
