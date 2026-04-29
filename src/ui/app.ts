@@ -970,10 +970,17 @@ export class App {
 
   private handleLowState(data: unknown): void {
     const d = data as {
-      motor_state?: Array<{ q: number; dq: number; tau_est: number; temperature: number; lost: number }>;
+      motor_state?: Array<{
+        q: number; dq: number; tau_est: number;
+        // Go2 ships temperature as a scalar, G1 as [casing, winding].
+        temperature: number | number[];
+        lost: number;
+        reserve?: number[];
+        motorstate?: number;
+      }>;
       bms_state?: { soc?: number; current?: number; voltage?: number; cycle?: number; temps?: number[] };
       foot_force?: number[];
-      imu_state?: { temperature?: number };
+      imu_state?: { temperature?: number; rpy?: number[] };
     };
 
     if (d.motor_state) {
@@ -983,9 +990,25 @@ export class App {
       // 29 (12 legs + 3 waist + 14 arms). Slice family-aware so the status
       // page sees the full motor set on G1 but stays trim on Go2.
       const motorLimit = cloudApi.family === 'G1' ? 29 : 12;
-      this.robotState.motorStates = d.motor_state.slice(0, motorLimit).map((m) => ({
-        q: m.q ?? 0, dq: m.dq ?? 0, tau: m.tau_est ?? 0, temp: m.temperature ?? 0, lost: m.lost ?? 0,
-      }));
+      this.robotState.motorStates = d.motor_state.slice(0, motorLimit).map((m) => {
+        // G1's per-motor temperature is an array [casing, winding]; Go2's is
+        // a scalar. The summary bar only ever needs one number — pick the
+        // hotter of the two on G1 so 'Max Motor Temp' stays meaningful.
+        const tempArr = Array.isArray(m.temperature) ? m.temperature : undefined;
+        const tempScalar = tempArr
+          ? (tempArr.length > 0 ? Math.max(...tempArr) : 0)
+          : (typeof m.temperature === 'number' ? m.temperature : 0);
+        return {
+          q: m.q ?? 0,
+          dq: m.dq ?? 0,
+          tau: m.tau_est ?? 0,
+          temp: tempScalar,
+          lost: m.lost ?? 0,
+          temperature: tempArr,
+          reserve: Array.isArray(m.reserve) ? m.reserve : undefined,
+          motorstate: typeof m.motorstate === 'number' ? m.motorstate : undefined,
+        };
+      });
       // Update nav bar max motor temp. Math.max(...[]) is -Infinity, so
       // fall back to 0 on an empty motorStates array.
       const temps = this.robotState.motorStates.map((m) => m.temp);
