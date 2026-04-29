@@ -325,10 +325,16 @@ export class BtPopover {
     subHeader.textContent = 'Robot';
     this.robotBody.appendChild(subHeader);
 
-    // Connected header + info
+    // Connected header + info. The BLE address is also useful as a MAC
+    // placeholder when binding the robot — V3 firmware (G1 ≥ 1.5.1)
+    // doesn't expose AP MAC over plain V1/V2 BLE, so the bind form needs
+    // a paste source. Hand the user a Copy button.
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;';
-    info.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
+    info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+    const addrText = document.createElement('span');
+    addrText.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
+    info.appendChild(addrText);
+    if (this.robotStatus.address) info.appendChild(this.copyButton(this.robotStatus.address));
     this.robotBody.appendChild(info);
 
     // Info rows (serial number, AP MAC) — lazy loaded
@@ -357,10 +363,17 @@ export class BtPopover {
       baseProto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
                 : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
                 : (rInfo.protocol || '—');
+      const snVal = rInfo.serial_number || '—';
+      const macVal = rInfo.ap_mac || '—';
+      // On V3 firmware, GET_SN / GET_AP_MAC require the per-device 16-byte
+      // AES-128 key (and BLE MTU negotiation to 104) — neither of which the
+      // backend currently does. Surface a hint so the empty fields aren't
+      // mysterious.
       infoRows.innerHTML = `
-        <div><span style="color:#666;">SN:</span> ${this.esc(rInfo.serial_number || '—')}</div>
-        <div><span style="color:#666;">AP MAC:</span> ${this.esc(rInfo.ap_mac || '—')}</div>
+        <div><span style="color:#666;">SN:</span> <span data-sn>${this.esc(snVal)}</span></div>
+        <div><span style="color:#666;">AP MAC:</span> <span data-mac>${this.esc(macVal)}</span></div>
         <div data-proto-row><span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}</div>
+        <div data-v3-info-hint style="display:none;font-size:10px;color:#666;font-style:italic;line-height:1.4;margin-top:2px;">SN / AP MAC over V3 firmware need GCM-encrypted commands — not yet implemented. Until then: read SN off the robot's label, and use the BLE address above as the MAC placeholder when binding.</div>
       `;
       renderProtoRow();
     }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
@@ -385,6 +398,15 @@ export class BtPopover {
     ]).then(([gcm, ver]) => {
       v3Supported = gcm.supported || ver.supported;
       renderProtoRow();
+      // Reveal the V3 hint only on V3 firmware AND when the corresponding
+      // /info field came back empty (the V1/V2 path sometimes works on
+      // older firmware variants).
+      const hint = infoRows.querySelector<HTMLElement>('[data-v3-info-hint]');
+      if (hint && v3Supported) {
+        const sn = infoRows.querySelector<HTMLElement>('[data-sn]')?.textContent?.trim();
+        const mac = infoRows.querySelector<HTMLElement>('[data-mac]')?.textContent?.trim();
+        if (sn === '—' || mac === '—') hint.style.display = '';
+      }
       if (!v3Supported) {
         v3Rows.remove();
         aesGate.wrap.remove();
