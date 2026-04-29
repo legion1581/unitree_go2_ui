@@ -825,7 +825,7 @@ export class App {
     this.dataHandler.subscribe(RTC_TOPIC.SERVICE_STATE);
     if (cloudApi.family === 'G1') {
       this.dataHandler.subscribe(RTC_TOPIC.BMS_STATE);
-      this.dataHandler.subscribe(RTC_TOPIC.DOUBLE_IMU);
+      this.dataHandler.subscribe(RTC_TOPIC.SECONDARY_IMU);
       this.dataHandler.subscribe(RTC_TOPIC.G1_ARM_ACTION_STATE);
     } else {
       this.dataHandler.subscribe(RTC_TOPIC.ROBOT_ODOM);
@@ -873,7 +873,6 @@ export class App {
     const id = this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
       JSON.stringify({ script: scriptLine }));
     this.bashrunnerPending.set(id, scriptLine);
-    console.log(`[bashrunner] REQ → ${scriptLine} (id=${id})`);
     return id;
   }
 
@@ -930,8 +929,8 @@ export class App {
         // struct directly (not wrapped under d.bms_state like in lowstate).
         this.handleLowState({ bms_state: msg.data });
         break;
-      case RTC_TOPIC.DOUBLE_IMU:
-        this.handleDoubleImu(msg.data);
+      case RTC_TOPIC.SECONDARY_IMU:
+        this.handleSecondaryImu(msg.data);
         break;
       case RTC_TOPIC.ROBOT_ODOM:
         this.handleRobotOdom(msg.data);
@@ -969,16 +968,7 @@ export class App {
     }
   }
 
-  private lowStateLogCount = 0;
-
   private handleLowState(data: unknown): void {
-    // Log first few messages to help debug field names
-    if (this.lowStateLogCount < 3) {
-      console.log('[go2:ui] LOW_STATE raw keys:', Object.keys(data as object));
-      console.log('[go2:ui] LOW_STATE sample:', JSON.stringify(data).slice(0, 500));
-      this.lowStateLogCount++;
-    }
-
     const d = data as {
       motor_state?: Array<{ q: number; dq: number; tau_est: number; temperature: number; lost: number }>;
       bms_state?: { soc?: number; current?: number; voltage?: number; cycle?: number; temps?: number[] };
@@ -1044,6 +1034,15 @@ export class App {
       this.robotState.imuTemp = d.imu_state.temperature;
       this.navBar?.setBodyTemp(d.imu_state.temperature);
     }
+    // On G1 the lowstate's imu_state IS the torso ("Body") IMU. The
+    // Status panel's Body IMU section reads from robotState.bodyImu, so
+    // mirror the rpy+temp here. (On Go2 we don't expose a separate Body
+    // section, so populating this is harmless.)
+    if (cloudApi.family === 'G1' && d.imu_state) {
+      const im = d.imu_state as { rpy?: number[]; temperature?: number };
+      const rpy = (im.rpy && im.rpy.length >= 3 ? im.rpy : [0, 0, 0]).slice(0, 3) as [number, number, number];
+      this.robotState.bodyImu = { rpy, temp: typeof im.temperature === 'number' ? im.temperature : 0 };
+    }
 
     // Update status page if visible
     if (this.currentScreen === 'status' && this.statusPage) {
@@ -1051,30 +1050,14 @@ export class App {
     }
   }
 
-  // G1 publishes both torso ("Body") and pelvis ("Crotch") IMUs on
-  // rt/lf/lowstate_doubleimu. Field names in the payload aren't
-  // documented; probe the common shapes (imu_state/imu_state2,
-  // imu_in_torso/imu_in_pelvis, body_imu/crotch_imu, [arr0, arr1]).
-  private handleDoubleImu(data: unknown): void {
-    type Imu = { rpy?: [number, number, number]; quaternion?: number[]; temperature?: number };
-    const d = data as Record<string, unknown>;
-    const pickImu = (raw: unknown): { rpy: [number, number, number]; temp: number } | null => {
-      if (!raw || typeof raw !== 'object') return null;
-      const i = raw as Imu;
-      const rpy = (i.rpy ?? [0, 0, 0]) as [number, number, number];
-      return { rpy, temp: i.temperature ?? 0 };
-    };
-    const body = pickImu(d.imu_state ?? d.body_imu ?? d.imu_in_torso ?? d.imuTorso);
-    const crotch = pickImu(d.imu_state2 ?? d.crotch_imu ?? d.imu_in_pelvis ?? d.imuPelvis);
-    if (body) this.robotState.bodyImu = body;
-    if (crotch) this.robotState.crotchImu = crotch;
-    // Mirror body IMU temperature into the legacy imuTemp field so the
-    // existing IMU section keeps showing a temperature on G1, and feed
-    // the navbar popover so 'Body' line populates alongside 'Motor'.
-    if (body) {
-      this.robotState.imuTemp = body.temp;
-      this.navBar?.setBodyTemp(body.temp);
-    }
+  // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
+  // G1ImuState payload (rpy + temperature, etc.). The torso ("Body")
+  // IMU is whatever already lives in lowstate.imu_state — populated by
+  // handleLowState. See BaseInfoViewModel.kt:195 in the decompiled apk.
+  private handleSecondaryImu(data: unknown): void {
+    const i = data as { rpy?: number[]; temperature?: number };
+    const rpy = (i.rpy && i.rpy.length >= 3 ? i.rpy : [0, 0, 0]).slice(0, 3) as [number, number, number];
+    this.robotState.crotchImu = { rpy, temp: typeof i.temperature === 'number' ? i.temperature : 0 };
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
@@ -1089,7 +1072,6 @@ export class App {
     }
   }
 
-  private sportModeStateLogCount = 0;
   private handleSportModeState(data: unknown): void {
     const d = data as {
       position?: number[];
@@ -1098,12 +1080,6 @@ export class App {
       mode?: number;
       gait_type?: number;
     };
-
-    if (this.sportModeStateLogCount < 3) {
-      console.log('[sportmode] keys:', Object.keys(data as object));
-      console.log('[sportmode] sample:', JSON.stringify(data).slice(0, 400));
-      this.sportModeStateLogCount++;
-    }
 
     if (d.position) this.robotState.position = d.position;
     if (d.velocity) this.robotState.velocity = d.velocity;
@@ -1214,9 +1190,11 @@ export class App {
     const scriptLine = id !== undefined ? this.bashrunnerPending.get(id) : undefined;
     if (id !== undefined) this.bashrunnerPending.delete(id);
     const scriptName = scriptLine ? scriptLine.split(' ')[0] : '?';
-    console.log(`[bashrunner] RES ← ${scriptName} (id=${id}, code=${code}) data=`, d.data);
 
-    if (code !== 0 || typeof d.data !== 'string') return;
+    if (code !== 0 || typeof d.data !== 'string') {
+      if (scriptLine) console.warn(`[bashrunner] ${scriptName} failed (code=${code})`);
+      return;
+    }
 
     let info: unknown;
     let result: string | undefined;
@@ -1238,10 +1216,7 @@ export class App {
         if (info && typeof info === 'object') {
           const ips = info as { wlan0?: string; wlan1?: string; eth0?: string };
           const ip = ips.wlan0 || ips.wlan1 || ips.eth0 || '';
-          if (ip) {
-            this.robotState.ipAddress = ip;
-            console.log('[bashrunner] ip address:', ip);
-          }
+          if (ip) this.robotState.ipAddress = ip;
         }
         break;
       }
@@ -1251,17 +1226,12 @@ export class App {
         const raw = typeof info === 'string' ? info : typeof info === 'number' ? String(info) : '';
         const n = parseInt(raw, 10);
         if (!Number.isNaN(n)) {
-          const formatted = `2.${Math.floor(n / 10)}.${n % 10}`;
-          this.robotState.hardwareVersion = formatted;
-          console.log('[bashrunner] hardware version:', formatted);
+          this.robotState.hardwareVersion = `2.${Math.floor(n / 10)}.${n % 10}`;
         }
         break;
       }
       case 'get_software_version.sh': {
-        if (typeof info === 'string') {
-          this.robotState.softwareVersion = info;
-          console.log('[bashrunner] software version:', info);
-        }
+        if (typeof info === 'string') this.robotState.softwareVersion = info;
         break;
       }
       case 'get_whole_packet_version.sh': {
@@ -1270,8 +1240,8 @@ export class App {
         break;
       }
       default:
-        // Unknown script — log only, no-op.
-        console.log('[bashrunner] (unrouted) info:', info, 'result:', result);
+        // Unknown script — silently ignore.
+        break;
     }
 
     if (this.currentScreen === 'status' && this.statusPage) {

@@ -41,7 +41,12 @@ export const RTC_TOPIC = {
   G1_DEX3_LEFT_STATE: 'rt/lf/dex3/left/state',
   G1_DEX3_RIGHT_STATE: 'rt/lf/dex3/right/state',
   BMS_STATE: 'rt/lf/bmsstate',
-  DOUBLE_IMU: 'rt/lf/lowstate_doubleimu',
+  // The second (pelvis / "Crotch") IMU. The body IMU rides inside the
+  // regular lowstate envelope's imu_state field on G1, while the
+  // pelvis IMU is published as its own G1ImuState payload on this
+  // topic. Verified against DogCmdConstant.DOUBLE_IMU and
+  // BaseInfoViewModel.kt:195 in the decompiled apk.
+  SECONDARY_IMU: 'rt/lf/secondary_imu',
 
   // USLAM (3D LiDAR Mapping / Navigation / Patrol)
   USLAM_CMD: 'rt/uslam/client_command',
