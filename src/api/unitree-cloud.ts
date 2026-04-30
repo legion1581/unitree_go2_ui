@@ -509,12 +509,11 @@ export class UnitreeCloudAPI {
 
   /**
    * `device/bind` — initial bind for a new robot. The `sn` field carries the
-   * RSA-encrypted SN (caller is expected to wrap it via `rsaEncryptSn`); the
-   * other fields are plain. `extData` is the 44-char base64 BLE GCM key, and
+   * RSA-encrypted SN (caller wraps it via `rsaEncryptSn`); the other fields
+   * are plain. `extData` is the 344-char base64 RSA blob from the BT popup;
    * the cloud uses it on this initial-bind path to populate `dev.key` (the
-   * 16-byte AES-128 derive used for `data2=3`). Subsequent calls to
-   * `device/bind/list` will return `dev.key` directly, which means
-   * `bindExtData` isn't needed for normal operation.
+   * 16-byte AES-128 key for `data2=3`). Subsequent `device/bind/list` calls
+   * return `dev.key` directly.
    */
   async bindDevice(snEncrypted: string, mac: string, alias: string, remark: string, extData: string): Promise<void> {
     await this.post('device/bind', {
@@ -527,8 +526,8 @@ export class UnitreeCloudAPI {
   }
 
   /**
-   * `device/unbind` — same RSA-encrypted-SN convention as bind/bindExtData.
-   * Caller wraps the SN via `rsaEncryptSn` before calling.
+   * `device/unbind` — same RSA-encrypted-SN convention as bind. Caller wraps
+   * the SN via `rsaEncryptSn` before calling.
    */
   async unbindDevice(snEncrypted: string): Promise<void> {
     await this.post('device/unbind', { sn: snEncrypted });
@@ -538,23 +537,9 @@ export class UnitreeCloudAPI {
     return !!(await this.get<boolean>('device/online/status', { sn }));
   }
 
-  /** Cloud-side RSA public key used to wrap the SN for `device/bindExtData`. */
+  /** Cloud-side RSA public key used to wrap the SN for bind / unbind. */
   async getPubKey(): Promise<string> {
     return (await this.get<string>('system/pubKey')) || '';
-  }
-
-  /**
-   * POST `device/bindExtData` exactly as the 1.9.3 apk does:
-   *   extData=<44-char base64 BLE GCM key>
-   *   sn=<base64(RSA(SN))>     ← same RSA-encrypted-SN convention as
-   *                              `device/bind` and `device/unbind`
-   * Response `data` is the 16-byte AES-128 key as a hex string.
-   */
-  async bindExtData(extData: string, snEncrypted: string): Promise<string> {
-    return (await this.post<string>('device/bindExtData', {
-      extData,
-      sn: snEncrypted,
-    })) || '';
   }
 
   async updateDevice(sn: string, alias: string, remark = ''): Promise<void> {

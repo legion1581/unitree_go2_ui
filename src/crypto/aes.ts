@@ -25,8 +25,8 @@ export async function aesDecrypt(encryptedBase64: string, key: string): Promise<
 
 // Static AES-GCM key for con_notify `data2 === 2` (legacy Go2 / G1 < 1.5.1).
 // Matches `AESGCMUtil.keyBytes` in the Unitree apk. For G1 ≥ 1.5.1 the robot
-// sends `data2 === 3` and the per-device 16-byte key from `device/bindExtData`
-// is used instead — see `aesGcmDecrypt(_, key)`.
+// sends `data2 === 3` and the per-device 16-byte key from `dev.key`
+// (returned by `device/bind/list`) is used instead — see `aesGcmDecrypt(_, key)`.
 const CON_NOTIFY_KEY = new Uint8Array([
   232, 86, 130, 189, 22, 84, 155, 0, 142, 4, 166, 104, 43, 179, 235, 227,
 ]);
@@ -65,7 +65,7 @@ export async function aesGcmDecrypt(
   return new TextDecoder().decode(decrypted);
 }
 
-/** Convert a hex-encoded AES key (e.g. from `device/bindExtData`) to raw bytes. */
+/** Convert a hex-encoded AES key (e.g. `dev.key` from `device/bind/list`) to raw bytes. */
 export function hexToBytes(hex: string): Uint8Array {
   const clean = hex.trim().replace(/\s+/g, '');
   if (clean.length % 2 !== 0) throw new Error('hex key length must be even');

@@ -54,12 +54,6 @@ export class BtPopover {
   private remoteStatus: RemoteStatus = { connected: false, address: '', name: '' };
   private lastRenderedRemoteAddr = '';   // to avoid DOM rebuild when nothing changed
   private lastRenderedRobotAddr = '';
-  // Counts every status push the WS subscriber receives. Surface in the
-  // popup as a "♥ N" indicator so the user can see the BLE link / status
-  // monitor is alive even when no values are changing on screen. Reset
-  // each time a fresh BtPopover is constructed (popup open).
-  private heartbeatCount = 0;
-  private heartbeatLabel: HTMLElement | null = null;
   // Last-seen V3 + GCM-decode state, used to gate the WiFi form. Reset
   // when status changes to disconnected.
   private v3Supported = false;
@@ -113,8 +107,6 @@ export class BtPopover {
 
     // Subscribe to backend topics — messages flow in via the shared singleton WS
     this.unsubStatus = btBackend().subscribe('status', (msg: { robot: RobotStatus; remote: RemoteStatus }) => {
-      this.heartbeatCount += 1;
-      if (this.heartbeatLabel) this.heartbeatLabel.textContent = `\u2665 ${this.heartbeatCount}`;
       this.robotStatus = msg.robot;
       this.remoteStatus = msg.remote;
       this.updateRobotSection();
@@ -407,20 +399,12 @@ export class BtPopover {
     subHeader.textContent = 'Robot';
     this.robotBody.appendChild(subHeader);
 
-    // Connected header + info. The heartbeat label increments on every
-    // status push so the user can see the BLE link is alive even when
-    // no on-screen values are changing.
     const info = document.createElement('div');
     info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
     const addrText = document.createElement('span');
     addrText.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
     info.appendChild(addrText);
     if (this.robotStatus.address) info.appendChild(this.copyButton(this.robotStatus.address));
-    this.heartbeatLabel = document.createElement('span');
-    this.heartbeatLabel.style.cssText = 'font-size:11px;color:#888;margin-left:auto;font-family:monospace;';
-    this.heartbeatLabel.title = 'Status heartbeats received from BLE backend';
-    this.heartbeatLabel.textContent = `\u2665 ${this.heartbeatCount}`;
-    info.appendChild(this.heartbeatLabel);
     this.robotBody.appendChild(info);
 
     // Info rows (serial number, AP MAC) — lazy loaded.

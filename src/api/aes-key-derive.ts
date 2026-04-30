@@ -1,23 +1,14 @@
 /**
- * Derive the 16-byte AES-128 key used for WebRTC `data2=3` SDP authentication.
+ * AES-128 key cache + RSA helpers used by the cloud bind / unbind flow.
  *
- * Wire shape — verified against the apk's `device/bind`, `device/unbind`,
- * and `device/bindExtData` (all pass RSA-encrypted SN as the `sn` field):
- *
- *   POST device/bindExtData
- *   extData=<44-char base64 BLE GCM key>
- *   sn=<base64(RSA(public_key, plain SN))>
- *
- * Response is `BaseResp<String>` where `data` is the 16-byte AES-128 key
- * as a hex string. The 1.9.3 apk does no AES decryption on the response —
- * it stores `baseResp.data` straight into `gcmKey` LiveData.
- *
- * Cached per-SN in localStorage so a second connect to the same robot
- * doesn't need to re-derive.
+ * The 16-byte AES-128 key (`data2=3` WebRTC auth) is derived server-side
+ * during `device/bind` from the 344-char extData blob and surfaced as
+ * `dev.key` on `device/bind/list`. We just cache it locally per SN so
+ * the connect path can pick it up without a round-trip to the cloud.
  */
 
 import { cloudApi } from './unitree-cloud';
-import { loadPublicKey, rsaEncrypt, type RsaPadding } from '../crypto/rsa';
+import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
 
 const CACHE_KEY = 'unitree_aes_keys_v1';
 
@@ -54,57 +45,11 @@ export function clearCachedAesKey(sn: string): void {
   }
 }
 
-export async function deriveAesKey(sn: string, gcmKeyB64: string): Promise<string> {
-  const sn0 = sn.trim();
-  const gcm0 = gcmKeyB64.trim();
-  if (!sn0) throw new Error('SN missing');
-  if (!gcm0) throw new Error('GCM key missing');
-
-  const pubKeyB64 = await cloudApi.getPubKey();
-  if (!pubKeyB64) throw new Error('system/pubKey returned empty body');
-
-  const pubKeyTrim = pubKeyB64.trim();
-  console.log(`[bindExtData] pubKey length=${pubKeyTrim.length}, head='${pubKeyTrim.slice(0, 32)}...', tail='...${pubKeyTrim.slice(-20)}'`);
-
-  let publicKey;
-  try {
-    publicKey = loadPublicKey(pubKeyTrim);
-  } catch (e) {
-    throw new Error(`pubKey parse failed: ${e instanceof Error ? e.message : String(e)} — first 32 chars: ${pubKeyTrim.slice(0, 32)}`);
-  }
-  const modulusBits = publicKey.n.bitLength();
-  console.log(`[bindExtData] modulus=${modulusBits}-bit, sn='${sn0}' (${sn0.length} chars), extData length=${gcm0.length}`);
-
-  // Try each padding scheme in turn — the apk uses PKCS1-v1.5, but if the
-  // cloud has been updated to require OAEP we want to surface that quickly.
-  const schemes: RsaPadding[] = ['PKCS1-V1_5', 'OAEP-SHA1', 'OAEP-SHA256'];
-  let lastErr: unknown = null;
-  for (const padding of schemes) {
-    try {
-      const snEncrypted = rsaEncrypt(sn0, publicKey, padding);
-      console.log(`[bindExtData] trying padding=${padding} snEncrypted length=${snEncrypted.length}`);
-      const aesKey = await cloudApi.bindExtData(gcm0, snEncrypted);
-      if (!aesKey) throw new Error('empty data in response');
-      console.log(`[bindExtData] padding=${padding} succeeded → key length=${aesKey.length}`);
-      setCachedAesKey(sn0, aesKey);
-      return aesKey;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`[bindExtData] padding=${padding} failed: ${msg}`);
-      lastErr = e;
-      if (!msg.toLowerCase().includes('decode') && !msg.toLowerCase().includes('error 500')) {
-        throw e;
-      }
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('bindExtData rejected every RSA padding tried');
-}
-
 /**
  * RSA-encrypt the SN with the cloud's RSA public key (PKCS#1 v1.5 padding,
  * matching the apk's `RSAUtil.encodeString`). Used by every endpoint that
- * accepts an RSA-wrapped SN — `device/bind`, `device/unbind`,
- * `device/bindExtData`. Caller passes the result through as the `sn` field.
+ * accepts an RSA-wrapped SN — `device/bind` and `device/unbind`. Caller
+ * passes the result through as the `sn` field.
  */
 export async function rsaEncryptSn(sn: string): Promise<string> {
   const sn0 = sn.trim();

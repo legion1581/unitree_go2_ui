@@ -3,7 +3,7 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
-import { deriveAesKey, getCachedAesKey, setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
+import { setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -369,11 +369,6 @@ export class AccountPage {
         empty.appendChild(cta);
         this.content.appendChild(empty);
       }
-
-      // Free-standing "Test bindExtData" panel — independent of any tile, so
-      // we can poke the endpoint with bound or unbound SNs to figure out
-      // when the cloud will accept the call.
-      this.content.appendChild(this.buildBindExtDataTester());
     } catch (e) {
       this.content.innerHTML = `<div style="color:#ef5350;padding:20px;">Error: ${e instanceof Error ? e.message : String(e)}</div>`;
     }
@@ -424,166 +419,6 @@ export class AccountPage {
 
     tile.appendChild(btns);
     return tile;
-  }
-
-  /**
-   * Standalone "Test bindExtData" panel. Independent of the per-tile flow —
-   * lets the user paste any SN (bound or unbound) plus a BLE GCM key, and
-   * fires `device/bindExtData` to figure out when the cloud will accept the
-   * call. Useful while the endpoint's contract is still under investigation.
-   */
-  private buildBindExtDataTester(): HTMLElement {
-    const sec = this.section('Test device/bindExtData');
-    sec.style.marginTop = '20px';
-
-    const blurb = document.createElement('div');
-    blurb.style.cssText = 'font-size:11px;color:#888;line-height:1.5;margin-bottom:10px;';
-    blurb.innerHTML = 'Paste any SN + the BLE <code style="color:#aaa;">extData</code> blob (344 ASCII chars, RSA-encrypted, base64) from the BT popup. Hits <code style="color:#aaa;">device/bindExtData</code> directly with the apk wire shape (<code style="color:#aaa;">sn=RSA(SN)</code>, <code style="color:#aaa;">extData=blob</code>). Requires the device to be currently bound to your account — unbound returns <code style="color:#aaa;">code:1000 "无权限"</code>.';
-    sec.appendChild(blurb);
-
-    const snInput = this.input('SN', 'text');
-    snInput.input.placeholder = 'E21D6000PBF9ELG5';
-    snInput.input.spellcheck = false;
-    snInput.input.autocomplete = 'off';
-    sec.appendChild(snInput.wrapper);
-
-    const gcmInput = this.input('extData (344-char base64, RSA-encrypted)', 'text');
-    gcmInput.input.placeholder = 'iXhI9rjscc//ao4QeJxfD016jTAXw8gq/sBQl9Pxyc…';
-    gcmInput.input.spellcheck = false;
-    gcmInput.input.autocomplete = 'off';
-    sec.appendChild(gcmInput.wrapper);
-
-    const status = document.createElement('div');
-    status.style.cssText = 'font-size:11px;color:#888;margin:6px 0;min-height:16px;font-family:monospace;word-break:break-all;';
-    sec.appendChild(status);
-
-    const btn = this.button('Call device/bindExtData', async () => {
-      const sn = snInput.input.value.trim();
-      const gcm = gcmInput.input.value.trim();
-      if (!sn) { status.style.color = '#e57373'; status.textContent = 'SN required.'; return; }
-      if (!gcm) { status.style.color = '#e57373'; status.textContent = 'GCM key required.'; return; }
-      btn.disabled = true;
-      status.style.color = '#888';
-      status.textContent = 'Calling…';
-      try {
-        const aes = await deriveAesKey(sn, gcm);
-        status.style.color = '#66bb6a';
-        status.textContent = `Success — AES-128 key (${aes.length} chars): ${aes}`;
-      } catch (e) {
-        status.style.color = '#e57373';
-        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
-      } finally {
-        btn.disabled = false;
-      }
-    });
-    sec.appendChild(btn);
-    return sec;
-  }
-
-  /**
-   * Section that renders the device's AES-128 key state and a paste field
-   * for the BLE GCM key + Derive button. Used in the device-details view.
-   * Source of truth, in order:
-   *   1. dev.key                    — cloud-stored from a prior bind
-   *   2. localStorage cache         — derived in this app, persisted
-   *   3. paste-and-derive workflow  — sends device/bindExtData
-   */
-  private buildAesSection(dev: RobotDevice): HTMLElement {
-    const sec = this.section('AES-128 Key (data2=3)');
-    const blurb = document.createElement('div');
-    blurb.style.cssText = 'font-size:11px;color:#888;margin:-2px 0 10px;line-height:1.5;';
-    blurb.textContent = 'Required by G1 firmware ≥1.5.1 to authenticate the WebRTC SDP handshake. Paste the 344-char extData blob (RSA-encrypted; from the BT popup, requires MTU=104) and click Derive — the cloud trades it for this 16-byte AES-128 key.';
-    sec.appendChild(blurb);
-
-    const display = document.createElement('div');
-    display.style.cssText = 'margin-bottom:10px;';
-    sec.appendChild(display);
-
-    const renderKey = (label: string, key: string): void => {
-      display.innerHTML = '';
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
-      const lbl = document.createElement('span');
-      lbl.style.cssText = 'color:#888;font-size:11px;flex-shrink:0;';
-      lbl.textContent = label;
-      const val = document.createElement('span');
-      val.style.cssText = 'color:#66bb6a;font-family:monospace;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      val.title = key;
-      val.textContent = key;
-      row.append(lbl, val, this.copyBtn(key));
-      const clear = document.createElement('button');
-      clear.className = 'acct-btn acct-btn-secondary';
-      clear.style.cssText = 'padding:2px 8px;font-size:10px;';
-      clear.textContent = 'Clear cache';
-      clear.addEventListener('click', () => {
-        clearCachedAesKey(dev.sn);
-        renderEmpty();
-      });
-      row.appendChild(clear);
-      display.appendChild(row);
-    };
-
-    const renderEmpty = (): void => {
-      display.innerHTML = '<div style="color:#888;font-size:11px;">No key cached for this device — paste the BLE GCM key below.</div>';
-    };
-
-    // Initial state: cloud-returned key trumps local cache; otherwise show cached.
-    const initial = (dev.key && dev.key.trim()) || getCachedAesKey(dev.sn);
-    if (initial) {
-      // Mirror cloud key into the local cache so the connect path picks it
-      // up without a round-trip to the cloud.
-      if (dev.key) setCachedAesKey(dev.sn, dev.key.trim());
-      renderKey(dev.key ? 'From cloud:' : 'Cached:', initial.trim());
-    } else {
-      renderEmpty();
-    }
-
-    const inputRow = document.createElement('div');
-    inputRow.style.cssText = 'display:flex;gap:6px;align-items:center;';
-    sec.appendChild(inputRow);
-
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.spellcheck = false;
-    input.autocomplete = 'off';
-    input.placeholder = 'extData blob (344-char base64)';
-    input.className = 'acct-input';
-    input.style.cssText = 'flex:1;padding:6px 10px;font-family:monospace;font-size:11px;box-sizing:border-box;';
-    inputRow.appendChild(input);
-
-    const submit = document.createElement('button');
-    submit.className = 'acct-btn';
-    submit.style.cssText = 'padding:6px 14px;font-size:12px;flex-shrink:0;';
-    submit.textContent = 'Derive';
-    inputRow.appendChild(submit);
-
-    const status = document.createElement('div');
-    status.style.cssText = 'font-size:11px;color:#888;margin-top:6px;min-height:14px;';
-    sec.appendChild(status);
-
-    submit.addEventListener('click', async () => {
-      const gcm = input.value.trim();
-      if (!gcm) { status.style.color = '#e57373'; status.textContent = 'Paste the BLE GCM key first.'; return; }
-      submit.disabled = true;
-      submit.textContent = 'Deriving…';
-      status.style.color = '#888';
-      status.textContent = 'Calling device/bindExtData…';
-      try {
-        const aes = await deriveAesKey(dev.sn, gcm);
-        status.style.color = '#66bb6a';
-        status.textContent = 'Derived & cached.';
-        input.value = '';
-        renderKey('Derived:', aes);
-      } catch (e) {
-        status.style.color = '#e57373';
-        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
-      } finally {
-        submit.disabled = false;
-        submit.textContent = 'Derive';
-      }
-    });
-
-    return sec;
   }
 
   private copyBtn(text: string): HTMLButtonElement {
@@ -671,13 +506,6 @@ export class AccountPage {
       } catch { /* ignore */ }
 
 
-
-      // AES-128 key — derive (or display) the per-device key used for the
-      // WebRTC `data2=3` SDP handshake. If the cloud already returned one
-      // on `device/bind/list` (i.e. the device was bound via the official
-      // app), it's pre-populated and cached; otherwise the user pastes the
-      // 44-char BLE GCM key here and we POST device/bindExtData.
-      this.content.appendChild(this.buildAesSection(dev));
 
       // Danger zone — unbind goes through `device/unbind` with an RSA-
       // encrypted SN (same convention as device/bind / device/bindExtData).
@@ -1110,7 +938,6 @@ export class AccountPage {
         ['GET', 'device/online/status', 'sn='],
         ['GET', 'device/network', 'sn='],
         ['POST', 'device/network/update', 'sn=\nconnIp=\nconnMode='],
-        ['POST', 'device/bindExtData', 'extData=\nsn='],
         ['POST', 'device/notifyUnBind', 'sn='],
         ['POST', 'device/wallet', 'sn='],
       ]],
