@@ -775,21 +775,48 @@ export class BtPopover {
           try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
           (async () => {
             try {
-              const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(5000) });
+              // Backend now runs the full GCM handshake (GET_TIME_3 →
+              // CHECK_3 ack) before returning, which can take up to ~10 s
+              // when this call races ahead of /connect. Give it room.
+              const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(15000) });
               if (!resp.ok) {
                 const body = await resp.text();
                 status.textContent = `key rejected: ${body.slice(0, 60)}`;
                 status.style.color = '#e57373';
                 return;
               }
-              status.textContent = '✓ key sent';
-              status.style.color = '#66bb6a';
-              // Always refresh /info — the earlier /info call (fired by
-              // the initial render) ran before the backend had the key,
-              // so SN/MAC came back empty. refreshInfo() updates only
-              // the SN/MAC rows in place, so it doesn't eject focus
-              // from the AES input on a user-typed change.
-              this.refreshInfo();
+              const body = await resp.json().catch(() => ({} as { armed?: boolean }));
+              if (body.armed) {
+                status.textContent = '✓ key armed';
+                status.style.color = '#66bb6a';
+                // Handshake confirmed — /info will now resolve SN/MAC on
+                // the first try. refreshInfo() updates the SN/MAC rows
+                // in place so it doesn't eject focus from this input.
+                this.refreshInfo();
+              } else {
+                // Backend installed the key but the handshake didn't
+                // complete (likely raced ahead of /connect, or robot
+                // didn't reply). One automatic retry: poll /info a few
+                // times — the connect flow may finish armed soon after.
+                status.textContent = '… arming key';
+                status.style.color = '#ff9800';
+                for (let attempt = 0; attempt < 4; attempt++) {
+                  await new Promise(r => setTimeout(r, 1500));
+                  try {
+                    const info = await this.fetchJSON<RobotInfo>('/info');
+                    if (info.ap_mac) {
+                      // /info returning AP MAC proves the GCM path is
+                      // working now (F1 fallback never populates MAC).
+                      status.textContent = '✓ key armed';
+                      status.style.color = '#66bb6a';
+                      this.renderInfoRowsCb?.(info);
+                      return;
+                    }
+                  } catch { /* keep retrying */ }
+                }
+                status.textContent = 'key not armed — try reconnect';
+                status.style.color = '#e57373';
+              }
             } catch (e) {
               status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
               status.style.color = '#e57373';

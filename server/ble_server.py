@@ -542,19 +542,59 @@ class BLESession:
         log.info(f"V3 AES key set ({len(raw)} bytes)")
         return True
 
-    async def _kick_v3_handshake(self) -> None:
-        """Send `GET_TIME_3` (op `0x0b`) GCM-encrypted with the current
-        AES key. This is what the apk does in response to its
-        `StartBleCheckEvent` (BluetoothService.java:614) — the robot
-        replies with a uint64 timestamp; our `_reply_check3` handler
-        then echoes timestamp+1 as `CHECK_3` (`0x0c`), completing the
-        handshake. Without this kick, V3 firmware ignores all
-        subsequent V1/V2-style command requests."""
+    async def _kick_v3_handshake(self) -> bool:
+        """Run the V3 GCM handshake end-to-end and return True only once
+        the robot has acked `CHECK_3` (i.e. all subsequent GCM ops will
+        be honoured).
+
+        Sequence:
+          1. Wait for `v3_version` to be set (F1 frame received from the
+             SECRET handshake). Without this the robot isn't in V3 mode
+             yet and silently drops `GET_TIME_3`.
+          2. Send `GET_TIME_3` (op `0x0b`). The robot replies with a
+             uint64 timestamp; our notify handler runs `_reply_check3`
+             which echoes timestamp+1 as `CHECK_3` (op `0x0c`).
+          3. Wait for the robot's ack of `CHECK_3` (op `0x0c`,
+             `result=0x01`). Only after this does the firmware accept
+             `GET_SN` / `GET_AP_MAC` / `WIFI_*`.
+
+        Returns False on timeout at any step (caller can retry)."""
         if self.aes_key is None or not self.connected:
-            return
+            return False
+
+        # Step 1 — F1 must have been received before the firmware will
+        # honour any GCM-wrapped op. When /v3/aes-key races ahead of the
+        # connect handshake, this is the gate that holds us back.
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + 5.0
+        while self.v3_version is None and loop.time() < deadline:
+            await asyncio.sleep(0.05)
+        if self.v3_version is None:
+            log.info("V3 handshake aborted: no F1 frame within 5s — robot not in V3 mode")
+            return False
+
+        # Step 2 — send GET_TIME_3 and watch for the CHECK_3 ack from the
+        # robot. The intermediate 0x0b reply is consumed by `_reply_check3`
+        # (which sends our 0x0c) without touching `self.response`, so the
+        # next thing to land in `self.response` is the 0x0c ack we want.
+        self.event.clear()
+        self.response = None
         pkt = build_gcm_v3(0x0b, b"", self.aes_key)
         log.debug(f"BLE → GET_TIME_3 (V3 handshake init, op=0x0b): {len(pkt)}B {pkt[:32].hex()}{'…' if len(pkt) > 32 else ''}")
         await self._write(pkt)
+
+        def have_check3_ack() -> bool:
+            r = self.response
+            return bool(r and len(r) >= 4 and r[0] == 0x51 and r[2] == 0x0c)
+
+        await self._wait_until(have_check3_ack, 5.0)
+        r = self.response
+        if r and len(r) >= 4 and r[0] == 0x51 and r[2] == 0x0c:
+            ok = (r[3] == 0x01)
+            log.info(f"V3 handshake complete: CHECK_3 ack result=0x{r[3]:02x} ({'ok' if ok else 'fail'})")
+            return ok
+        log.info("V3 handshake timed out: no CHECK_3 ack within 5s")
+        return False
 
     async def _wait_until(self, predicate, total_timeout: float) -> bool:
         """Wait for `predicate()` to become truthy by polling self.event.
@@ -1330,18 +1370,24 @@ async def info():
 
 @app.post("/v3/aes-key")
 async def v3_set_aes_key(key: str):
-    """Install the per-device AES-128 key (32 hex chars) used to decrypt
-    V3 (G1 ≥ 1.5.1) GCM-wrapped BLE frames, then kick off the V3
-    handshake by sending `GET_TIME_3` (op `0x0b`). The robot responds
-    with a timestamp; our notify handler echoes back `CHECK_3` (`0x0c`)
-    and the firmware then accepts subsequent `GET_SN` / `GET_AP_MAC` /
-    `WIFI_*` commands."""
+    """Install the per-device AES-128 key and run the V3 GCM handshake
+    end-to-end. Returns once the robot has acked `CHECK_3` — at that
+    point a follow-up `/info` is guaranteed to find a fully armed
+    session and resolve SN / AP MAC on the first try.
+
+    `armed=False` in the response means the handshake didn't complete
+    (e.g. the call landed before F1 was received, or the robot didn't
+    reply in time). The caller can retry."""
     if not session.connected:
         raise HTTPException(400, "Not connected")
     if not session.set_aes_key(key):
         raise HTTPException(400, "Invalid AES key (expected 32/48/64 hex chars)")
-    await session._kick_v3_handshake()
-    return {"ok": True, "key_bytes": len(session.aes_key) if session.aes_key else 0}
+    armed = await session._kick_v3_handshake()
+    return {
+        "ok": True,
+        "armed": armed,
+        "key_bytes": len(session.aes_key) if session.aes_key else 0,
+    }
 
 
 @app.get("/v3/gcm-key")
