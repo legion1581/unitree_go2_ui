@@ -938,6 +938,7 @@ export class AccountPage {
         ['GET', 'device/online/status', 'sn='],
         ['GET', 'device/network', 'sn='],
         ['POST', 'device/network/update', 'sn=\nconnIp=\nconnMode='],
+        ['POST', 'device/bindExtData', 'extData=\nsn='],
         ['POST', 'device/notifyUnBind', 'sn='],
         ['POST', 'device/wallet', 'sn='],
       ]],
