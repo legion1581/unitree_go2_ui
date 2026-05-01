@@ -1114,7 +1114,6 @@ export class AccountPage {
       ]],
       ['Content', [
         ['GET', 'tutorial/list', 'appName=Go2\ntype='],
-        ['GET', 'v2/tutorial/list', 'appName=Go2\ntype='],
         ['POST', 'tutorial/read', 'id='],
         ['GET', 'app/notice/list', ''],
         ['GET', 'advertisements', 'position=1'],

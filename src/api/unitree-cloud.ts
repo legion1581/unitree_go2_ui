@@ -660,11 +660,10 @@ export class UnitreeCloudAPI {
    * Fetch tutorial videos. The cloud filters by (series, model) tuple —
    * decompiled from the Explore APK at
    *   com/unitree/godog/data/repository/AppRepository.getTutorialList()
-   * which sends `appName = currentDog.series` and `type = currentDog.model`.
-   * For Go2 the model is empty and the cloud returns the generic dog set;
-   * for G1 an empty model also returns that generic set, so G1-specific
-   * tutorials only show up when `type` is the actual device model
-   * (e.g. "day" for G1 EDU).
+   * which calls GET tutorial/list?appName=<currentDog.series>&type=<currentDog.model>.
+   * Empty model returns the generic legacy set, so G1-specific tutorials
+   * only show up when `type` is the actual device model (e.g. "day" for
+   * G1 EDU).
    *
    * Caller can pass an explicit `model`; otherwise we look up the user's
    * first bound device matching the account family and use its model. As
@@ -683,17 +682,6 @@ export class UnitreeCloudAPI {
         type = 'day';
       }
     }
-    // Try v2 (grouped), fall back to v1 (flat)
-    try {
-      const resp = await this.request<{ groupList?: Array<{ name: string; tutorialList: unknown[] }> }>('GET', 'v2/tutorial/list', { appName, type });
-      if (resp.code === 100 && resp.data?.groupList) {
-        return resp.data.groupList.map(g => ({
-          name: g.name,
-          tutorials: g.tutorialList as TutorialGroup['tutorials'],
-        }));
-      }
-    } catch { /* fall through */ }
-
     try {
       const flat = await this.get<TutorialGroup['tutorials']>('tutorial/list', { appName, type });
       if (Array.isArray(flat) && flat.length) return [{ name: 'Tutorials', tutorials: flat }];
