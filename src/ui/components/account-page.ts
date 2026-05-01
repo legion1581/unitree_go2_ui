@@ -365,23 +365,12 @@ export class AccountPage {
       session.appendChild(this.buildTokenRow('Access Token', cloudApi.accessToken));
     }
 
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;';
-    const refreshBtn = document.createElement('button');
-    refreshBtn.className = 'acct-btn acct-btn-secondary';
-    refreshBtn.style.flex = '1';
-    refreshBtn.textContent = 'Refresh Info';
-    refreshBtn.addEventListener('click', async () => {
-      try { await cloudApi.getUserInfo(); this.switchTab('account'); } catch (e) { alert(String(e)); }
-    });
-    btnRow.appendChild(refreshBtn);
     const logoutBtn = document.createElement('button');
     logoutBtn.className = 'acct-btn acct-btn-danger';
-    logoutBtn.style.flex = '1';
+    logoutBtn.style.width = '100%';
     logoutBtn.textContent = 'Logout';
     logoutBtn.addEventListener('click', () => { cloudApi.logout(); this.switchTab('account'); });
-    btnRow.appendChild(logoutBtn);
-    session.appendChild(btnRow);
+    session.appendChild(logoutBtn);
     this.content.appendChild(session);
   }
 

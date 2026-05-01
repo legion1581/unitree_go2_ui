@@ -37,6 +37,21 @@ body {
 
 .landing-container {
   text-align: center;
+  /* Translucent panel so the bg art shows through — same recipe as the
+     connection-modal (~72% opacity + backdrop blur). */
+  background: rgba(26, 29, 35, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 32px 40px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+html[data-theme="light"] .landing-container {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(60, 75, 120, 0.12);
+  box-shadow: 0 4px 16px rgba(60, 75, 120, 0.12);
 }
 
 .landing-title {
@@ -183,12 +198,26 @@ body {
   padding: 12px;
   border-radius: 8px;
   border: none;
-  background: linear-gradient(230deg, #6879e4, #495abf);
-  color: #fff;
+  /* Bright cyan gradient — pops against the translucent dark modal sitting
+     over the Go2/G1 hero art. Dark text + subtle glow for max contrast. */
+  background: linear-gradient(230deg, #5dd4ff, #1ea7e6);
+  color: #07131a;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.3px;
   cursor: pointer;
   margin-top: 8px;
+  box-shadow: 0 4px 14px rgba(79, 195, 247, 0.35), 0 1px 0 rgba(255, 255, 255, 0.18) inset;
+  transition: filter 0.15s, transform 0.05s, box-shadow 0.15s;
+}
+
+.btn-connect:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 18px rgba(79, 195, 247, 0.5), 0 1px 0 rgba(255, 255, 255, 0.22) inset;
+}
+
+.btn-connect:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .btn-connect:disabled {
