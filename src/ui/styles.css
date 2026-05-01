@@ -23,16 +23,27 @@ body {
 
 /* ── Landing Screen ──
    Empty (robot-less) APK landing art. The family-scoped art kicks in on
-   the connection screen once the user actually picks Go2 / G1. */
+   the connection screen once the user actually picks Go2 / G1.
+   The bg image sits on a ::before layer so filter: invert can flip just
+   the art for the light theme without touching the title / tiles. */
 .app-root.landing-screen {
   display: flex;
   align-items: center;
   justify-content: center;
   background-color: #0f1114;
-  background-position: center center;
-  background-repeat: no-repeat;
-  background-size: cover;
-  background-image: url('/sprites/bg_main_empty.png');
+  position: relative;
+  overflow: hidden;
+}
+.app-root.landing-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: url('/sprites/bg_main_empty.png') center / cover no-repeat;
+  z-index: 0;
+}
+.app-root.landing-screen > * {
+  position: relative;
+  z-index: 1;
 }
 
 .landing-container {
@@ -70,21 +81,37 @@ html[data-theme="light"] .landing-container {
 }
 
 /* ── Connection Screen ──
-   Family-scoped background image (Go2 / G1 hero) — mirrors the APK. */
+   Family-scoped background image (Go2 / G1 hero) — mirrors the APK.
+   Same ::before layer trick as the landing screen: the bg image is on
+   a pseudo-element so filter: invert flips just the art in light mode
+   without affecting the modal sitting on top. */
 .app-root.connection-screen {
   display: flex;
   align-items: center;
   justify-content: center;
   background-color: #0f1114;
+  position: relative;
+  overflow: hidden;
+}
+.app-root.connection-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
   background-position: center center;
   background-repeat: no-repeat;
   background-size: cover;
+  z-index: 0;
+  transition: filter 0.2s;
 }
-.app-root.connection-screen.connection-family-go2 {
+.app-root.connection-screen.connection-family-go2::before {
   background-image: url('/sprites/bg_main_leading.png');
 }
-.app-root.connection-screen.connection-family-g1 {
+.app-root.connection-screen.connection-family-g1::before {
   background-image: url('/sprites/bg_main_g1.png');
+}
+.app-root.connection-screen > * {
+  position: relative;
+  z-index: 1;
 }
 
 .connection-modal {
@@ -2476,10 +2503,17 @@ html[data-theme="light"] .app-root.services-screen {
   background: #eef1f7;
 }
 /* Landing + Connection keep their bg images in both themes — only swap
-   the fallback color so it blends with the surrounding chrome on light. */
+   the fallback color so it blends with the surrounding chrome on light.
+   The ::before layer carries the actual image; invert + hue-rotate flip
+   the dark art into a light-friendly version without psychedelic colors
+   (true invert alone would shift hue 180°; the rotate cancels that). */
 html[data-theme="light"] .app-root.landing-screen,
 html[data-theme="light"] .app-root.connection-screen {
   background-color: #eef1f7;
+}
+html[data-theme="light"] .app-root.landing-screen::before,
+html[data-theme="light"] .app-root.connection-screen::before {
+  filter: invert(1) hue-rotate(180deg);
 }
 
 html[data-theme="light"] .landing-title {
