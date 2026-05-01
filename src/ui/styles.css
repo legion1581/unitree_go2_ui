@@ -2335,11 +2335,14 @@ textarea.acct-input.acct-input-mono { color: #e0e0e0; }
   color: #4fc3f7 !important;
 }
 
-/* BT page content (dark default) */
+/* BT page content (dark default).
+   align-self overrides the parent's flex-column stretch so max-width
+   actually narrows the column; width:100% then fills up to that cap. */
 .bt-page-content {
   color: #ccc;
+  align-self: center;
+  width: 100%;
   max-width: 560px;
-  margin: 0 auto;
   font-size: 13px;
 }
 html[data-theme="light"] .bt-page-content {
