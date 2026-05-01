@@ -37,19 +37,19 @@ body {
 
 .landing-container {
   text-align: center;
-  /* Translucent panel so the bg art shows through — same recipe as the
-     connection-modal (~72% opacity + backdrop blur). */
-  background: rgba(26, 29, 35, 0.72);
+  /* Translucent panel so the bg art shows through — lower opacity (~40%)
+     than the connection-modal so the empty hero stays prominent. */
+  background: rgba(26, 29, 35, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 14px;
   padding: 32px 40px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 html[data-theme="light"] .landing-container {
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.4);
   border-color: rgba(60, 75, 120, 0.12);
   box-shadow: 0 4px 16px rgba(60, 75, 120, 0.12);
 }

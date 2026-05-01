@@ -1247,12 +1247,14 @@ export class AccountPage {
     } catch { return null; }
   }
 
-  /** Build a one-line token chip with a hover-to-parse info popover.
-   *  The chip itself is selectable (so the user can grab the raw token);
-   *  the ⓘ on the right pops a panel with the decoded JWT claims. */
+  /** Build a token row: one-line chip + always-visible parsed claims below.
+   *  The chip itself is selectable so the user can grab the raw token. */
   private buildTokenRow(label: string, token: string): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:12px;';
+
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;position:relative;';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;';
 
     const lbl = document.createElement('span');
     lbl.style.cssText = 'font-size:11px;color:#666;flex-shrink:0;';
@@ -1266,28 +1268,21 @@ export class AccountPage {
     row.appendChild(chip);
 
     row.appendChild(this.copyBtn(token));
+    wrap.appendChild(row);
 
-    // Info icon — hover shows the parsed claims popover.
-    const info = document.createElement('span');
-    info.textContent = 'ⓘ';
-    info.style.cssText = 'font-size:14px;color:#4fc3f7;cursor:help;flex-shrink:0;user-select:none;';
-    row.appendChild(info);
-
-    const popover = document.createElement('div');
-    popover.style.cssText = 'position:absolute;top:100%;right:0;margin-top:6px;z-index:30;background:rgba(15,17,20,0.98);border:1px solid #2a2d35;border-radius:6px;padding:10px 12px;font-size:11px;color:#ccc;max-width:520px;min-width:280px;box-shadow:0 6px 20px rgba(0,0,0,0.5);display:none;font-family:monospace;line-height:1.6;white-space:pre-wrap;word-break:break-all;';
-    row.appendChild(popover);
-
-    const renderPopover = (): void => {
-      const payload = this.parseJwt(token);
-      if (!payload) {
-        popover.innerHTML = `<div style="color:#888;font-family:system-ui,-apple-system,sans-serif;">Not a JWT — raw token is shown above.</div>`;
-        return;
-      }
-      const lines: string[] = [];
+    // Always-visible parsed claims block below the chip.
+    const claims = document.createElement('div');
+    claims.style.cssText = 'margin-top:8px;padding:8px 10px;background:#08090c;border:1px solid #1a1d23;border-radius:4px;font-family:monospace;font-size:11px;line-height:1.6;color:#ccc;';
+    const payload = this.parseJwt(token);
+    if (!payload) {
+      claims.style.fontFamily = 'system-ui,-apple-system,sans-serif';
+      claims.style.color = '#888';
+      claims.textContent = 'Not a JWT — raw token shown above.';
+    } else {
       const now = Math.floor(Date.now() / 1000);
-      // Render known time fields as ISO + relative ("in 23h", "12m ago"); pass
-      // everything else through with simple value escaping. Keeps the popover
-      // useful even if the token gains new claims later.
+      const lines: string[] = [];
+      // Render known time fields as ISO + relative ("in 23h", "12m ago");
+      // pass everything else through verbatim so new claims show up too.
       for (const [k, v] of Object.entries(payload)) {
         let display: string;
         if ((k === 'exp' || k === 'iat' || k === 'nbf') && typeof v === 'number') {
@@ -1306,24 +1301,11 @@ export class AccountPage {
         }
         lines.push(`<div><span style="color:#6879e4;">${this.esc(k)}</span>: ${display}</div>`);
       }
-      popover.innerHTML = lines.join('') || '<div style="color:#888;">Empty payload</div>';
-    };
+      claims.innerHTML = lines.join('') || '<div style="color:#888;">Empty payload</div>';
+    }
+    wrap.appendChild(claims);
 
-    let hoverTimer: ReturnType<typeof setTimeout> | null = null;
-    info.addEventListener('mouseenter', () => {
-      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
-      renderPopover();
-      popover.style.display = 'block';
-    });
-    info.addEventListener('mouseleave', () => {
-      hoverTimer = setTimeout(() => { popover.style.display = 'none'; }, 200);
-    });
-    popover.addEventListener('mouseenter', () => {
-      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
-    });
-    popover.addEventListener('mouseleave', () => { popover.style.display = 'none'; });
-
-    return row;
+    return wrap;
   }
 
   /** Format a positive number of seconds as "1d 3h", "23m", "45s". */
