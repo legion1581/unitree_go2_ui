@@ -1,5 +1,6 @@
 /**
  * Floating Bluetooth status indicator (upper-right corner).
+ * Passive: shows connection state via icon color; hover reveals device tooltip.
  * Subscribes to the shared BLE backend WebSocket for push-based status updates.
  */
 
@@ -27,7 +28,6 @@ export class BtStatusIcon {
     remoteConnected: false, remoteName: '', remoteAddress: '',
   };
   private statusChangeListeners: Array<(s: BluetoothStatus) => void> = [];
-  private clickHandler: (() => void) | null = null;
 
   constructor(parent: HTMLElement) {
     this.container = document.createElement('div');
@@ -35,7 +35,7 @@ export class BtStatusIcon {
     this.container.style.cssText = 'position:fixed;top:12px;right:14px;z-index:9000;display:flex;align-items:center;pointer-events:auto;';
 
     this.iconWrap = document.createElement('div');
-    this.iconWrap.style.cssText = 'width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);';
+    this.iconWrap.style.cssText = 'width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;display:flex;align-items:center;justify-content:center;cursor:default;transition:background 0.15s,border-color 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);';
     this.iconWrap.innerHTML = BT_SVG('#b0b3bb');
     this.container.appendChild(this.iconWrap);
 
@@ -45,25 +45,13 @@ export class BtStatusIcon {
 
     this.iconWrap.addEventListener('mouseenter', () => {
       this.tooltip.style.display = 'block';
-      this.iconWrap.style.background = 'rgba(79,195,247,0.2)';
-      this.iconWrap.style.transform = 'scale(1.05)';
     });
     this.iconWrap.addEventListener('mouseleave', () => {
       this.tooltip.style.display = 'none';
-      this.iconWrap.style.background = this.lastStatus.robotConnected || this.lastStatus.remoteConnected ? 'rgba(79,195,247,0.15)' : 'rgba(26,29,35,0.95)';
-      this.iconWrap.style.transform = 'scale(1)';
-    });
-    this.iconWrap.addEventListener('click', () => {
-      this.tooltip.style.display = 'none';
-      this.clickHandler?.();
     });
 
     parent.appendChild(this.container);
     this.unsubscribe = btBackend().subscribe('status', (msg) => this.handleStatus(msg));
-  }
-
-  setClickHandler(handler: () => void): void {
-    this.clickHandler = handler;
   }
 
   onStatusChange(cb: (s: BluetoothStatus) => void): void {

@@ -117,7 +117,6 @@ export class App {
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
-    this.btStatusIcon.setClickHandler(() => this.toggleBtPopover());
     this.btStatusIcon.onStatusChange((s) => {
       this.btStatus = s;
       // Update nav-bar BT icon (control view)
@@ -180,6 +179,12 @@ export class App {
       this.showAccountScreen();
     });
     tiles.appendChild(acctBtn);
+
+    const btBtn = document.createElement('button');
+    btBtn.className = 'hub-btn hub-btn-secondary';
+    btBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/></svg><span>Bluetooth</span>`;
+    btBtn.addEventListener('click', () => this.toggleBtPopover());
+    tiles.appendChild(btBtn);
 
     wrap.appendChild(tiles);
     this.root.appendChild(wrap);
