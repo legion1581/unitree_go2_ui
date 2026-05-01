@@ -5,6 +5,7 @@
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
 import { setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
 import { buildCloudPrefsRow } from './cloud-prefs';
+import { makeCopyButton } from './copy-button';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -552,22 +553,7 @@ export class AccountPage {
   }
 
   private copyBtn(text: string): HTMLButtonElement {
-    const b = document.createElement('button');
-    b.className = 'acct-btn acct-btn-secondary';
-    b.style.cssText = 'padding:2px 8px;font-size:10px;flex-shrink:0;';
-    b.textContent = 'Copy';
-    b.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        const orig = b.textContent;
-        b.textContent = 'Copied';
-        setTimeout(() => { b.textContent = orig; }, 1200);
-      } catch {
-        b.textContent = 'Failed';
-        setTimeout(() => { b.textContent = 'Copy'; }, 1200);
-      }
-    });
-    return b;
+    return makeCopyButton(text);
   }
 
   private async showDeviceDetail(dev: RobotDevice): Promise<void> {
@@ -941,27 +927,10 @@ export class AccountPage {
     resultWrap.style.cssText = 'position:relative;margin-top:8px;display:none;';
     const resultEl = document.createElement('pre');
     resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;padding:10px 10px 10px 10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;margin:0;user-select:text;-webkit-user-select:text;';
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.textContent = 'Copy';
-    copyBtn.style.cssText = 'position:absolute;top:6px;right:6px;padding:3px 10px;font-size:11px;border-radius:4px;border:1px solid #2a2d35;background:rgba(26,29,35,0.9);color:#aaa;cursor:pointer;font-family:inherit;';
-    copyBtn.addEventListener('mouseenter', () => { copyBtn.style.background = 'rgba(79,195,247,0.15)'; copyBtn.style.color = '#4fc3f7'; copyBtn.style.borderColor = 'rgba(79,195,247,0.4)'; });
-    copyBtn.addEventListener('mouseleave', () => { copyBtn.style.background = 'rgba(26,29,35,0.9)'; copyBtn.style.color = '#aaa'; copyBtn.style.borderColor = '#2a2d35'; });
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(resultEl.textContent || '');
-        const orig = copyBtn.textContent;
-        copyBtn.textContent = 'Copied ✓';
-        setTimeout(() => { copyBtn.textContent = orig; }, 1200);
-      } catch {
-        // Fallback: select the text so the user can Ctrl+C
-        const range = document.createRange();
-        range.selectNodeContents(resultEl);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      }
-    });
+    const copyBtn = makeCopyButton(() => resultEl.textContent || '');
+    copyBtn.style.position = 'absolute';
+    copyBtn.style.top = '6px';
+    copyBtn.style.right = '6px';
     resultWrap.appendChild(resultEl);
     resultWrap.appendChild(copyBtn);
 
@@ -1182,19 +1151,7 @@ export class AccountPage {
 
     // Copy button for mono values (SN, IP, keys, etc.)
     if (mono && value && value !== '-') {
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'acct-info-copy';
-      copyBtn.textContent = '📋';
-      copyBtn.title = 'Copy to clipboard';
-      copyBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(value).then(() => {
-          copyBtn.textContent = '✓';
-          copyBtn.style.color = '#66bb6a';
-          setTimeout(() => { copyBtn.textContent = '📋'; copyBtn.style.color = ''; }, 1500);
-        });
-      });
-      row.appendChild(copyBtn);
+      row.appendChild(makeCopyButton(value));
     }
 
     parent.appendChild(row);

@@ -1916,19 +1916,56 @@ html[data-theme="light"] .mapping-substate {
   flex: 1;
 }
 
-.mapping-log-copy {
+/* Shared copy-button (see copy-button.ts). Icon-only, hover → cyan,
+   click → green checkmark, error → red flash. Used wherever a small
+   "copy this value" affordance is needed. */
+.copy-btn {
+  width: 24px;
+  height: 24px;
   background: transparent;
   border: 1px solid #2a2d35;
-  color: #6879e4;
-  font-size: 10px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  color: #888;
+  border-radius: 6px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.05s;
   font-family: inherit;
+  line-height: 0;
+}
+.copy-btn:hover {
+  background: rgba(79, 195, 247, 0.12);
+  border-color: rgba(79, 195, 247, 0.4);
+  color: #4fc3f7;
+}
+.copy-btn:active {
+  transform: scale(0.94);
+}
+.copy-btn.copy-btn-success {
+  background: rgba(102, 187, 106, 0.18);
+  border-color: rgba(102, 187, 106, 0.55);
+  color: #66bb6a;
+}
+.copy-btn.copy-btn-error {
+  background: rgba(239, 83, 80, 0.18);
+  border-color: rgba(239, 83, 80, 0.55);
+  color: #ef5350;
 }
 
-.mapping-log-copy:hover {
-  background: rgba(104, 121, 228, 0.1);
+html[data-theme="light"] .copy-btn {
+  border-color: #d4d9e4;
+  color: #6a7283;
+}
+html[data-theme="light"] .copy-btn:hover {
+  background: rgba(104, 121, 228, 0.10);
+  border-color: rgba(104, 121, 228, 0.4);
+  color: #6879e4;
+}
+html[data-theme="light"] .copy-btn.copy-btn-success {
+  color: #2e7d32;
 }
 
 .mapping-cmd-row {
@@ -2370,16 +2407,6 @@ textarea.acct-input.acct-input-mono { color: #e0e0e0; }
   font-family: monospace;
   font-size: 12px;
 }
-.acct-info-copy {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px 4px;
-  color: #555;
-  font-size: 11px;
-  flex-shrink: 0;
-}
-
 /* File-input "Choose file" button — browsers render this as a native button
    that ignores most CSS; ::file-selector-button is the standardized hook. */
 .acct-file-input::file-selector-button {
@@ -2643,7 +2670,6 @@ html[data-theme="light"] .hub-remote-section {
    SN / Series / Model / version numbers etc. become legible on white. */
 html[data-theme="light"] .acct-info-label { color: #5a6170; }
 html[data-theme="light"] .acct-info-value { color: #1a1d23; }
-html[data-theme="light"] .acct-info-copy  { color: #8b92a0; }
 
 /* G1 motor callouts — value text flanking the humanoid PNG. */
 .g1-motor-callout { color: #e0e0e0; }
@@ -3016,15 +3042,6 @@ html[data-theme="light"] .mapping-log {
 
 html[data-theme="light"] .mapping-log-line {
   border-bottom-color: #eef1f7;
-}
-
-html[data-theme="light"] .mapping-log-copy {
-  border-color: #c4cbd6;
-  color: #4856b8;
-}
-
-html[data-theme="light"] .mapping-log-copy:hover {
-  background: rgba(104, 121, 228, 0.12);
 }
 
 html[data-theme="light"] .mapping-saved-list {

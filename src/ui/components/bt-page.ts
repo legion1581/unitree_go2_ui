@@ -6,6 +6,7 @@
 
 import { btBackend } from '../../api/bt-backend';
 import { getCachedAesKey, setCachedAesKey } from '../../api/aes-key-derive';
+import { makeCopyButton } from './copy-button';
 
 const BLE_API = '/ble-api';
 
@@ -193,29 +194,7 @@ export class BtPage {
   }
 
   private copyButton(text: string): HTMLButtonElement {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.title = 'Copy to clipboard';
-    btn.style.cssText = 'padding:2px 6px;font-size:10px;border-radius:3px;cursor:pointer;background:transparent;border:1px solid #1f2229;color:#888;font-family:inherit;flex-shrink:0;line-height:1;';
-    btn.textContent = 'Copy';
-    btn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        const orig = btn.textContent;
-        btn.textContent = 'Copied';
-        btn.style.color = '#66bb6a';
-        btn.style.borderColor = 'rgba(102,187,106,0.4)';
-        setTimeout(() => {
-          btn.textContent = orig;
-          btn.style.color = '#888';
-          btn.style.borderColor = '#1f2229';
-        }, 1200);
-      } catch {
-        btn.textContent = 'Failed';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
-      }
-    });
-    return btn;
+    return makeCopyButton(text);
   }
 
   private section(title: string): HTMLElement {

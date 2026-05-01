@@ -5,6 +5,7 @@ import { putBundle, getBundle, deleteBundle, bytesToBase64, base64ToBytes, bundl
 import { theme } from '../theme';
 import type { BluetoothStatus } from './bt-status-icon';
 import { PipCamera } from './pip-camera';
+import { makeCopyButton } from './copy-button';
 
 const BT_SVG = (color: string): string =>
   `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`;
@@ -891,22 +892,7 @@ export class MappingPage {
       topicHint.className = 'mapping-cmd-hint mapping-log-topic';
       topicHint.textContent = `← ${RTC_TOPIC.USLAM_SERVER_LOG}`;
       header.appendChild(topicHint);
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'mapping-log-copy';
-      copyBtn.textContent = 'Copy';
-      copyBtn.addEventListener('click', async () => {
-        const text = this.logEl?.innerText ?? '';
-        try {
-          await navigator.clipboard.writeText(text);
-          const prev = copyBtn.textContent;
-          copyBtn.textContent = 'Copied';
-          setTimeout(() => { copyBtn.textContent = prev; }, 1200);
-        } catch {
-          copyBtn.textContent = 'Failed';
-          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
-        }
-      });
-      header.appendChild(copyBtn);
+      header.appendChild(makeCopyButton(() => this.logEl?.innerText ?? ''));
       body.appendChild(header);
 
       this.logEl = document.createElement('div');
