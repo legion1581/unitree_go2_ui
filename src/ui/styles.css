@@ -2176,7 +2176,16 @@ html[data-theme="light"] .mapping-substate {
   transform: translateX(-50%) translateY(0);
 }
 
-/* ── Account Manager ── */
+/* ── Account Manager ──
+   On wide screens, cap the content column so sections don't sprawl
+   edge-to-edge. Header + tab-bar stay full-width as chrome strips;
+   only the inner content blocks get centered + max-widthed. */
+.acct-page .page-content > * {
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .acct-tab-bar {
   display: flex;
   border-bottom: 1px solid #1a1d23;

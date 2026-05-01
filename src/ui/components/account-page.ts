@@ -18,7 +18,7 @@ export class AccountPage {
 
   constructor(parent: HTMLElement, private onBack: () => void) {
     this.container = document.createElement('div');
-    this.container.className = 'status-page';
+    this.container.className = 'status-page acct-page';
 
     // Header — hidden on the logged-out screen (the modal there has its own
     // inline back button so the layout matches the Connect screen).
