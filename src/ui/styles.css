@@ -21,12 +21,24 @@ body {
   width: 100vw;
 }
 
-/* ── Landing Screen ── */
+/* ── Landing Screen ──
+   Family-scoped background image (mirrors the official Unitree Explore
+   APK landing art). Falls back to the dark theme color while the image
+   loads or if the asset is missing. */
 .app-root.landing-screen {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0f1114;
+  background-color: #0f1114;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+.app-root.landing-screen.landing-family-go2 {
+  background-image: url('/sprites/bg_main_leading.png');
+}
+.app-root.landing-screen.landing-family-g1 {
+  background-image: url('/sprites/bg_main_g1.png');
 }
 
 .landing-container {
@@ -2408,10 +2420,14 @@ html[data-theme="light"] body {
 
 html[data-theme="light"] .app-root.connection-screen,
 html[data-theme="light"] .app-root.hub-screen,
-html[data-theme="light"] .app-root.landing-screen,
 html[data-theme="light"] .app-root.status-screen,
 html[data-theme="light"] .app-root.services-screen {
   background: #eef1f7;
+}
+/* Landing keeps the family-scoped image in both themes — only swap the
+   fallback color so it blends with the surrounding chrome on light. */
+html[data-theme="light"] .app-root.landing-screen {
+  background-color: #eef1f7;
 }
 
 html[data-theme="light"] .landing-title {

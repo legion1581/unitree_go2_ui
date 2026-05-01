@@ -154,7 +154,9 @@ export class App {
     this.accountFromLanding = false;
     this.btFromLanding = false;
     this.root.innerHTML = '';
-    this.root.className = 'app-root landing-screen';
+    // Family modifier drives the background art (Go2 vs G1).
+    const familyMod = cloudApi.family === 'G1' ? 'landing-family-g1' : 'landing-family-go2';
+    this.root.className = `app-root landing-screen ${familyMod}`;
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
 
