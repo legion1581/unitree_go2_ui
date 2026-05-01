@@ -671,13 +671,22 @@ export class UnitreeCloudAPI {
    * "day", which covers the common G1 EDU variant.
    */
   async getTutorials(model?: string): Promise<TutorialGroup[]> {
-    const appName = APP_NAME[this._family];
+    // appName here is the device *series* (the value the cloud filters on),
+    // NOT the AppName HTTP header (which is "B2" for the whole Explorer
+    // line). The APK passes currentDog.series directly — for G1 robots
+    // that's literally "G1", and for Go2 it's "Go2".
+    let appName: string = this._family;
     let type = model ?? '';
     if (model === undefined && this._family === 'G1') {
       try {
         const devs = await this.listDevices();
         const g1 = devs.find(d => d.series === 'G1');
-        type = g1?.model || 'day';
+        if (g1) {
+          appName = g1.series;
+          type = g1.model || 'day';
+        } else {
+          type = 'day';
+        }
       } catch {
         type = 'day';
       }
