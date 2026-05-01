@@ -74,11 +74,15 @@ body {
 
 .connection-modal {
   width: 360px;
-  background: #1a1d23;
-  border: 1px solid #2a2d35;
+  /* Semi-transparent so the family bg art shows through; backdrop-filter
+     blurs the art behind the panel so form labels stay readable. */
+  background: rgba(26, 29, 35, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   padding: 28px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 /* Two-row header for the Connect / Account-login modals: a small "Main
@@ -2451,7 +2455,12 @@ html[data-theme="light"] .conn-remote-hint {
 }
 
 /* Connection modal + hub container */
-html[data-theme="light"] .connection-modal,
+html[data-theme="light"] .connection-modal {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(60, 75, 120, 0.12);
+  color: #1a1d23;
+  box-shadow: 0 4px 16px rgba(60, 75, 120, 0.12);
+}
 html[data-theme="light"] .hub-container {
   background: #ffffff;
   border: 1px solid #d4d9e4;
