@@ -992,6 +992,15 @@ export class BtPage {
     stickInfo.style.cssText = 'text-align:center;font-size:9px;color:#555;font-family:monospace;margin-top:6px;';
     ctrl.appendChild(stickInfo);
 
+    // Heads-up: tearing down the BLE link kills the BT-remote relay too.
+    // Users coming here just to *check* the relay status should hit the
+    // page back button instead of Disconnect — see README → "BT remote
+    // relay" for the full flow.
+    const note = document.createElement('div');
+    note.style.cssText = 'margin-top:6px;padding:8px 10px;border-left:2px solid #4fc3f7;background:rgba(79,195,247,0.06);border-radius:4px;font-size:11px;color:#aaa;line-height:1.5;';
+    note.innerHTML = 'Want to use the <strong style="color:#4fc3f7;">BT remote relay</strong> on the control screen? Press the page <strong>back button</strong> — Disconnect tears down the BLE link and the relay loses its source. (See README → "BT remote relay".)';
+    this.remoteBody.appendChild(note);
+
     // Disconnect
     const disc = this.button('Disconnect Remote', async () => {
       disc.disabled = true;
@@ -999,6 +1008,7 @@ export class BtPage {
       try { await this.fetchJSON('/remote/disconnect', { method: 'POST' }); } catch {}
       this.refreshStatus();
     }, 'danger');
+    disc.style.marginTop = '8px';
     this.remoteBody.appendChild(disc);
 
     // Store refs + subscribe to WebSocket for push updates
