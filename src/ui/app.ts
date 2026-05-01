@@ -154,9 +154,7 @@ export class App {
     this.accountFromLanding = false;
     this.btFromLanding = false;
     this.root.innerHTML = '';
-    // Family modifier drives the background art (Go2 vs G1).
-    const familyMod = cloudApi.family === 'G1' ? 'landing-family-g1' : 'landing-family-go2';
-    this.root.className = `app-root landing-screen ${familyMod}`;
+    this.root.className = 'app-root landing-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
 
@@ -202,7 +200,7 @@ export class App {
   private showConnectionScreen(): void {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
-    this.root.className = 'app-root connection-screen';
+    this.applyConnectionFamilyClass();
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
 
@@ -218,7 +216,17 @@ export class App {
         this.accountFromLanding = true;
         this.showAccountScreen();
       },
+      () => this.applyConnectionFamilyClass(),
     );
+  }
+
+  /** Set connection-screen background art to match the currently selected
+   *  family. Called on screen entry and whenever the user toggles the
+   *  Family pill on the cloud-prefs row. */
+  private applyConnectionFamilyClass(): void {
+    if (this.currentScreen !== 'connection') return;
+    const familyMod = cloudApi.family === 'G1' ? 'connection-family-g1' : 'connection-family-go2';
+    this.root.className = `app-root connection-screen ${familyMod}`;
   }
 
 

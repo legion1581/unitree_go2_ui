@@ -27,14 +27,22 @@ export class ConnectionPanel {
   private onConnect: ConnectHandler;
   private onBack: () => void;
   private onAccountManager: () => void;
+  private onFamilyChange: (() => void) | null;
   private authUnsub: () => void;
 
-  constructor(parent: HTMLElement, onConnect: ConnectHandler, onBack: () => void, onAccountManager: () => void) {
+  constructor(
+    parent: HTMLElement,
+    onConnect: ConnectHandler,
+    onBack: () => void,
+    onAccountManager: () => void,
+    onFamilyChange?: () => void,
+  ) {
     this.container = document.createElement('div');
     this.container.className = 'connection-panel';
     this.onConnect = onConnect;
     this.onBack = onBack;
     this.onAccountManager = onAccountManager;
+    this.onFamilyChange = onFamilyChange ?? null;
     this.build();
     parent.appendChild(this.container);
 
@@ -106,13 +114,16 @@ export class ConnectionPanel {
     // header and which Unitree endpoint we hit. Re-render the heading on
     // change so "Connect to <family>" stays in sync.
     const familyLabel = this.container.querySelector('#conn-family-label') as HTMLElement;
-    const updateFamilyLabel = (): void => { familyLabel.textContent = FAMILY_LABEL[cloudApi.family]; };
-    updateFamilyLabel();
+    const onPrefChange = (): void => {
+      familyLabel.textContent = FAMILY_LABEL[cloudApi.family];
+      this.onFamilyChange?.();
+    };
+    onPrefChange();
     const prefsSlot = this.container.querySelector('#conn-prefs-slot') as HTMLElement;
     // Region lives on the Account Manager login screen — Connect only needs
     // the family switch (Go2 / G1) since it picks the visual label and the
     // local-network scan filter.
-    prefsSlot.replaceWith(buildCloudPrefsRow({ showRegion: false, onChange: updateFamilyLabel }));
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showRegion: false, onChange: onPrefChange }));
 
     this.modeSelect.addEventListener('change', () => {
       // Block selecting Remote while logged out — bounce back to STA-L.
