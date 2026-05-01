@@ -357,6 +357,14 @@ export class AccountPage {
 
     // Refresh / Logout
     const session = this.section('Session');
+
+    // Access-token row with hover-to-parse info popover. Auto-login keeps the
+    // token alive across reloads, so surfacing the parsed claims (exp/iat) is
+    // useful for spotting refresh issues without poking around in DevTools.
+    if (cloudApi.accessToken) {
+      session.appendChild(this.buildTokenRow('Access Token', cloudApi.accessToken));
+    }
+
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:8px;';
     const refreshBtn = document.createElement('button');
@@ -1230,6 +1238,117 @@ export class AccountPage {
     const el = document.createElement('span');
     el.textContent = s;
     return el.innerHTML;
+  }
+
+  /**
+   * Decode a JWT's payload (the middle base64url-encoded JSON segment).
+   * Returns null when the input isn't a 3-part JWT or fails to parse —
+   * Unitree currently mints standard HS256 JWTs, but defensive nulls
+   * keep the UI honest if that ever changes. */
+  private parseJwt(token: string): Record<string, unknown> | null {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    try {
+      // base64url → base64 (replace -/_ with +/, pad with =)
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const json = atob(b64);
+      const obj = JSON.parse(json);
+      return (obj && typeof obj === 'object') ? obj as Record<string, unknown> : null;
+    } catch { return null; }
+  }
+
+  /** Build a one-line token chip with a hover-to-parse info popover.
+   *  The chip itself is selectable (so the user can grab the raw token);
+   *  the ⓘ on the right pops a panel with the decoded JWT claims. */
+  private buildTokenRow(label: string, token: string): HTMLElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:10px;position:relative;';
+
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'font-size:11px;color:#666;flex-shrink:0;';
+    lbl.textContent = label;
+    row.appendChild(lbl);
+
+    const chip = document.createElement('span');
+    chip.style.cssText = 'flex:1;min-width:0;font-family:monospace;font-size:11px;color:#aaa;background:#0a0c10;border:1px solid #1f2229;border-radius:4px;padding:4px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text;-webkit-user-select:text;';
+    chip.textContent = token;
+    chip.title = token;
+    row.appendChild(chip);
+
+    row.appendChild(this.copyBtn(token));
+
+    // Info icon — hover shows the parsed claims popover.
+    const info = document.createElement('span');
+    info.textContent = 'ⓘ';
+    info.style.cssText = 'font-size:14px;color:#4fc3f7;cursor:help;flex-shrink:0;user-select:none;';
+    row.appendChild(info);
+
+    const popover = document.createElement('div');
+    popover.style.cssText = 'position:absolute;top:100%;right:0;margin-top:6px;z-index:30;background:rgba(15,17,20,0.98);border:1px solid #2a2d35;border-radius:6px;padding:10px 12px;font-size:11px;color:#ccc;max-width:520px;min-width:280px;box-shadow:0 6px 20px rgba(0,0,0,0.5);display:none;font-family:monospace;line-height:1.6;white-space:pre-wrap;word-break:break-all;';
+    row.appendChild(popover);
+
+    const renderPopover = (): void => {
+      const payload = this.parseJwt(token);
+      if (!payload) {
+        popover.innerHTML = `<div style="color:#888;font-family:system-ui,-apple-system,sans-serif;">Not a JWT — raw token is shown above.</div>`;
+        return;
+      }
+      const lines: string[] = [];
+      const now = Math.floor(Date.now() / 1000);
+      // Render known time fields as ISO + relative ("in 23h", "12m ago"); pass
+      // everything else through with simple value escaping. Keeps the popover
+      // useful even if the token gains new claims later.
+      for (const [k, v] of Object.entries(payload)) {
+        let display: string;
+        if ((k === 'exp' || k === 'iat' || k === 'nbf') && typeof v === 'number') {
+          const iso = new Date(v * 1000).toISOString().replace('T', ' ').slice(0, 19);
+          const delta = v - now;
+          const rel = delta >= 0
+            ? `in ${this.formatDuration(delta)}`
+            : `${this.formatDuration(-delta)} ago`;
+          const isExpired = k === 'exp' && delta < 0;
+          const color = isExpired ? '#ef5350' : (k === 'exp' ? '#66bb6a' : '#888');
+          display = `<span style="color:${color}">${iso} UTC (${rel})</span>`;
+        } else if (typeof v === 'object') {
+          display = `<span style="color:#aaa">${this.esc(JSON.stringify(v))}</span>`;
+        } else {
+          display = `<span style="color:#aaa">${this.esc(String(v))}</span>`;
+        }
+        lines.push(`<div><span style="color:#6879e4;">${this.esc(k)}</span>: ${display}</div>`);
+      }
+      popover.innerHTML = lines.join('') || '<div style="color:#888;">Empty payload</div>';
+    };
+
+    let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+    info.addEventListener('mouseenter', () => {
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+      renderPopover();
+      popover.style.display = 'block';
+    });
+    info.addEventListener('mouseleave', () => {
+      hoverTimer = setTimeout(() => { popover.style.display = 'none'; }, 200);
+    });
+    popover.addEventListener('mouseenter', () => {
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    });
+    popover.addEventListener('mouseleave', () => { popover.style.display = 'none'; });
+
+    return row;
+  }
+
+  /** Format a positive number of seconds as "1d 3h", "23m", "45s". */
+  private formatDuration(sec: number): string {
+    sec = Math.floor(sec);
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const mr = m % 60;
+    if (h < 24) return mr ? `${h}h ${mr}m` : `${h}h`;
+    const d = Math.floor(h / 24);
+    const hr = h % 24;
+    return hr ? `${d}d ${hr}h` : `${d}d`;
   }
 
   /**
