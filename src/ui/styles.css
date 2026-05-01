@@ -21,6 +21,33 @@ body {
   width: 100vw;
 }
 
+/* ── Landing Screen ── */
+.app-root.landing-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f1114;
+}
+
+.landing-container {
+  text-align: center;
+}
+
+.landing-title {
+  font-size: 28px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 32px;
+  letter-spacing: 0.5px;
+}
+
+.landing-tiles {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
 /* ── Connection Screen ── */
 .app-root.connection-screen {
   display: flex;
@@ -36,6 +63,63 @@ body {
   border-radius: 12px;
   padding: 28px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+/* Two-row header for the Connect / Account-login modals: a small "Main
+ * page" back link on its own row, then the title below it (`.conn-title`
+ * keeps the same look as the legacy `.connection-panel h2` rule). */
+.connection-panel .conn-back-row {
+  margin-bottom: 6px;
+}
+
+.connection-panel .conn-back-link {
+  background: transparent;
+  border: none;
+  padding: 4px 6px 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #aaa;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  transition: color 0.15s;
+}
+
+.connection-panel .conn-back-link:hover {
+  color: #6879e4;
+}
+
+.connection-panel .conn-back-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.connection-panel .conn-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 18px;
+  color: #fff;
+  text-align: center;
+}
+
+.conn-remote-hint {
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #b0b3bb;
+  background: rgba(79, 195, 247, 0.06);
+  border: 1px solid rgba(79, 195, 247, 0.2);
+  border-radius: 6px;
+  line-height: 1.4;
+}
+
+.conn-remote-hint a {
+  color: #4fc3f7;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .connection-panel h2 {
@@ -2094,6 +2178,48 @@ html[data-theme="light"] .mapping-substate {
 .acct-tab-btn:hover { color: #aaa; }
 .acct-tab-btn.active { color: #4fc3f7; border-bottom-color: #4fc3f7; }
 .acct-form { display: flex; flex-direction: column; gap: 0; }
+
+/* Logged-out Account Manager view: center the modal so it visually matches
+ * the Connect screen (same `.connection-modal` shell, vertically centered).
+ * The page-content host swaps to flex-center via this modifier class. */
+.page-content.acct-loggedout-content {
+  display: flex;
+  align-items: safe center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+}
+
+/* "— or paste access token —" separator inside the login modal. */
+.connection-panel .conn-or-sep {
+  font-size: 11px;
+  color: #555;
+  margin: 16px 0 8px;
+  text-align: center;
+}
+
+/* Secondary variant of .btn-connect — outlined, used for the token login
+ * button so the email-password button remains the primary action. */
+.btn-connect.btn-connect-secondary {
+  background: transparent;
+  border: 1px solid #333;
+  color: #aaa;
+}
+.btn-connect.btn-connect-secondary:hover {
+  border-color: #6879e4;
+  color: #6879e4;
+}
+html[data-theme="light"] .connection-panel .conn-or-sep {
+  color: #8b92a0;
+}
+html[data-theme="light"] .btn-connect.btn-connect-secondary {
+  border-color: #c4cbd6;
+  color: #5a6170;
+}
+html[data-theme="light"] .btn-connect.btn-connect-secondary:hover {
+  border-color: #4a5ccf;
+  color: #4a5ccf;
+}
 .acct-btn {
   padding: 10px 16px;
   border: none;
@@ -2281,9 +2407,20 @@ html[data-theme="light"] body {
 
 html[data-theme="light"] .app-root.connection-screen,
 html[data-theme="light"] .app-root.hub-screen,
+html[data-theme="light"] .app-root.landing-screen,
 html[data-theme="light"] .app-root.status-screen,
 html[data-theme="light"] .app-root.services-screen {
   background: #eef1f7;
+}
+
+html[data-theme="light"] .landing-title {
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .conn-remote-hint {
+  color: #4a5266;
+  background: rgba(79, 195, 247, 0.08);
+  border-color: rgba(79, 195, 247, 0.35);
 }
 
 /* Connection modal + hub container */
@@ -2416,6 +2553,9 @@ html[data-theme="light"] .acct-file-input::file-selector-button:hover {
 
 /* Connection-panel heading — light */
 html[data-theme="light"] .connection-panel h2 { color: #1a1d23; }
+html[data-theme="light"] .connection-panel .conn-title { color: #1a1d23; }
+html[data-theme="light"] .connection-panel .conn-back-link { color: #5a6170; }
+html[data-theme="light"] .connection-panel .conn-back-link:hover { color: #4a5ccf; }
 
 /* BT popover inputs / selects / device rows (light) */
 html[data-theme="light"] .bt-field {

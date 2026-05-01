@@ -7,47 +7,66 @@ import { buildCloudPrefsRow } from './components/cloud-prefs';
 export type ConnectHandler = (config: ConnectionConfig) => void;
 
 /**
- * Remote mode flow:
- *   1. Show email/password (or token) → Login button
- *   2. On login success → fetch device list → show robot picker
- *   3. Auto-select if single robot → Connect button
+ * Connection panel — Local / AP / Remote chooser.
+ * Login lives in the Account Manager; this panel only consumes the cached
+ * cloudApi session. Remote mode is disabled when logged out (the option
+ * label hints to log in via the Account Manager).
  */
 export class ConnectionPanel {
   private container: HTMLElement;
   private modeSelect!: HTMLSelectElement;
   private ipInput!: HTMLInputElement;
-  private emailInput!: HTMLInputElement;
-  private passwordInput!: HTMLInputElement;
-  private tokenInput!: HTMLInputElement;
   private connectBtn!: HTMLButtonElement;
   private scanBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
-  private authToggle!: HTMLElement;
   private robotPickerGroup!: HTMLElement;
   private robotSelect!: HTMLSelectElement;
-  private loginBtn!: HTMLButtonElement;
-  private useToken = false;
-  private remoteLoggedIn = false;
+  private remoteHintEl!: HTMLElement;
   private selectedSn = '';
+  private devices: RobotDevice[] = [];
   private onConnect: ConnectHandler;
-  private onAccountManager?: () => void;
+  private onBack: () => void;
+  private onAccountManager: () => void;
+  private authUnsub: () => void;
 
-  constructor(parent: HTMLElement, onConnect: ConnectHandler, onAccountManager?: () => void) {
+  constructor(parent: HTMLElement, onConnect: ConnectHandler, onBack: () => void, onAccountManager: () => void) {
     this.container = document.createElement('div');
     this.container.className = 'connection-panel';
     this.onConnect = onConnect;
+    this.onBack = onBack;
     this.onAccountManager = onAccountManager;
     this.build();
     parent.appendChild(this.container);
+
+    // Re-render on login/logout so the Remote option flips between disabled
+    // and "show robot picker".
+    this.authUnsub = cloudApi.onAuthChange(() => {
+      this.refreshDevicesForRemote();
+      this.updateVisibility();
+    });
+  }
+
+  destroy(): void {
+    this.authUnsub();
+    this.container.remove();
   }
 
   private build(): void {
     this.container.innerHTML = `
-      <h2>Connect to <span id="conn-family-label"></span></h2>
+      <div class="conn-back-row">
+        <button id="conn-back-btn" class="conn-back-link" type="button">
+          <svg class="conn-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Main page</span>
+        </button>
+      </div>
+      <h2 class="conn-title">Connect to <span id="conn-family-label"></span></h2>
       <div id="conn-prefs-slot"></div>
       <div class="form-group">
         <label for="mode-select">Connection Mode</label>
         <select id="mode-select"></select>
+        <div id="remote-hint" class="conn-remote-hint" style="display:none;"></div>
       </div>
       <div class="form-group" id="ip-group">
         <label for="ip-input">Robot IP Address</label>
@@ -57,34 +76,8 @@ export class ConnectionPanel {
         </div>
         <div id="scan-results" class="scan-results" style="display:none;"></div>
       </div>
-      <div id="auth-toggle" class="form-group" style="display:none">
-        <div class="auth-toggle-row">
-          <button class="auth-tab active" data-auth="credentials">Email / Password</button>
-          <button class="auth-tab" data-auth="token">Token</button>
-        </div>
-      </div>
-      <form id="credentials-form" autocomplete="on" onsubmit="return false;">
-        <div class="form-group" id="email-group">
-          <label for="email-input">Email</label>
-          <input type="email" id="email-input" placeholder="Unitree account email" autocomplete="username" />
-        </div>
-        <div class="form-group" id="password-group">
-          <label for="password-input">Password</label>
-          <input type="password" id="password-input" placeholder="Account password" autocomplete="current-password" />
-        </div>
-      </form>
-      <div class="form-group" id="token-group">
-        <div style="display:flex;align-items:center;gap:6px;">
-          <label for="token-input" style="margin:0;">Access Token</label>
-          <button type="button" id="token-info-btn" title="Show token details"
-            style="background:none;border:1px solid var(--border-color,#555);color:inherit;width:18px;height:18px;border-radius:50%;cursor:pointer;padding:0;font-size:11px;line-height:1;display:inline-flex;align-items:center;justify-content:center;opacity:0.7;">i</button>
-        </div>
-        <input type="text" id="token-input" placeholder="Paste access token" />
-        <div id="token-info-panel" style="display:none;margin-top:6px;padding:8px 10px;border:1px solid var(--border-color,#444);border-radius:6px;font-family:monospace;font-size:11px;line-height:1.5;background:rgba(255,255,255,0.03);"></div>
-      </div>
-      <button id="login-btn" class="btn-connect" style="display:none">Login</button>
       <div class="form-group" id="robot-picker-group" style="display:none">
-        <label>Choose Robot for WebView</label>
+        <label>Choose Robot</label>
         <select id="robot-select"><option value="">-- Select robot --</option></select>
       </div>
       <button id="connect-btn" class="btn-connect">Connect</button>
@@ -93,16 +86,14 @@ export class ConnectionPanel {
 
     this.modeSelect = this.container.querySelector('#mode-select')!;
     this.ipInput = this.container.querySelector('#ip-input')!;
-    this.emailInput = this.container.querySelector('#email-input')!;
-    this.passwordInput = this.container.querySelector('#password-input')!;
-    this.tokenInput = this.container.querySelector('#token-input')!;
     this.connectBtn = this.container.querySelector('#connect-btn')!;
-    this.loginBtn = this.container.querySelector('#login-btn')!;
     this.scanBtn = this.container.querySelector('#scan-btn')!;
     this.statusEl = this.container.querySelector('#connection-status')!;
-    this.authToggle = this.container.querySelector('#auth-toggle')!;
     this.robotPickerGroup = this.container.querySelector('#robot-picker-group')!;
     this.robotSelect = this.container.querySelector('#robot-select')!;
+    this.remoteHintEl = this.container.querySelector('#remote-hint')!;
+    const backBtn = this.container.querySelector('#conn-back-btn') as HTMLButtonElement;
+    backBtn.addEventListener('click', () => this.onBack());
 
     for (const [mode, label] of Object.entries(MODE_LABELS)) {
       const option = document.createElement('option');
@@ -118,40 +109,26 @@ export class ConnectionPanel {
     const updateFamilyLabel = (): void => { familyLabel.textContent = FAMILY_LABEL[cloudApi.family]; };
     updateFamilyLabel();
     const prefsSlot = this.container.querySelector('#conn-prefs-slot') as HTMLElement;
-    prefsSlot.replaceWith(buildCloudPrefsRow({ onChange: updateFamilyLabel }));
-
-    this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
-      tab.addEventListener('click', () => {
-        this.useToken = (tab as HTMLElement).dataset.auth === 'token';
-        this.updateVisibility();
-      });
-    });
+    // Region lives on the Account Manager login screen — Connect only needs
+    // the family switch (Go2 / G1) since it picks the visual label and the
+    // local-network scan filter.
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showRegion: false, onChange: updateFamilyLabel }));
 
     this.modeSelect.addEventListener('change', () => {
-      this.remoteLoggedIn = false;
+      // Block selecting Remote while logged out — bounce back to STA-L.
+      if (this.modeSelect.value === 'STA-T' && !cloudApi.isLoggedIn) {
+        this.modeSelect.value = 'STA-L';
+      }
       this.updateVisibility();
     });
     this.connectBtn.addEventListener('click', () => this.handleConnect());
-    this.loginBtn.addEventListener('click', () => this.handleRemoteLogin());
 
-    // Enter key triggers login/connect
-    const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.loginBtn.style.display !== 'none' ? this.handleRemoteLogin() : this.handleConnect(); } };
+    // Enter key triggers connect
+    const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.handleConnect(); } };
     this.container.addEventListener('keydown', handleEnter);
     this.scanBtn.addEventListener('click', () => this.handleScan());
     this.robotSelect.addEventListener('change', () => {
       this.selectedSn = this.robotSelect.value;
-    });
-
-    const infoBtn = this.container.querySelector('#token-info-btn') as HTMLButtonElement;
-    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement;
-    infoBtn.addEventListener('click', () => {
-      const showing = infoPanel.style.display !== 'none';
-      if (showing) { infoPanel.style.display = 'none'; return; }
-      this.renderTokenInfo();
-      infoPanel.style.display = '';
-    });
-    this.tokenInput.addEventListener('input', () => {
-      if (infoPanel.style.display !== 'none') this.renderTokenInfo();
     });
 
     this.modeSelect.value = 'STA-L';
@@ -164,59 +141,56 @@ export class ConnectionPanel {
       if (lastIp) this.ipInput.value = lastIp;
     } catch { /* ignore */ }
 
-    // If a previous session saved a token, pre-fill the Token field and default
-    // to the Token tab in Remote mode — user just hits Login.
-    if (cloudApi.loadSession() && cloudApi.isLoggedIn) {
-      this.tokenInput.value = cloudApi.accessToken;
-      this.useToken = true;
-      void this.ensureFreshAndUpdate();
-    }
-
+    // Pre-populate the robot picker if the user is already logged in
+    // (e.g. from auto-login at app start).
+    this.refreshDevicesForRemote();
     this.updateVisibility();
-  }
-
-  private async ensureFreshAndUpdate(): Promise<void> {
-    const ok = await cloudApi.ensureFreshToken();
-    this.tokenInput.value = ok ? cloudApi.accessToken : '';
-    const infoPanel = this.container.querySelector('#token-info-panel') as HTMLElement | null;
-    if (infoPanel && infoPanel.style.display !== 'none') this.renderTokenInfo();
   }
 
   private updateVisibility(): void {
     const mode = this.modeSelect.value as ConnectionMode;
     const isRemote = mode === 'STA-T';
-
     const ipGroup = this.container.querySelector('#ip-group') as HTMLElement;
-    const emailGroup = this.container.querySelector('#email-group') as HTMLElement;
-    const passwordGroup = this.container.querySelector('#password-group') as HTMLElement;
-    const tokenGroup = this.container.querySelector('#token-group') as HTMLElement;
 
-    // Local modes: show IP input
+    // Remote option label flips based on auth state. The <option> stays
+    // selectable so users can see the entry, but the change handler bounces
+    // the selection back to STA-L when they're logged out.
+    const remoteOpt = Array.from(this.modeSelect.options).find(o => o.value === 'STA-T');
+    if (remoteOpt) {
+      if (cloudApi.isLoggedIn) {
+        remoteOpt.textContent = MODE_LABELS['STA-T'];
+        remoteOpt.disabled = false;
+      } else {
+        remoteOpt.textContent = `${MODE_LABELS['STA-T']} (log in via Account Manager)`;
+        remoteOpt.disabled = true;
+      }
+    }
+
     ipGroup.style.display = isRemote ? 'none' : '';
+    this.robotPickerGroup.style.display = isRemote && cloudApi.isLoggedIn && this.devices.length > 1 ? '' : 'none';
 
-    // Remote mode: show auth OR robot picker (depending on login state)
-    this.authToggle.style.display = isRemote && !this.remoteLoggedIn ? '' : 'none';
-
-    if (isRemote && !this.remoteLoggedIn) {
-      // Show login form
-      this.authToggle.querySelectorAll('.auth-tab').forEach((tab) => {
-        const isTokenTab = (tab as HTMLElement).dataset.auth === 'token';
-        tab.classList.toggle('active', this.useToken ? isTokenTab : !isTokenTab);
-      });
-      emailGroup.style.display = this.useToken ? 'none' : '';
-      passwordGroup.style.display = this.useToken ? 'none' : '';
-      tokenGroup.style.display = this.useToken ? '' : 'none';
-      this.loginBtn.style.display = '';
-      this.connectBtn.style.display = 'none';
-      this.robotPickerGroup.style.display = 'none';
+    // Inline hint under the mode selector covers the remaining cases:
+    // logged-in single-robot ("ready"), logged-in zero-robots ("bind one"),
+    // logged-out ("login required").
+    if (isRemote) {
+      if (!cloudApi.isLoggedIn) {
+        this.remoteHintEl.textContent = 'Login required — open Account Manager';
+        this.remoteHintEl.style.display = '';
+      } else if (this.devices.length === 0) {
+        this.remoteHintEl.innerHTML = 'No robots bound to this account. <a href="#" id="open-acct-link">Open Account Manager</a> to bind one.';
+        this.remoteHintEl.style.display = '';
+        const link = this.remoteHintEl.querySelector('#open-acct-link') as HTMLAnchorElement | null;
+        link?.addEventListener('click', (e) => { e.preventDefault(); this.onAccountManager(); });
+      } else if (this.devices.length === 1) {
+        const d = this.devices[0];
+        this.remoteHintEl.textContent = `Robot: ${d.alias || d.sn}`;
+        this.remoteHintEl.style.display = '';
+        this.selectedSn = d.sn;
+      } else {
+        this.remoteHintEl.style.display = 'none';
+      }
     } else {
-      // Local mode
-      emailGroup.style.display = 'none';
-      passwordGroup.style.display = 'none';
-      tokenGroup.style.display = 'none';
-      this.loginBtn.style.display = 'none';
-      this.connectBtn.style.display = '';
-      this.robotPickerGroup.style.display = 'none';
+      this.remoteHintEl.style.display = 'none';
     }
 
     if (mode === 'AP') {
@@ -231,108 +205,41 @@ export class ConnectionPanel {
     }
   }
 
-  private decodeJwt(tok: string): { header: Record<string, unknown>; payload: Record<string, unknown> } | null {
+  /** Pull the cached device list (or fetch fresh) when logged in, and
+   *  rebuild the picker. Called on construct and on login state changes. */
+  private refreshDevicesForRemote(): void {
+    if (!cloudApi.isLoggedIn) {
+      this.devices = [];
+      this.populateRobotSelect();
+      return;
+    }
+    // Use the cache for an instant render, then fetch fresh in the
+    // background.
     try {
-      const [h, p] = tok.split('.');
-      if (!h || !p) return null;
-      const dec = (s: string): Record<string, unknown> => {
-        s = s.replace(/-/g, '+').replace(/_/g, '/');
-        while (s.length % 4) s += '=';
-        return JSON.parse(atob(s));
-      };
-      return { header: dec(h), payload: dec(p) };
-    } catch { return null; }
-  }
+      const c = localStorage.getItem('unitree_devices_cache');
+      if (c) this.devices = JSON.parse(c) as RobotDevice[];
+    } catch { /* ignore */ }
+    this.populateRobotSelect();
 
-  private renderTokenInfo(): void {
-    const panel = this.container.querySelector('#token-info-panel') as HTMLElement;
-    const tok = this.tokenInput.value.trim();
-    if (!tok) { panel.innerHTML = '<em style="opacity:0.6">No token</em>'; return; }
-    const parts = this.decodeJwt(tok);
-    if (!parts) { panel.innerHTML = '<em style="color:#e84855">Not a valid JWT</em>'; return; }
-    const p = parts.payload as { uid?: number; sub?: string; iss?: string; type?: string; ct?: number; exp?: number };
-    const h = parts.header as { alg?: string; typ?: string };
-    const fmt = (ts?: number) => ts ? new Date(ts * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—';
-    const now = Math.floor(Date.now() / 1000);
-    const remaining = p.exp ? p.exp - now : 0;
-    const days = Math.floor(Math.abs(remaining) / 86400);
-    const hours = Math.floor((Math.abs(remaining) % 86400) / 3600);
-    let status: string;
-    if (!p.exp) status = '—';
-    else if (remaining <= 0) status = `<span style="color:#e84855">expired ${days}d ${hours}h ago</span>`;
-    else if (remaining < 86400) status = `<span style="color:#f5a623">${hours}h left</span>`;
-    else status = `<span style="color:#6cc04a">${days}d ${hours}h left</span>`;
-    // Only surface lastRefreshedAt when the pasted token matches the stored
-    // session — otherwise the value is for an unrelated token.
-    const refreshedAt = (tok === cloudApi.accessToken) ? cloudApi.lastRefreshedAt : null;
-    const row = (k: string, v: string) => `<div><span style="opacity:0.6">${k}:</span> ${v}</div>`;
-    panel.innerHTML =
-      row('UID', String(p.uid ?? '—')) +
-      row('Type', `${p.type ?? '—'} · sub=${p.sub ?? '—'}`) +
-      row('Issuer', String(p.iss ?? '—')) +
-      row('Issued', fmt(p.ct)) +
-      row('Expires', `${fmt(p.exp)} · ${status}`) +
-      row('Last refreshed', refreshedAt ? fmt(refreshedAt) : '—') +
-      row('Algorithm', `${h.alg ?? '—'} / ${h.typ ?? '—'}`);
-  }
-
-  private async handleRemoteLogin(): Promise<void> {
-    this.loginBtn.disabled = true;
-    this.loginBtn.textContent = 'Logging in...';
-    this.setStatus('', 'info');
-
-    try {
-      if (this.useToken) {
-        const token = this.tokenInput.value.trim();
-        if (!token) throw new Error('Paste an access token');
-        cloudApi.setAccessToken(token);
-        cloudApi.saveSession();
-      } else {
-        const email = this.emailInput.value.trim();
-        const pwd = this.passwordInput.value.trim();
-        if (!email || !pwd) throw new Error('Enter email and password');
-        await cloudApi.loginEmail(email, pwd);
-      }
-
-      this.setStatus('Loading your robots...', 'info');
-      const devices = await cloudApi.listDevices();
-
-      // Cache for hub screen
+    void cloudApi.listDevices().then((devices) => {
+      this.devices = devices;
       try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
+      this.populateRobotSelect();
+      this.updateVisibility();
+    }).catch(() => { /* keep cached list */ });
+  }
 
-      if (devices.length === 0) {
-        // Login worked, account is fine — there's just nothing bound. Don't
-        // dead-end the user here; route them straight into Account Manager
-        // so they can bind a robot (or browse the other tabs). Falls back to
-        // a status message if the host app didn't provide a route.
-        if (this.onAccountManager) {
-          this.setStatus('Logged in — no robots bound. Opening Account Manager…', 'info');
-          this.loginBtn.disabled = false;
-          this.loginBtn.textContent = 'Login';
-          this.onAccountManager();
-          return;
-        }
-        this.setStatus('Logged in — no robots bound to this account.', 'error');
-        this.loginBtn.disabled = false;
-        this.loginBtn.textContent = 'Login';
-        return;
-      }
-
-      // Auto-select first robot and go straight to hub
-      const firstSn = devices[0].sn;
-      this.onConnect({
-        mode: 'STA-T',
-        ip: '',
-        token: cloudApi.accessToken,
-        serialNumber: firstSn,
-        email: '',
-        password: '',
-      });
-    } catch (e) {
-      this.setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
-    } finally {
-      this.loginBtn.disabled = false;
-      this.loginBtn.textContent = 'Login';
+  private populateRobotSelect(): void {
+    this.robotSelect.innerHTML = '<option value="">-- Select robot --</option>';
+    for (const d of this.devices) {
+      const opt = document.createElement('option');
+      opt.value = d.sn;
+      opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
+      this.robotSelect.appendChild(opt);
+    }
+    if (this.devices.length === 1) {
+      this.robotSelect.value = this.devices[0].sn;
+      this.selectedSn = this.devices[0].sn;
     }
   }
 
@@ -340,13 +247,15 @@ export class ConnectionPanel {
     const mode = this.modeSelect.value as ConnectionMode;
 
     if (mode === 'STA-T') {
-      // For Remote mode, go to hub (WebRTC connect happens there)
-      const sn = this.selectedSn || this.robotSelect.value;
+      if (!cloudApi.isLoggedIn) {
+        this.setStatus('Login required — open Account Manager', 'error');
+        return;
+      }
+      const sn = this.selectedSn || this.robotSelect.value || (this.devices.length === 1 ? this.devices[0].sn : '');
       if (!sn) {
         this.setStatus('Please select a robot', 'error');
         return;
       }
-      // Pass config WITHOUT triggering WebRTC — hub handles that
       this.onConnect({
         mode,
         ip: '',

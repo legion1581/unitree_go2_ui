@@ -12,6 +12,7 @@ import { AccountPage } from './components/account-page';
 import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
 import { BtPopover } from './components/bt-popover';
 import { ThemeToggle } from './components/theme-toggle';
+import { AccountStatusIcon } from './components/account-status-icon';
 import { btBackend } from '../api/bt-backend';
 import { cloudApi } from '../api/unitree-cloud';
 import { theme } from './theme';
@@ -23,11 +24,14 @@ import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account';
+type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account';
 
 export class App {
   private root: HTMLElement;
-  private currentScreen: Screen = 'connection';
+  private currentScreen: Screen = 'landing';
+  // True when the user is in Account Manager via the landing screen (not via
+  // the in-connection hub). Drives where the back button returns to.
+  private accountFromLanding = false;
 
   // Connection state (persists across screens)
   private connectionPanel: ConnectionPanel | null = null;
@@ -61,6 +65,7 @@ export class App {
   // Bluetooth status (persistent across screens)
   private btStatusIcon: BtStatusIcon | null = null;
   private themeToggle: ThemeToggle | null = null;
+  private accountStatusIcon: AccountStatusIcon | null = null;
   private btStatus: BluetoothStatus = {
     robotConnected: false, robotAddress: '',
     remoteConnected: false, remoteName: '', remoteAddress: '',
@@ -105,6 +110,10 @@ export class App {
     // Persistent theme toggle (sun/moon) next to the BT icon
     this.themeToggle = new ThemeToggle(document.body);
 
+    // Persistent account-status indicator — leftmost of the three icons.
+    // Pure status display: hover for tooltip, no click action.
+    this.accountStatusIcon = new AccountStatusIcon(document.body);
+
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
@@ -122,16 +131,66 @@ export class App {
       }
     });
 
-    this.showConnectionScreen();
+    // Auto-login: if a token is in localStorage, restore it and refresh
+    // proactively so the persistent account-status icon shows the right
+    // state on first paint of the landing screen.
+    if (cloudApi.loadSession()) {
+      void cloudApi.ensureFreshToken().then(async (ok) => {
+        if (ok && !cloudApi.user) {
+          try { await cloudApi.getUserInfo(); } catch { /* ignore */ }
+        }
+      });
+    }
+
+    this.showLandingScreen();
   }
 
   // ── Screen Navigation ──
+
+  private showLandingScreen(): void {
+    this.currentScreen = 'landing';
+    this.accountFromLanding = false;
+    this.root.innerHTML = '';
+    this.root.className = 'app-root landing-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'landing-container';
+
+    const title = document.createElement('h2');
+    title.className = 'landing-title';
+    title.textContent = 'Unitree UI';
+    wrap.appendChild(title);
+
+    const tiles = document.createElement('div');
+    tiles.className = 'landing-tiles';
+
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'hub-btn hub-btn-primary';
+    connectBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg><span>Connect</span>`;
+    connectBtn.addEventListener('click', () => this.showConnectionScreen());
+    tiles.appendChild(connectBtn);
+
+    const acctBtn = document.createElement('button');
+    acctBtn.className = 'hub-btn hub-btn-secondary';
+    acctBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Manager</span>`;
+    acctBtn.addEventListener('click', () => {
+      this.accountFromLanding = true;
+      this.showAccountScreen();
+    });
+    tiles.appendChild(acctBtn);
+
+    wrap.appendChild(tiles);
+    this.root.appendChild(wrap);
+  }
 
   private showConnectionScreen(): void {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
     this.root.className = 'app-root connection-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -140,18 +199,21 @@ export class App {
     this.connectionPanel = new ConnectionPanel(
       modal,
       (config) => this.connect(config),
-      // Lets the panel route the user to the Account Manager when login
-      // succeeds but no robots are bound (otherwise they'd be stuck on the
-      // login screen with nothing to do).
-      () => this.showAccountScreen(),
+      () => this.showLandingScreen(),
+      () => {
+        this.accountFromLanding = true;
+        this.showAccountScreen();
+      },
     );
   }
+
 
   private showHubScreen(): void {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -195,84 +257,14 @@ export class App {
     };
     renderHeader();
 
-    // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
-    if (isRemoteMode) {
-      const remoteSection = document.createElement('div');
-      remoteSection.className = 'hub-remote-section';
-      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;border-radius:10px;';
-
-      // Robot select (only if multiple robots)
-      let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
-      try {
-        const c = localStorage.getItem('unitree_devices_cache');
-        if (c) cachedDevices = JSON.parse(c);
-      } catch { /* ignore */ }
-
-      if (cachedDevices.length > 1) {
-        const robotSel = document.createElement('select');
-        robotSel.className = 'acct-input';
-        robotSel.style.cssText = 'width:100%;font-size:13px;margin-bottom:10px;';
-        const currentSn = this.connectionConfig?.serialNumber || '';
-        for (const d of cachedDevices) {
-          const opt = document.createElement('option');
-          opt.value = d.sn;
-          opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
-          if (d.sn === currentSn) opt.selected = true;
-          robotSel.appendChild(opt);
-        }
-        robotSel.addEventListener('change', () => {
-          if (this.connectionConfig) this.connectionConfig.serialNumber = robotSel.value;
-          renderHeader();
-        });
-        remoteSection.appendChild(robotSel);
-      }
-
-      // Single row: button + status
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:12px;';
-
-      const statusEl = document.createElement('span');
-      statusEl.style.cssText = 'font-size:12px;color:#888;flex:1;';
-
-      if (!isConnected) {
-        const connectBtn = document.createElement('button');
-        connectBtn.style.cssText = 'padding:8px 20px;background:#4fc3f7;color:#000;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
-        connectBtn.textContent = 'WebRTC Connect';
-        connectBtn.addEventListener('click', async () => {
-          connectBtn.disabled = true;
-          connectBtn.textContent = 'Connecting...';
-          connectBtn.style.opacity = '0.6';
-          statusEl.style.color = '#4fc3f7';
-          try {
-            await this.connectWebRTCFromHub((msg) => { statusEl.textContent = msg; });
-          } catch (e) {
-            statusEl.textContent = `${e instanceof Error ? e.message : String(e)}`;
-            statusEl.style.color = '#ef5350';
-            connectBtn.disabled = false;
-            connectBtn.textContent = 'WebRTC Connect';
-            connectBtn.style.opacity = '1';
-          }
-        });
-        row.appendChild(connectBtn);
-      } else {
-        const disconnectBtn = document.createElement('button');
-        disconnectBtn.style.cssText = 'padding:8px 20px;background:transparent;color:#ef5350;border:1px solid #ef5350;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
-        disconnectBtn.textContent = 'Disconnect';
-        disconnectBtn.addEventListener('click', () => this.disconnect());
-        row.appendChild(disconnectBtn);
-        statusEl.textContent = 'WebRTC connected';
-        statusEl.style.color = '#66bb6a';
-      }
-
-      row.appendChild(statusEl);
-      remoteSection.appendChild(row);
-      hub.appendChild(remoteSection);
-    }
+    // Remote auto-connects from the Connect screen, so the hub is always
+    // shown post-validation — no per-mode WebRTC button or robot picker
+    // here. Feature buttons render straight away for both Local and Remote.
 
     // ── Feature buttons ──
     const btnRow = document.createElement('div');
     btnRow.className = 'hub-buttons';
-    const needsWebRTC = isRemoteMode && !isConnected;
+    const needsWebRTC = false;
 
     // WebView
     const controlBtn = document.createElement('button');
@@ -311,46 +303,19 @@ export class App {
       btnRow.appendChild(mapBtn);
     }
 
-    // Account Management — only in Remote mode
-    if (isRemoteMode) {
-      const acctBtn = document.createElement('button');
-      acctBtn.className = 'hub-btn hub-btn-secondary';
-      acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Management</span>`;
-      acctBtn.addEventListener('click', () => this.showAccountScreen());
-      btnRow.appendChild(acctBtn);
-    }
+    // Account Manager lives on the landing page now — no need to surface it
+    // again on the hub. Going back to landing (via Disconnect) and clicking
+    // Account Manager covers the same flow.
 
     hub.appendChild(btnRow);
 
-    // Disconnect / Back button
-    if (!isRemoteMode) {
-      // Local mode: always show disconnect
-      const disconnectBtn = document.createElement('button');
-      disconnectBtn.className = 'hub-btn-disconnect';
-      disconnectBtn.textContent = 'Disconnect';
-      disconnectBtn.addEventListener('click', () => this.disconnect());
-      hub.appendChild(disconnectBtn);
-    } else if (!isConnected) {
-      // Remote mode, not connected: show "Back to login"
-      const backBtn = document.createElement('button');
-      backBtn.className = 'hub-btn-disconnect';
-      backBtn.style.background = 'transparent';
-      backBtn.style.border = '1px solid #333';
-      backBtn.style.color = '#888';
-      backBtn.textContent = 'Back to Login';
-      backBtn.addEventListener('click', () => {
-        this.disconnect();
-        this.showConnectionScreen();
-      });
-      hub.appendChild(backBtn);
-    } else {
-      // Remote mode, connected: disconnect both WebRTC and session
-      const disconnectBtn = document.createElement('button');
-      disconnectBtn.className = 'hub-btn-disconnect';
-      disconnectBtn.textContent = 'Disconnect';
-      disconnectBtn.addEventListener('click', () => this.disconnect());
-      hub.appendChild(disconnectBtn);
-    }
+    // Disconnect button — same for Local and Remote (auto-connect means
+    // we're always connected here).
+    const disconnectBtn = document.createElement('button');
+    disconnectBtn.className = 'hub-btn-disconnect';
+    disconnectBtn.textContent = 'Disconnect';
+    disconnectBtn.addEventListener('click', () => this.disconnect());
+    hub.appendChild(disconnectBtn);
 
     this.root.appendChild(hub);
   }
@@ -360,6 +325,7 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
+    this.accountStatusIcon?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -463,6 +429,7 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub(), {
       mode: this.connectionConfig?.mode,
@@ -476,6 +443,7 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -500,6 +468,7 @@ export class App {
     // (same shape as NavBar) — hide the body-mounted persistent icons so they
     // don't overlap.
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
+    this.accountStatusIcon?.setVisible(false);
 
     this.mappingPage = new MappingPage(
       this.root,
@@ -542,46 +511,14 @@ export class App {
     }
   }
 
-  /** Connect WebRTC from the hub screen (Remote mode only). */
-  private async connectWebRTCFromHub(onStep: (msg: string) => void): Promise<void> {
-    const config = this.connectionConfig;
-    if (!config || config.mode !== 'STA-T') throw new Error('Not in Remote mode');
-    if (!config.token) throw new Error('Not logged in');
-    if (!config.serialNumber) throw new Error('No robot selected');
-
-    const callbacks: ConnectionCallbacks = {
-      onStateChange: (state: ConnectionState) => this.onStateChange(state),
-      onValidated: () => {
-        this.enableVideoAndSubscribe();
-        this.showHubScreen(); // Re-render hub with connected state
-      },
-      onMessage: (msg: DataChannelMessage) => {
-        if (this.dataHandler) this.dataHandler.handleMessage(msg);
-      },
-      onVideoTrack: (stream: MediaStream) => {
-        this.videoStream = stream;
-        this.pipCamera?.setStream(stream);
-        this.mappingPage?.setStream(stream);
-        if (this.viewMode === 'video' && this.videoBg) {
-          this.videoBg.srcObject = stream;
-          this.videoBg.style.display = 'block';
-          if (this.noiseBgCanvas) this.noiseBgCanvas.style.display = 'none';
-          this.stopBgNoise();
-        }
-      },
-      onAudioTrack: () => {},
-    };
-
-    this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
-    this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
-  }
-
   private showAccountScreen(): void {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
-    this.accountPage = new AccountPage(this.root, () => this.goToHub());
+    this.accountStatusIcon?.setVisible(true);
+    const back = this.accountFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
+    this.accountPage = new AccountPage(this.root, back);
   }
 
   private goToHub(): void {
@@ -1441,9 +1378,11 @@ export class App {
 
     try {
       if (config.mode === 'STA-T') {
-        // Remote mode: go straight to hub — WebRTC connect happens from there
-        this.showHubScreen();
-        return;
+        // Remote: kick off WebRTC immediately — same UX as Local/AP. The
+        // hub is shown in the onValidated callback.
+        if (!config.token) throw new Error('Not logged in');
+        if (!config.serialNumber) throw new Error('No robot selected');
+        this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
       } else {
         if (!config.ip) throw new Error('IP address required');
         this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep, {
@@ -1551,12 +1490,11 @@ export class App {
     this.scene3d = null;
     this.viewMode = 'three';
 
-    if (wasRemote && this.connectionConfig) {
-      // Stay on hub — keep config, just clear WebRTC
-      this.showHubScreen();
-    } else {
-      this.connectionConfig = null;
-      this.showConnectionScreen();
-    }
+    // Auto-connect means the hub is always backed by an active WebRTC
+    // session. On disconnect (any mode) drop back to landing — re-entering
+    // Connect → robot will re-establish the session.
+    void wasRemote;
+    this.connectionConfig = null;
+    this.showLandingScreen();
   }
 }

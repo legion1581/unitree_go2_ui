@@ -9,6 +9,8 @@
 import { cloudApi, ROBOT_FAMILIES, REGIONS, FAMILY_LABEL, type RobotFamily, type Region } from '../../api/unitree-cloud';
 
 export interface CloudPrefsOptions {
+  /** Show the Family toggle (Go2 / G1). Default true. */
+  showFamily?: boolean;
   /** Show the Region toggle (Global / CN). Default true. */
   showRegion?: boolean;
   /** Fired after the user clicks a different value, with the new state. */
@@ -16,6 +18,7 @@ export interface CloudPrefsOptions {
 }
 
 export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement {
+  const showFamily = options.showFamily ?? true;
   const showRegion = options.showRegion ?? true;
 
   const row = document.createElement('div');
@@ -62,10 +65,12 @@ export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement
     return wrap;
   };
 
-  row.appendChild(labeledGroup(
-    'Family',
-    renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => FAMILY_LABEL[v]),
-  ));
+  if (showFamily) {
+    row.appendChild(labeledGroup(
+      'Family',
+      renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => FAMILY_LABEL[v]),
+    ));
+  }
 
   if (showRegion) {
     row.appendChild(labeledGroup(

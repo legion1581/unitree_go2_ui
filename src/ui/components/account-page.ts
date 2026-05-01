@@ -4,12 +4,15 @@
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
 import { setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
+import { buildCloudPrefsRow } from './cloud-prefs';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
 export class AccountPage {
   private container: HTMLElement;
   private content: HTMLElement;
+  private header!: HTMLElement;
+  private tabBar!: HTMLElement;
   private currentTab: Tab = 'devices';
   private tabButtons: Map<Tab, HTMLElement> = new Map();
 
@@ -17,32 +20,35 @@ export class AccountPage {
     this.container = document.createElement('div');
     this.container.className = 'status-page';
 
-    // Header
-    const header = document.createElement('div');
-    header.className = 'page-header';
+    // Header — hidden on the logged-out screen (the modal there has its own
+    // inline back button so the layout matches the Connect screen).
+    this.header = document.createElement('div');
+    this.header.className = 'page-header';
     const backBtn = document.createElement('button');
     backBtn.className = 'page-back-btn';
     backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
     backBtn.addEventListener('click', onBack);
-    header.appendChild(backBtn);
+    this.header.appendChild(backBtn);
     const title = document.createElement('h2');
     title.textContent = 'Account Manager';
-    header.appendChild(title);
-    this.container.appendChild(header);
+    this.header.appendChild(title);
+    this.container.appendChild(this.header);
 
-    // Tab bar
-    const tabBar = document.createElement('div');
-    tabBar.className = 'acct-tab-bar';
+    // Tab bar — hidden when logged out (the login screen is the only thing
+    // that makes sense before auth, and the tabs would just bounce back to
+    // it via switchTab).
+    this.tabBar = document.createElement('div');
+    this.tabBar.className = 'acct-tab-bar';
     const tabLabels: Record<Tab, string> = { devices: 'Devices', info: 'Info', account: 'Account', debug: 'Debug' };
     for (const [tab, label] of Object.entries(tabLabels) as [Tab, string][]) {
       const btn = document.createElement('button');
       btn.className = 'acct-tab-btn';
       btn.textContent = label;
       btn.addEventListener('click', () => this.switchTab(tab));
-      tabBar.appendChild(btn);
+      this.tabBar.appendChild(btn);
       this.tabButtons.set(tab, btn);
     }
-    this.container.appendChild(tabBar);
+    this.container.appendChild(this.tabBar);
 
     this.content = document.createElement('div');
     this.content.className = 'page-content';
@@ -50,21 +56,148 @@ export class AccountPage {
     parent.appendChild(this.container);
 
     if (!cloudApi.isLoggedIn) cloudApi.loadSession();
-    this.switchTab(cloudApi.isLoggedIn ? 'devices' : 'account');
+    if (cloudApi.isLoggedIn) this.switchTab('devices');
+    else this.renderLoggedOutScreen();
   }
 
   private switchTab(tab: Tab): void {
+    if (!cloudApi.isLoggedIn) { this.renderLoggedOutScreen(); return; }
+    this.header.style.display = '';
+    this.tabBar.style.display = '';
     this.currentTab = tab;
     this.tabButtons.forEach((btn, t) => btn.classList.toggle('active', t === tab));
     this.content.innerHTML = '';
+    this.content.classList.remove('acct-loggedout-content');
     this.content.scrollTop = 0;
 
     if (tab === 'account') { this.renderAccountTab(); return; }
-    if (!cloudApi.isLoggedIn) { this.renderLoginForm(); return; }
-
     if (tab === 'devices') this.renderDevicesTab();
     else if (tab === 'info') this.renderInfoTab();
     else if (tab === 'debug') this.renderDebugTab();
+  }
+
+  /** Logged-out view: render a modal that visually mirrors the Connect
+   *  screen — same `.connection-modal` shell, same inline `.conn-header`
+   *  back-button + title, same `.form-group` / `.btn-connect` elements.
+   *  The page-level header and tab bar are hidden so the back button only
+   *  appears in one place. */
+  private renderLoggedOutScreen(): void {
+    this.header.style.display = 'none';
+    this.tabBar.style.display = 'none';
+    this.tabButtons.forEach((btn) => btn.classList.remove('active'));
+    this.content.innerHTML = '';
+    this.content.scrollTop = 0;
+    this.content.classList.add('acct-loggedout-content');
+
+    const modal = document.createElement('div');
+    modal.className = 'connection-modal';
+
+    const panel = document.createElement('div');
+    panel.className = 'connection-panel';
+
+    panel.innerHTML = `
+      <div class="conn-back-row">
+        <button id="acct-login-back" class="conn-back-link" type="button">
+          <svg class="conn-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Main page</span>
+        </button>
+      </div>
+      <h2 class="conn-title">Login</h2>
+      <div id="acct-login-prefs"></div>
+      <div class="form-group">
+        <div class="auth-toggle-row">
+          <button class="auth-tab active" type="button" data-auth="credentials">Email / Password</button>
+          <button class="auth-tab" type="button" data-auth="token">Token</button>
+        </div>
+      </div>
+      <div id="acct-credentials-pane">
+        <div class="form-group">
+          <label for="acct-login-email">Email</label>
+          <input type="email" id="acct-login-email" placeholder="Unitree account email" autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="acct-login-pwd">Password</label>
+          <input type="password" id="acct-login-pwd" placeholder="Account password" autocomplete="current-password" />
+        </div>
+      </div>
+      <div id="acct-token-pane" style="display:none;">
+        <div class="form-group">
+          <label for="acct-login-token">Access Token</label>
+          <input type="text" id="acct-login-token" placeholder="Paste access token" />
+        </div>
+      </div>
+      <button id="acct-login-btn" class="btn-connect" type="button">Login</button>
+      <div id="acct-login-status" class="status"></div>
+    `;
+
+    // Family + Region pills. Family drives the AppName the cloud API signs
+    // its requests with (Go2 vs G1 use different app identities); Region
+    // (Global / CN) picks which Unitree endpoint to hit. Both must be set
+    // before login so the request fires against the right backend.
+    const prefsSlot = panel.querySelector('#acct-login-prefs') as HTMLElement;
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showFamily: true, showRegion: true }));
+
+    const back = panel.querySelector('#acct-login-back') as HTMLButtonElement;
+    back.addEventListener('click', () => this.onBack());
+
+    const emailEl = panel.querySelector('#acct-login-email') as HTMLInputElement;
+    const pwdEl = panel.querySelector('#acct-login-pwd') as HTMLInputElement;
+    const tokEl = panel.querySelector('#acct-login-token') as HTMLInputElement;
+    const loginBtn = panel.querySelector('#acct-login-btn') as HTMLButtonElement;
+    const credentialsPane = panel.querySelector('#acct-credentials-pane') as HTMLElement;
+    const tokenPane = panel.querySelector('#acct-token-pane') as HTMLElement;
+    const tabs = panel.querySelectorAll('.auth-tab');
+    const statusEl = panel.querySelector('#acct-login-status') as HTMLElement;
+    const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info'): void => {
+      statusEl.textContent = text;
+      statusEl.className = `status status-${type}`;
+    };
+
+    let useToken = false;
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        useToken = (tab as HTMLElement).dataset.auth === 'token';
+        tabs.forEach((t) => t.classList.toggle('active', t === tab));
+        credentialsPane.style.display = useToken ? 'none' : '';
+        tokenPane.style.display = useToken ? '' : 'none';
+        setStatus('', 'info');
+      });
+    });
+
+    loginBtn.addEventListener('click', async () => {
+      loginBtn.disabled = true;
+      const orig = loginBtn.textContent;
+      loginBtn.textContent = 'Logging in...';
+      setStatus('', 'info');
+      try {
+        if (useToken) {
+          const t = tokEl.value.trim();
+          if (!t) throw new Error('Paste an access token');
+          cloudApi.setAccessToken(t);
+          cloudApi.saveSession();
+        } else {
+          const email = emailEl.value.trim();
+          const pwd = pwdEl.value;
+          if (!email || !pwd) throw new Error('Enter email and password');
+          await cloudApi.loginEmail(email, pwd);
+        }
+        this.switchTab('devices');
+      } catch (e) {
+        setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = orig || 'Login';
+      }
+    });
+
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); loginBtn.click(); }
+    });
+
+    modal.appendChild(panel);
+    this.content.appendChild(modal);
   }
 
   // ════════════════════════════════════════════════════════════════════

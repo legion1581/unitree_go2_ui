@@ -260,6 +260,20 @@ export class UnitreeCloudAPI {
   private _family: RobotFamily = readPersistedFamily();
   private _region: Region = readLocalEnum<Region>('unitree_region', REGIONS, 'global');
 
+  // Subscribers fire on any auth-state mutation (login, logout, token set,
+  // session load, refresh). Lets the persistent status icon track login
+  // state without polling.
+  private authListeners = new Set<() => void>();
+  onAuthChange(cb: () => void): () => void {
+    this.authListeners.add(cb);
+    return () => this.authListeners.delete(cb);
+  }
+  private emitAuthChange(): void {
+    for (const cb of this.authListeners) {
+      try { cb(); } catch { /* ignore */ }
+    }
+  }
+
   get family(): RobotFamily { return this._family; }
   setFamily(f: RobotFamily): void {
     this._family = f;
@@ -286,8 +300,11 @@ export class UnitreeCloudAPI {
   }
 
   setAccessToken(token: string): void {
+    const wasLoggedIn = !!this.token;
     this.token = token;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
+    if (wasLoggedIn !== !!this.token) this.emitAuthChange();
+    else if (this.token) this.emitAuthChange();
   }
 
   // ─── Session persistence ─────────────────────────────────────────
@@ -312,6 +329,7 @@ export class UnitreeCloudAPI {
       this.refreshToken = data.refreshToken || '';
       this.user = data.user || null;
       this._lastRefreshedAt = typeof data.lastRefreshedAt === 'number' ? data.lastRefreshedAt : null;
+      if (this.token) this.emitAuthChange();
       return !!this.token;
     } catch {
       return false;
@@ -319,11 +337,13 @@ export class UnitreeCloudAPI {
   }
 
   clearSession(): void {
+    const wasLoggedIn = !!this.token;
     this.token = '';
     this.refreshToken = '';
     this.user = null;
     this._lastRefreshedAt = null;
     localStorage.removeItem('unitree_session');
+    if (wasLoggedIn) this.emitAuthChange();
   }
 
   /** Proactively refresh the access token if it's near/past expiry.
@@ -458,6 +478,7 @@ export class UnitreeCloudAPI {
     this.user = resp.data!.user || null;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
+    this.emitAuthChange();
     return this.user!;
   }
 
@@ -475,6 +496,7 @@ export class UnitreeCloudAPI {
     this.user = resp.data!.user || null;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
+    this.emitAuthChange();
   }
 
   async resetPassword(email: string, captcha: string, newPassword: string): Promise<void> {
@@ -494,6 +516,7 @@ export class UnitreeCloudAPI {
   async getUserInfo(): Promise<UserInfo> {
     this.user = await this.get<UserInfo>('user/info');
     this.saveSession();
+    this.emitAuthChange();
     return this.user;
   }
 
