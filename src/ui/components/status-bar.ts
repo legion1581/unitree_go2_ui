@@ -51,7 +51,7 @@ export class NavBar {
         <button class="back-btn">
           <img src="/sprites/nav-bar-left-icon.png" alt="Back" />
         </button>
-        <span class="nav-bar-title">${cloudApi.family}</span>
+        <span class="nav-bar-title">${cloudApi.connectFamily}</span>
       </div>
       <div class="nav-bar-right">
         <span class="motor-temp-label"></span>

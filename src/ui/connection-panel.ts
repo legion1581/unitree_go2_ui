@@ -110,12 +110,13 @@ export class ConnectionPanel {
       this.modeSelect.appendChild(option);
     }
 
-    // Cloud preferences (family + region) — selections drive the AppName
-    // header and which Unitree endpoint we hit. Re-render the heading on
-    // change so "Connect to <family>" stays in sync.
+    // Cloud preferences row — Connect screen picks the *connect* family
+    // (independent of the account family used to sign cloud requests).
+    // Re-render the heading on change so "Connect to <family>" stays in
+    // sync with the picker.
     const familyLabel = this.container.querySelector('#conn-family-label') as HTMLElement;
     const onPrefChange = (): void => {
-      familyLabel.textContent = FAMILY_LABEL[cloudApi.family];
+      familyLabel.textContent = FAMILY_LABEL[cloudApi.connectFamily];
       this.onFamilyChange?.();
     };
     onPrefChange();
@@ -123,7 +124,12 @@ export class ConnectionPanel {
     // Region lives on the Account Manager login screen — Connect only needs
     // the family switch (Go2 / G1) since it picks the visual label and the
     // local-network scan filter.
-    prefsSlot.replaceWith(buildCloudPrefsRow({ showRegion: false, onChange: onPrefChange }));
+    prefsSlot.replaceWith(buildCloudPrefsRow({
+      showRegion: false,
+      getFamily: () => cloudApi.connectFamily,
+      setFamily: (f) => cloudApi.setConnectFamily(f),
+      onChange: onPrefChange,
+    }));
 
     this.modeSelect.addEventListener('change', () => {
       // Block selecting Remote while logged out — bounce back to STA-L.
@@ -290,7 +296,7 @@ export class ConnectionPanel {
     this.renderScanResults([]);  // clear stale list
 
     try {
-      const results = await scanForRobots(cloudApi.family, (msg) => this.setStatus(msg, 'info'));
+      const results = await scanForRobots(cloudApi.connectFamily, (msg) => this.setStatus(msg, 'info'));
       if (results.length === 0) {
         this.setStatus('No robots found on network', 'error');
         return;

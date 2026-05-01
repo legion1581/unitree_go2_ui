@@ -3,7 +3,7 @@ import { cloudApi } from '../api/unitree-cloud';
 
 // `${rtcTag()}` / `[g1:rtc]` — picked up at log time so the prefix follows
 // whatever family is currently selected in the UI.
-const rtcTag = (): string => `[${cloudApi.family.toLowerCase()}:rtc]`;
+const rtcTag = (): string => `[${cloudApi.connectFamily.toLowerCase()}:rtc]`;
 
 export class WebRTCConnection {
   pc: RTCPeerConnection;

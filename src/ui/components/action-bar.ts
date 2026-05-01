@@ -17,7 +17,7 @@ const DATA_TRUE = '{"data":true}';
 // fire against rt/api/sport/request with SPORT_CMD api_ids; G1 actions
 // fire against rt/api/arm/request with the api_ids encoded in the
 // Explorer 1.9.3 bundle (verified against index-CtgArt9k.js cge fn).
-// The action bar swaps lists at render time on cloudApi.family.
+// The action bar swaps lists at render time on cloudApi.connectFamily.
 const GO2: ReadonlyArray<RobotFamily> = ['Go2'];
 const G1:  ReadonlyArray<RobotFamily> = ['G1'];
 
@@ -104,15 +104,15 @@ export const ALL_ACTIONS = GO2_ACTIONS;
 export const ALL_MODES = GO2_MODES;
 
 /** Pick the action / mode list for the given (or current) family. */
-export function actionsForFamily(family: RobotFamily = cloudApi.family): RobotAction[] {
+export function actionsForFamily(family: RobotFamily = cloudApi.connectFamily): RobotAction[] {
   return family === 'G1' ? G1_ACTIONS : GO2_ACTIONS;
 }
-export function modesForFamily(family: RobotFamily = cloudApi.family): RobotAction[] {
+export function modesForFamily(family: RobotFamily = cloudApi.connectFamily): RobotAction[] {
   return family === 'G1' ? G1_MODES : GO2_MODES;
 }
 
 /** Whether this action is supported on the given (or current) robot family. */
-export function actionSupports(a: RobotAction, family: RobotFamily = cloudApi.family): boolean {
+export function actionSupports(a: RobotAction, family: RobotFamily = cloudApi.connectFamily): boolean {
   return (a.families ?? GO2).includes(family);
 }
 

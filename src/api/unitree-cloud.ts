@@ -250,14 +250,35 @@ function readPersistedFamily(): RobotFamily {
   return 'Go2';
 }
 
+/** Load the connect-side family preference. Independent of the account
+ *  family — the user picks this on the Connect screen to drive the
+ *  connection UI / control view. Falls back to 'Go2' so first-run users
+ *  get a sensible default before they touch the picker. */
+function readPersistedConnectFamily(): RobotFamily {
+  try {
+    const v = localStorage.getItem('unitree_connect_family');
+    if (v === 'Go2' || v === 'G1') return v;
+  } catch { /* ignore */ }
+  return 'Go2';
+}
+
 export class UnitreeCloudAPI {
   private token = '';
   private refreshToken = '';
   private _lastRefreshedAt: number | null = null;
   user: UserInfo | null = null;
 
-  // Persisted in localStorage; surfaced via the connection-panel family switch.
+  // Persisted in localStorage. Two independent family slots:
+  //   _family        — the *account* family. Picked on the Account-login
+  //                    screen and used for cloud-API request signing
+  //                    (AppName header). Different families = different
+  //                    Unitree apps / different account namespaces.
+  //   _connectFamily — the *connect* family. Picked on the Connect screen
+  //                    to drive the connection UI + control view. Lets the
+  //                    user be logged in as one family but visually pick
+  //                    a different connection target.
   private _family: RobotFamily = readPersistedFamily();
+  private _connectFamily: RobotFamily = readPersistedConnectFamily();
   private _region: Region = readLocalEnum<Region>('unitree_region', REGIONS, 'global');
 
   // Subscribers fire on any auth-state mutation (login, logout, token set,
@@ -278,6 +299,12 @@ export class UnitreeCloudAPI {
   setFamily(f: RobotFamily): void {
     this._family = f;
     try { localStorage.setItem('unitree_family', f); } catch { /* ignore */ }
+  }
+
+  get connectFamily(): RobotFamily { return this._connectFamily; }
+  setConnectFamily(f: RobotFamily): void {
+    this._connectFamily = f;
+    try { localStorage.setItem('unitree_connect_family', f); } catch { /* ignore */ }
   }
 
   get region(): Region { return this._region; }

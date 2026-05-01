@@ -8,7 +8,7 @@ import { getCachedAesKey, setCachedAesKey } from '../api/aes-key-derive';
 
 // Log prefix follows the active family at call time so a Go2 vs G1
 // connection attempt is distinguishable in DevTools.
-const tag = (): string => `[${cloudApi.family.toLowerCase()}]`;
+const tag = (): string => `[${cloudApi.connectFamily.toLowerCase()}]`;
 
 export type AesKeyPrompter = (sn: string) => Promise<string>;
 

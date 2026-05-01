@@ -15,11 +15,19 @@ export interface CloudPrefsOptions {
   showRegion?: boolean;
   /** Fired after the user clicks a different value, with the new state. */
   onChange?: (family: RobotFamily, region: Region) => void;
+  /** Optional custom family getter — defaults to cloudApi.family (account
+   *  family). Pass () => cloudApi.connectFamily on the Connect screen so
+   *  the picker drives the connect-side state instead. */
+  getFamily?: () => RobotFamily;
+  /** Optional custom family setter, paired with getFamily. */
+  setFamily?: (f: RobotFamily) => void;
 }
 
 export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement {
   const showFamily = options.showFamily ?? true;
   const showRegion = options.showRegion ?? true;
+  const getFamily = options.getFamily ?? (() => cloudApi.family);
+  const setFamily = options.setFamily ?? ((f: RobotFamily) => cloudApi.setFamily(f));
 
   const row = document.createElement('div');
   row.className = 'cloud-prefs-row';
@@ -46,7 +54,7 @@ export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement
           if (get() === v) return;
           set(v);
           repaint();
-          options.onChange?.(cloudApi.family, cloudApi.region);
+          options.onChange?.(getFamily(), cloudApi.region);
         });
         group.appendChild(btn);
       }
@@ -68,7 +76,7 @@ export function buildCloudPrefsRow(options: CloudPrefsOptions = {}): HTMLElement
   if (showFamily) {
     row.appendChild(labeledGroup(
       'Family',
-      renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, () => cloudApi.family, (v) => cloudApi.setFamily(v), (v) => FAMILY_LABEL[v]),
+      renderToggleGroup<RobotFamily>(ROBOT_FAMILIES, getFamily, setFamily, (v) => FAMILY_LABEL[v]),
     ));
   }
 

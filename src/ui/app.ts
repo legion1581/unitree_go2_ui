@@ -225,7 +225,7 @@ export class App {
    *  Family pill on the cloud-prefs row. */
   private applyConnectionFamilyClass(): void {
     if (this.currentScreen !== 'connection') return;
-    const familyMod = cloudApi.family === 'G1' ? 'connection-family-g1' : 'connection-family-go2';
+    const familyMod = cloudApi.connectFamily === 'G1' ? 'connection-family-g1' : 'connection-family-go2';
     this.root.className = `app-root connection-screen ${familyMod}`;
   }
 
@@ -305,7 +305,7 @@ export class App {
     // expose any mapping UI even though the URDF includes a mid360 LiDAR
     // (verified against the decompiled APK 1.9.3 — pages/ has no mapping
     // chunk and the G1 series subscription path skips rt/utlidar/*).
-    if (cloudApi.family !== 'G1') {
+    if (cloudApi.connectFamily !== 'G1') {
       const mapBtn = document.createElement('button');
       mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
       mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
@@ -355,7 +355,7 @@ export class App {
     // main-view and pip on tap. G1 has no 3D scene (camera is the only
     // view), so the PIP would be empty in one mode and redundant in the
     // other — skip it on humanoid families.
-    if (cloudApi.family !== 'G1') {
+    if (cloudApi.connectFamily !== 'G1') {
       this.pipCamera = new PipCamera(this.controlUi);
       if (this.videoStream) {
         this.pipCamera.setStream(this.videoStream);
@@ -365,7 +365,7 @@ export class App {
 
     // Setting bar
     this.settingBar = new SettingBar(this.controlUi, {
-      family: cloudApi.family,
+      family: cloudApi.connectFamily,
       onRadarToggle: (enabled) => this.sendRadarToggle(enabled),
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
@@ -400,7 +400,7 @@ export class App {
       // G1 modes + arm gestures all route through G1_ARM_REQUEST (the
       // humanoid uses 'rt/api/arm/request' instead of 'rt/api/sport/request').
       // Go2 keeps SPORT_MOD as before. Verified against Explorer 1.9.3.
-      const topic = cloudApi.family === 'G1' ? RTC_TOPIC.G1_ARM_REQUEST : RTC_TOPIC.SPORT_MOD;
+      const topic = cloudApi.connectFamily === 'G1' ? RTC_TOPIC.G1_ARM_REQUEST : RTC_TOPIC.SPORT_MOD;
       console.log(`[action] REQ → ${action.name} (topic=${topic} api_id=${action.apiId}, param=${action.param ?? '{}'})`);
       this.dataHandler?.publishRequest(topic, action.apiId, action.param);
     });
@@ -572,7 +572,7 @@ export class App {
     // view. Skip Scene3D / Go2.glb load; mount the fullscreen video bg
     // immediately and lock viewMode to 'video' so the rest of the UI
     // (toggle, PIP) doesn't try to swap with a non-existent canvas.
-    if (cloudApi.family === 'G1') {
+    if (cloudApi.connectFamily === 'G1') {
       this.viewMode = 'video';
       this.videoBg = document.createElement('video');
       this.videoBg.id = 'video-bg';
@@ -781,7 +781,7 @@ export class App {
     this.dataHandler.subscribe(RTC_TOPIC.MULTIPLE_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.SELFTEST);
     this.dataHandler.subscribe(RTC_TOPIC.SERVICE_STATE);
-    if (cloudApi.family === 'G1') {
+    if (cloudApi.connectFamily === 'G1') {
       this.dataHandler.subscribe(RTC_TOPIC.BMS_STATE);
       this.dataHandler.subscribe(RTC_TOPIC.SECONDARY_IMU);
       this.dataHandler.subscribe(RTC_TOPIC.G1_ARM_ACTION_STATE);
@@ -810,7 +810,7 @@ export class App {
     // G1 has dedicated hardware + software version scripts
     // (BaseRunner.GET_HARDWARE_VERSION, GET_SOFTWARE_VERSION) per
     // com/unitree/webrtc/data/BaseRunner.java in the decompiled apk.
-    if (cloudApi.family === 'G1') {
+    if (cloudApi.connectFamily === 'G1') {
       this.runBashScript('get_hardware_version.sh');
       this.runBashScript('get_software_version.sh');
       this.runBashScript('get_ip_address.sh');
@@ -947,7 +947,7 @@ export class App {
       // Go2 lowstate carries 12 real motors followed by zeros; G1 has up to
       // 29 (12 legs + 3 waist + 14 arms). Slice family-aware so the status
       // page sees the full motor set on G1 but stays trim on Go2.
-      const motorLimit = cloudApi.family === 'G1' ? 29 : 12;
+      const motorLimit = cloudApi.connectFamily === 'G1' ? 29 : 12;
       this.robotState.motorStates = d.motor_state.slice(0, motorLimit).map((m) => {
         // G1's per-motor temperature is an array [casing, winding]; Go2's is
         // a scalar. The summary bar only ever needs one number — pick the
@@ -1026,7 +1026,7 @@ export class App {
     // Status panel's Body IMU section reads from robotState.bodyImu, so
     // mirror the rpy+temp here. (On Go2 we don't expose a separate Body
     // section, so populating this is harmless.)
-    if (cloudApi.family === 'G1' && d.imu_state) {
+    if (cloudApi.connectFamily === 'G1' && d.imu_state) {
       const im = d.imu_state as { rpy?: number[]; temperature?: number };
       const rpy = (im.rpy && im.rpy.length >= 3 ? im.rpy : [0, 0, 0]).slice(0, 3) as [number, number, number];
       this.robotState.bodyImu = { rpy, temp: typeof im.temperature === 'number' ? im.temperature : 0 };

@@ -220,7 +220,7 @@ export class StatusPage {
     // System Info — values arriving via bashrunner (s.hardwareVersion /
     // s.softwareVersion / s.ipAddress) override the connection-config
     // seeds when present.
-    this.setVal('sys-family', cloudApi.family);
+    this.setVal('sys-family', cloudApi.connectFamily);
     this.setVal('sys-mode',   this.system.mode || '—');
     this.setVal('sys-ip',     s.ipAddress || this.system.ip || '—');
     this.setVal('sys-sn',     this.system.serialNumber || '—');
@@ -314,13 +314,13 @@ export class StatusPage {
     // Software Version is firmware-y, so live it inside the Firmware
     // section on G1 alongside Motion Mode.
     systemRows.push(this.row('Hardware Version', 'sys-hw'));
-    if (cloudApi.family !== 'G1') {
+    if (cloudApi.connectFamily !== 'G1') {
       systemRows.push(this.row('Software Version', 'sys-sw'));
     }
     content.appendChild(this.buildSection('System', systemRows));
 
     const firmwareRows: HTMLElement[] = [this.row('Motion Mode', 'fw-mode')];
-    if (cloudApi.family === 'G1') {
+    if (cloudApi.connectFamily === 'G1') {
       firmwareRows.unshift(this.row('Software Version', 'sys-sw'));
     }
     content.appendChild(this.buildSection('Firmware', firmwareRows));
@@ -345,7 +345,7 @@ export class StatusPage {
     // extra rows up front; setVal is a no-op until data lands so they
     // show '-' on a fresh G1 connection until the first bmsstate frame.
     // Field/index map mirrors com/unitree/g1/ui/battery/BatteryDataViewmodel.kt.
-    if (cloudApi.family === 'G1') {
+    if (cloudApi.connectFamily === 'G1') {
       batteryRows.push(
         this.row('Pack Voltage', 'bat-pack-voltage'),
         this.row('Cell Voltage', 'bat-bat-voltage'),
@@ -360,7 +360,7 @@ export class StatusPage {
     // with 29 callouts driven by a 6-tab metric switcher (Comm Quality /
     // Acc Loss / Position / Casing °C / Winding °C / Errors). Go2 keeps
     // the dense row table that's been there since launch.
-    const family = cloudApi.family;
+    const family = cloudApi.connectFamily;
     const motorBody = document.createElement('div');
     motorBody.className = 'status-section-body';
 
@@ -630,7 +630,7 @@ export class StatusPage {
 
   private ensureMotorRows(count: number): void {
     if (!this.motorRowsParent || count <= this.motorRows.length) return;
-    const family = cloudApi.family;
+    const family = cloudApi.connectFamily;
     // Insert new rows just before the summary block (last child of the body)
     // so the summary stays at the bottom.
     const summaryAnchor = this.motorRowsParent.querySelector('.status-summary');
