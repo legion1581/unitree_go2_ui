@@ -10,7 +10,7 @@ import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { MappingPage } from './components/mapping-page';
 import { AccountPage } from './components/account-page';
 import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
-import { BtPopover } from './components/bt-popover';
+import { BtPage } from './components/bt-page';
 import { ThemeToggle } from './components/theme-toggle';
 import { AccountStatusIcon } from './components/account-status-icon';
 import { btBackend } from '../api/bt-backend';
@@ -24,7 +24,7 @@ import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account';
+type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account' | 'bt';
 
 export class App {
   private root: HTMLElement;
@@ -76,7 +76,10 @@ export class App {
   private relayUnsub: (() => void) | null = null;
   private leftJoystickWrap: HTMLElement | null = null;
   private rightJoystickWrap: HTMLElement | null = null;
-  private btPopover: BtPopover | null = null;
+  private btPage: BtPage | null = null;
+  // True when BT page is reached via the landing tile (vs the hub).
+  // Drives where the back button returns to (mirrors accountFromLanding).
+  private btFromLanding = false;
 
   // Robot state (accumulated from topic messages)
   private robotState: import('./components/status-page').RobotStatus = {
@@ -149,6 +152,7 @@ export class App {
   private showLandingScreen(): void {
     this.currentScreen = 'landing';
     this.accountFromLanding = false;
+    this.btFromLanding = false;
     this.root.innerHTML = '';
     this.root.className = 'app-root landing-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
@@ -183,7 +187,10 @@ export class App {
     const btBtn = document.createElement('button');
     btBtn.className = 'hub-btn hub-btn-secondary';
     btBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/></svg><span>Bluetooth</span>`;
-    btBtn.addEventListener('click', () => this.toggleBtPopover());
+    btBtn.addEventListener('click', () => {
+      this.btFromLanding = true;
+      this.showBtScreen();
+    });
     tiles.appendChild(btBtn);
 
     wrap.appendChild(tiles);
@@ -236,20 +243,9 @@ export class App {
     info.className = 'hub-info';
     hub.appendChild(info);
 
-    const cachedDevicesForHeader = (() => {
-      try {
-        const c = localStorage.getItem('unitree_devices_cache');
-        return c ? JSON.parse(c) as Array<{ sn: string; alias: string }> : [];
-      } catch { return []; }
-    })();
-
     const renderHeader = (): void => {
       const sn = this.connectionConfig?.serialNumber || '';
-      let robotName = isConnected ? 'Connected' : 'Dashboard';
-      if (sn) {
-        const dev = cachedDevicesForHeader.find(d => d.sn === sn);
-        robotName = dev?.alias || sn;
-      }
+      const robotName = sn ? sn : (isConnected ? 'Connected' : 'Dashboard');
       title.textContent = robotName;
 
       const infoItems: string[] = [];
@@ -339,9 +335,10 @@ export class App {
 
     this.init3DScene();
 
-    // Nav bar (top) — back goes to hub, not disconnect
+    // Nav bar (top) — back goes to hub, not disconnect.
+    // BT icon is a passive status indicator (matches the floating one);
+    // the actual BT controls live on the landing-page Bluetooth tile.
     this.navBar = new NavBar(this.controlUi, () => this.goToHub());
-    this.navBar.setBtIconClick(() => this.toggleBtPopover());
     this.updateNavBarBtIcon();
 
     // PIP camera. The PIP bubble swaps the 3D scene and the camera between
@@ -486,7 +483,6 @@ export class App {
         this.dataHandler
           ? this.dataHandler.pushFile(path, b64, 'uslam_final_pcd', 30 * 1024, onProgress)
           : Promise.reject(new Error('Data channel not ready')),
-      () => this.toggleBtPopover(),
     );
     // Seed the battery widget with the last-known value so it's not blank
     // until the next LOW_STATE message arrives.
@@ -526,12 +522,23 @@ export class App {
     this.accountPage = new AccountPage(this.root, back);
   }
 
+  private showBtScreen(): void {
+    this.currentScreen = 'bt';
+    this.root.innerHTML = '';
+    this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
+    this.btPage?.destroy();
+    const back = this.btFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
+    this.btPage = new BtPage(this.root, back);
+  }
+
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
     this.setRelay(false);
-    this.btPopover?.close();
-    this.btPopover = null;
+    this.btPage?.destroy();
+    this.btPage = null;
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -696,7 +703,7 @@ export class App {
     }
   }
 
-  // ── Nav-bar BT icon & popover ──
+  // ── Nav-bar BT icon ──
 
   private updateNavBarBtIcon(): void {
     if (!this.navBar) return;
@@ -707,15 +714,6 @@ export class App {
     if (s.remoteConnected) parts.push(`Remote: ${s.remoteName || s.remoteAddress}`);
     const tooltip = connected ? parts.join(' · ') : 'Bluetooth: not connected';
     this.navBar.setBluetoothStatus(connected, tooltip);
-  }
-
-  private toggleBtPopover(): void {
-    if (this.btPopover) {
-      this.btPopover.close();
-      this.btPopover = null;
-    } else {
-      this.btPopover = new BtPopover(() => { this.btPopover = null; });
-    }
   }
 
   // ── BT Remote Relay Loop ──

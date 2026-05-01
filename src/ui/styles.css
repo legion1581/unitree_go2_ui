@@ -2335,31 +2335,29 @@ textarea.acct-input.acct-input-mono { color: #e0e0e0; }
   color: #4fc3f7 !important;
 }
 
-/* BT popover panel (dark default) */
-.bt-popover-panel {
-  background: #0f1114;
-  border: 1px solid #1f2229;
+/* BT page content (dark default) */
+.bt-page-content {
   color: #ccc;
+  max-width: 560px;
+  margin: 0 auto;
+  font-size: 13px;
 }
-html[data-theme="light"] .bt-popover-panel {
-  background: #ffffff;
-  border: 1px solid #d4d9e4;
+html[data-theme="light"] .bt-page-content {
   color: #1a1d23;
-  box-shadow: 0 8px 28px rgba(60, 75, 120, 0.2);
 }
 /* Device rows + scan item inline backgrounds in the popover */
-html[data-theme="light"] .bt-popover-panel [style*="background:#0a0c10"],
-html[data-theme="light"] .bt-popover-panel [style*="background: #0a0c10"] {
+html[data-theme="light"] .bt-page-content [style*="background:#0a0c10"],
+html[data-theme="light"] .bt-page-content [style*="background: #0a0c10"] {
   background: #f5f7fb !important;
   border-color: #d4d9e4 !important;
 }
 /* Controller body + button cells (setBtn dark backgrounds) */
-html[data-theme="light"] .bt-popover-panel [style*="background:#111318"],
-html[data-theme="light"] .bt-popover-panel [style*="background: #111318"] {
+html[data-theme="light"] .bt-page-content [style*="background:#111318"],
+html[data-theme="light"] .bt-page-content [style*="background: #111318"] {
   background: #ffffff !important;
   border-color: #d4d9e4 !important;
 }
-html[data-theme="light"] .bt-popover-panel [style*="background:#080a0e"] {
+html[data-theme="light"] .bt-page-content [style*="background:#080a0e"] {
   background: #eef1f7 !important;
   border-color: #d4d9e4 !important;
 }

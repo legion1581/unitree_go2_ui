@@ -1,6 +1,7 @@
 /**
- * Small overlay popover triggered from the nav-bar BT icon.
- * Shows the current BLE connection(s) and offers quick Scan / Disconnect actions.
+ * Bluetooth page — full-screen view (mirrors AccountPage). Reached from the
+ * landing-page Bluetooth tile. Shows the current BLE connection(s) and offers
+ * Scan / Connect / Disconnect / WiFi-config controls.
  */
 
 import { btBackend } from '../../api/bt-backend';
@@ -41,10 +42,10 @@ type CachedRobotPanel = {
 };
 const robotPanelCache: Map<string, CachedRobotPanel> = new Map();
 
-export class BtPopover {
-  private overlay: HTMLElement;
-  private panel: HTMLElement;
-  private onClose: () => void;
+export class BtPage {
+  private container: HTMLElement;
+  private content: HTMLElement;
+  private onBack: () => void;
   private robotBody: HTMLElement | null = null;
   private remoteBody: HTMLElement | null = null;
   private emptyPlaceholder: HTMLElement | null = null;
@@ -78,31 +79,29 @@ export class BtPopover {
     meta: HTMLElement;
   } | null = null;
 
-  constructor(onClose: () => void) {
-    this.onClose = onClose;
+  constructor(parent: HTMLElement, onBack: () => void) {
+    this.onBack = onBack;
 
-    this.overlay = document.createElement('div');
-    this.overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9500;display:flex;justify-content:flex-end;align-items:flex-start;padding:54px 18px 0 0;';
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.close();
-    });
-    // Block stray Backspace from triggering history.back when focus
-    // briefly leaves the AES input (e.g. during a status repaint).
-    // Allow it through normally when an editable element is focused.
-    this.overlay.addEventListener('keydown', (e) => {
-      if (e.key !== 'Backspace' && e.key !== 'Delete') return;
-      const tgt = e.target as HTMLElement | null;
-      const tag = (tgt?.tagName || '').toUpperCase();
-      const editable = tag === 'INPUT' || tag === 'TEXTAREA' || tgt?.isContentEditable;
-      if (!editable) e.preventDefault();
-    });
+    this.container = document.createElement('div');
+    this.container.className = 'status-page';
 
-    this.panel = document.createElement('div');
-    this.panel.className = 'bt-popover-panel';
-    this.panel.style.cssText = 'border-radius:10px;padding:14px 16px;width:420px;max-height:calc(100vh - 80px);overflow-y:auto;min-height:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,0.5);';
-    this.overlay.appendChild(this.panel);
+    const header = document.createElement('div');
+    header.className = 'page-header';
+    const backBtn = document.createElement('button');
+    backBtn.className = 'page-back-btn';
+    backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
+    backBtn.addEventListener('click', () => this.onBack());
+    header.appendChild(backBtn);
+    const title = document.createElement('h2');
+    title.textContent = 'Bluetooth';
+    header.appendChild(title);
+    this.container.appendChild(header);
 
-    document.body.appendChild(this.overlay);
+    this.content = document.createElement('div');
+    this.content.className = 'page-content bt-page-content';
+    this.container.appendChild(this.content);
+    parent.appendChild(this.container);
+
     this.buildLayout();
 
     // Subscribe to backend topics — messages flow in via the shared singleton WS
@@ -118,12 +117,11 @@ export class BtPopover {
     });
   }
 
-  close(): void {
+  destroy(): void {
     this.unsubStatus?.(); this.unsubStatus = null;
     this.unsubAdapters?.(); this.unsubAdapters = null;
     this.unsubRemoteState?.(); this.unsubRemoteState = null;
-    this.overlay.remove();
-    this.onClose();
+    this.container.remove();
   }
 
   private esc(s: string): string {
@@ -231,25 +229,14 @@ export class BtPopover {
   }
 
   private buildLayout(): void {
-    this.panel.innerHTML = '';
-
-    // Header
-    const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;';
-    header.innerHTML = '<div style="font-size:14px;font-weight:600;color:#e0e0e0;">Bluetooth</div>';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.style.cssText = 'background:none;border:none;color:#888;font-size:22px;cursor:pointer;line-height:1;padding:0 6px;';
-    closeBtn.addEventListener('click', () => this.close());
-    header.appendChild(closeBtn);
-    this.panel.appendChild(header);
+    this.content.innerHTML = '';
 
     // Adapter selector
     const adapterSec = this.section('Adapter');
     this.adapterBody = document.createElement('div');
     this.adapterBody.style.minHeight = '28px';
     adapterSec.appendChild(this.adapterBody);
-    this.panel.appendChild(adapterSec);
+    this.content.appendChild(adapterSec);
 
     // Connected Devices section (Robot + Remote unified)
     const devicesSec = this.section('Connected Devices');
@@ -262,7 +249,7 @@ export class BtPopover {
     this.emptyPlaceholder.style.cssText = 'font-size:12px;color:#666;padding:2px 0;';
     this.emptyPlaceholder.textContent = 'No devices connected';
     devicesSec.appendChild(this.emptyPlaceholder);
-    this.panel.appendChild(devicesSec);
+    this.content.appendChild(devicesSec);
 
     // Scan section (results list persists)
     const scanSec = this.section('Scan');
@@ -289,7 +276,7 @@ export class BtPopover {
     this.resultsDiv = document.createElement('div');
     this.resultsDiv.style.minHeight = '20px';
     scanSec.appendChild(this.resultsDiv);
-    this.panel.appendChild(scanSec);
+    this.content.appendChild(scanSec);
   }
 
   private async refreshStatus(): Promise<void> {
@@ -1198,13 +1185,13 @@ export class BtPopover {
   }
 
   private showError(msg: string): void {
-    const existing = this.panel.querySelector('.bt-popover-error');
+    const existing = this.content.querySelector('.bt-page-error');
     existing?.remove();
     const err = document.createElement('div');
-    err.className = 'bt-popover-error';
+    err.className = 'bt-page-error';
     err.style.cssText = 'margin-top:8px;padding:8px 10px;background:rgba(239,83,80,0.1);border:1px solid rgba(239,83,80,0.3);border-radius:5px;color:#ef5350;font-size:11px;';
     err.textContent = msg;
-    this.panel.appendChild(err);
+    this.content.appendChild(err);
     setTimeout(() => err.remove(), 5000);
   }
 

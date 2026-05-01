@@ -198,7 +198,6 @@ export class MappingPage {
   private wifiIconEl!: HTMLImageElement;
   private btIconWrap!: HTMLElement;
   private themeIconWrap!: HTMLElement;
-  private onBtClick: (() => void) | null = null;
   private unsubTheme: (() => void) | null = null;
   private pipCamera: PipCamera | null = null;
   private locHint!: HTMLElement;
@@ -221,7 +220,6 @@ export class MappingPage {
     onUnsubscribe: (topic: string) => void,
     onRequestFile?: (path: string, cb: (data: string | null) => void) => void,
     onPushFile?: (path: string, b64: string, onProgress?: (frac: number) => void) => Promise<void>,
-    onBtClick?: () => void,
   ) {
     this.onBack = onBack;
     this.publish = onPublish;
@@ -229,7 +227,6 @@ export class MappingPage {
     this.unsubscribe = onUnsubscribe;
     this.requestFile = onRequestFile ?? null;
     this.pushFile = onPushFile ?? null;
-    this.onBtClick = onBtClick ?? null;
 
     this.container = document.createElement('div');
     this.container.className = 'mapping-page';
@@ -287,8 +284,8 @@ export class MappingPage {
     renderTheme(theme().theme);
     this.unsubTheme = theme().onChange((t) => renderTheme(t));
 
-    // BT icon — hover effect + click forwards to the popover toggle.
-    this.btIconWrap.addEventListener('click', () => this.onBtClick?.());
+    // BT icon — passive status indicator (matches the floating one).
+    // BT controls live on the landing-page Bluetooth tile.
 
     this.container.appendChild(header);
 

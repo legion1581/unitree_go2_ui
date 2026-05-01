@@ -205,28 +205,19 @@ export class ConnectionPanel {
     }
   }
 
-  /** Pull the cached device list (or fetch fresh) when logged in, and
-   *  rebuild the picker. Called on construct and on login state changes. */
+  /** Fetch the device list when logged in and rebuild the picker.
+   *  Called on construct and on login state changes. */
   private refreshDevicesForRemote(): void {
     if (!cloudApi.isLoggedIn) {
       this.devices = [];
       this.populateRobotSelect();
       return;
     }
-    // Use the cache for an instant render, then fetch fresh in the
-    // background.
-    try {
-      const c = localStorage.getItem('unitree_devices_cache');
-      if (c) this.devices = JSON.parse(c) as RobotDevice[];
-    } catch { /* ignore */ }
-    this.populateRobotSelect();
-
     void cloudApi.listDevices().then((devices) => {
       this.devices = devices;
-      try { localStorage.setItem('unitree_devices_cache', JSON.stringify(devices)); } catch { /* ignore */ }
       this.populateRobotSelect();
       this.updateVisibility();
-    }).catch(() => { /* keep cached list */ });
+    }).catch(() => { /* leave devices as-is on error */ });
   }
 
   private populateRobotSelect(): void {
