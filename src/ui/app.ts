@@ -102,6 +102,10 @@ export class App {
     selfTestResults: [],
   };
 
+  // Debug: throttle for the bms_state dump (see handleLowState).
+  private bmsLogLast = 0;
+  private bmsLogged = false;
+
   constructor(root: HTMLElement) {
     this.root = root;
     root.innerHTML = '';
@@ -989,6 +993,7 @@ export class App {
 
     if (d.bms_state) {
       const bms = d.bms_state as Record<string, unknown>;
+      this.logBmsSample(bms);
       if (typeof bms.soc === 'number') {
         this.robotState.batteryPercent = bms.soc;
         this.navBar?.setBattery(bms.soc);
@@ -1052,6 +1057,24 @@ export class App {
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
+  }
+
+  /** Log the raw bms_state payload on first arrival and once every
+   *  ~5 s after that — first frame prints all keys + the full JSON so
+   *  we can verify which voltage / temperature field a given firmware
+   *  uses; subsequent dumps are one-line samples. */
+  private logBmsSample(bms: Record<string, unknown>): void {
+    const now = Date.now();
+    if (!this.bmsLogged) {
+      this.bmsLogged = true;
+      this.bmsLogLast = now;
+      console.log(`[bms] first frame — family=${cloudApi.connectFamily} keys:`, Object.keys(bms));
+      console.log('[bms] first frame — full payload:', JSON.stringify(bms, null, 2));
+      return;
+    }
+    if (now - this.bmsLogLast < 5000) return;
+    this.bmsLogLast = now;
+    console.log('[bms] sample:', JSON.stringify(bms));
   }
 
   // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
