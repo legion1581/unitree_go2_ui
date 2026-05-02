@@ -2,7 +2,7 @@
 
 The Mapping page in this UI talks to the robot's `uslam_server` (the on-board SLAM module) over WebRTC and lets the user build maps, localize on saved maps, navigate to a goal, run a patrol loop, and dock for auto-charging — all from the browser. This document covers the topics involved, the user-facing flow, the local data model, and the firmware-side state machine.
 
-![SLAM view](../images/slam-view.png)
+![SLAM view](../images/slam.png)
 
 ## Table of Contents
 

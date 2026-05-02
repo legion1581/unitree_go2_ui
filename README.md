@@ -1,182 +1,101 @@
-# Unitree Go2 WebRTC UI
+# Unitree WebRTC UI
 
-A browser-based control interface for the Unitree Go2 robot dog, communicating over WebRTC. Built with TypeScript, Three.js, and Vite.
+A browser-based control interface for **Unitree Go2** and **Unitree G1** robots, communicating over the same WebRTC handshake the official mobile apps use. No jailbreak, no firmware modification, no phone app required.
+
+Built with TypeScript, Three.js, and Vite.
 
 ![Status](https://img.shields.io/badge/status-stable-brightgreen)
 ![Browser](https://img.shields.io/badge/tested-Chrome-brightgreen)
-
-![Control View](images/control-view-new.png)
+![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 
 <p align="center">
-  <img src="images/connection.png" width="24%" />
-  <img src="images/hub.png" width="24%" />
-  <img src="images/status.png" width="24%" />
-  <img src="images/services.png" width="24%" />
+  <img src="images/landing.png" width="80%" />
+</p>
+
+## Supported Robots
+
+| Family | Variants | Firmware | Auth |
+|--------|----------|----------|------|
+| **Go2** | AIR, PRO, EDU | 1.0.19 – 1.1.14 | static GCM key (`data2=2`) |
+| **G1**  | AIR, EDU      | 1.2.0 – 1.4.5   | static GCM key (`data2=2`) |
+| **G1**  | AIR, EDU      | 1.5.1+          | per-device AES-128 key (`data2=3`) — see [docs/connection.md](docs/connection.md#g1--151--aes-128-key-data23) |
+
+## Tour
+
+<p align="center">
+  <img src="images/connect_go2.png" width="32%" />
+  <img src="images/hub.png" width="32%" />
+  <img src="images/webview_go2.png" width="32%" />
 </p>
 
 <p align="center">
-  <img src="images/account-manager.png" width="60%" />
+  <img src="images/status_go2.png" width="32%" />
+  <img src="images/services_go2.png" width="32%" />
+  <img src="images/slam.png" width="32%" />
 </p>
 
-## Features
-
-- **Real-time 3D visualization** — Go2 model with live joint angles, lidar spinning animation, and voxel point cloud (SLAM)
-- **Camera feed** — Live video with PIP view swap (camera/voxel)
-- **Dual joystick control** — Move and rotate the robot
-- **Action bar** — Roll over, stretch, shake hand, dance, flips, and more (customizable carousel)
-- **Mode switching** — Damping, free walk, sit, crouch, run, walk stair, hand stand, bound, cross step, etc.
-- **Robot status** — Battery, motor data (temp, position, torque, lost packets), IMU, LiDAR state, network info
-- **Service manager** — View all running services, start/stop with protection handling
-- **Account Management** — Unitree cloud account: devices, firmware, tutorials, sharing, debug API console
-- **3D LiDAR Mapping (SLAM)** — build maps, localize, navigate to goals, run patrol loops, auto-dock and charge; local IndexedDB cache + zip import/export so saved maps survive the robot's single-slot storage
-- **Bluetooth Setup** — Configure robot WiFi over BLE (scan, connect, STA/AP mode) without the phone app
-- **Remote Control** — Connect to the Unitree BLE remote, live joystick/button visualization with Hz counter
-- **Dark / Light theme** — Floating sun/moon toggle in the top-right corner, persisted per-browser; scene background + grid adapt on the fly
-- **Connection modes:**
-  - **Local Network (STA-L)** — Direct connection via IP on same network
-  - **Access Point (AP)** — Direct connection at 192.168.12.1
-  - **Remote** — Cloud connection via Unitree account (email/password or token)
-- **Network scanner** — UDP multicast auto-discovery of robots on the network
-- **Firmware info** — Package version fetched via bashrunner
-
-## Prerequisites
-
-- Node.js >= 18
-- npm >= 9
-- Unitree Go2 robot (firmware v1.1.x+)
-
-## Installation
+## Quick Start
 
 ```bash
 git clone https://github.com/legion1581/unitree_go2_ui.git
 cd unitree_go2_ui
 npm install
+npm run start          # Vite + Python BLE server together
+# or:
+npm run start:no-ble   # Vite only, no Bluetooth features
 ```
 
-## Usage
+Open <http://localhost:5173> in **Chrome** (recommended).
 
-### Development
+The dev server includes hot module replacement, a built-in UDP multicast scanner (no separate process needed), and proxies for the robot API, Unitree cloud API, and BLE server.
+
+For a production build:
 
 ```bash
-npm run start        # Starts Vite + BLE server together
-npm run start:no-ble # Vite only (no Bluetooth features)
-npm run dev          # Vite only (same as start:no-ble)
+npm run build && npm run preview
 ```
 
-Open http://localhost:5173 in **Chrome** (recommended).
+### Prerequisites
 
-The dev server includes:
-- Hot module replacement
-- Built-in UDP multicast scanner (no separate process needed)
-- Proxy for robot API, Unitree cloud API, and BLE server (avoids CORS)
+- Node.js ≥ 18, npm ≥ 9
+- Chrome (Firefox is experimental, Safari untested)
+- A Unitree Go2 or G1 robot
 
-### Production Build
+## Features
 
-```bash
-npm run build
-npm run preview
-```
+- **Real-time 3D viewport** — robot model with live joint angles, lidar spinning animation, voxel point cloud (Go2 SLAM).
+- **Camera + dual joystick control** — PIP video, on-screen joysticks, action carousel for sport commands and modes.
+- **Robot status** — battery, motors (temp / position / torque / lost packets), IMU, LiDAR, system info — family-aware fields for Go2 and G1.
+- **Service manager** — list MCF services, start / stop with protection handling.
+- **Account manager** — Unitree cloud account: devices, firmware, tutorials, sharing, raw debug API console.
+- **3D LiDAR Mapping (SLAM)** — Go2 only: build maps, localize, navigate, patrol, auto-dock and charge; local IndexedDB cache + zip import/export.
+- **Bluetooth setup** — pair the robot over BLE (V1/V2 for Go2 + G1 < 1.5.1, V3 for G1 ≥ 1.5.1) to configure WiFi without the phone app.
+- **BLE remote relay** — pair a Unitree BLE remote, forward joystick + buttons to the robot over WebRTC.
+- **Dark / light theme** — floating toggle, persisted per-browser; the 3D scene adapts on the fly.
+- **Connection modes** — Local Network (STA-L), Access Point (AP), Remote (TURN through Unitree cloud).
+- **Network scanner** — UDP multicast auto-discovery, including SN-targeted scan for G1 ≥ 1.5.1.
 
-## Connecting to the Robot
+## Documentation
 
-### Local Network (recommended)
-
-1. Connect your computer to the same network as the Go2
-2. Select **Local Network** mode
-3. Click **Scan** to auto-discover the robot, or enter the IP manually
-4. Click **Connect**
-
-### Access Point
-
-1. Connect to the Go2's WiFi hotspot
-2. Select **Access Point** mode (IP is auto-filled to 192.168.12.1)
-3. Click **Connect**
-
-### Remote
-
-1. Select **Remote** mode
-2. Enter your Unitree account email/password (or paste an access token)
-3. Click **Login** — your robots load automatically
-4. On the hub, click **WebRTC Connect** to establish the video/control stream
-5. If your account has multiple robots, use the dropdown to pick one before connecting
-
-## Bluetooth
-
-Bluetooth configuration overlay available from any screen via the **BT icon** in the upper-right corner.
-
-<p align="center">
-  <img src="images/bluetooth-popover-1.png" width="45%" />
-  <img src="images/bluetooth-popover-2.png" width="45%" />
-</p>
-
-- **Scan & connect** — discover and connect to Go2 robots and Unitree BLE remote controls
-- **Adapter selection** — switch between multiple HCI adapters (useful with USB dongles)
-- **Robot** — fetch serial number and AP MAC, configure WiFi (SSID, password, STA/AP mode, region)
-- **Remote** — read live joystick axes and button states, relay them to the robot over WebRTC (`rt/wirelesscontroller`)
-
-### Relay the BT Remote to the Robot
-
-When a BLE remote control is connected, a gamepad icon appears in the control view's setting bar (alongside Radar, LiDAR, Volume, Light). Click it to forward the remote's joystick axes and buttons to the robot — the on-screen virtual joysticks hide while relay is active.
-
-<p align="center">
-  <img src="images/bt-relay-button.png" width="60%" />
-</p>
-
-Protocol reference:
-- [docs/bluetooth-v1-v2.md](docs/bluetooth-v1-v2.md) — Robot BLE provisioning (Go2 all firmware, G1 `< 1.5.1`)
-- [docs/bluetooth-v3.md](docs/bluetooth-v3.md) — G1 `≥ 1.5.1` extension (`VERSION` 0xF1, `GCM_KEY` 0xF2)
-- [docs/remote-control.md](docs/remote-control.md) — BLE remote (`Unitree-*`) and the WebRTC relay to the robot
-
-```bash
-# Or run the BLE server separately:
-pip install -r server/requirements.txt
-npm run ble-server
-```
-
-## Account Management
-
-Available in Remote mode via the hub. Provides access to the Unitree cloud API without needing the phone app.
-
-- **Devices** — list robots with online status, details, firmware downloads, sharing, bind/unbind
-- **Info** — app version with APK download, grouped video tutorials, changelog, announcements
-- **Account** — profile, avatar, password, region, session management
-- **Debug** — raw API console with 77 endpoints across 13 categories (Auth, Devices, Firmware, WebRTC, Wallet, etc.)
-
-## 3D LiDAR Mapping
-
-A full SLAM workflow in the browser, talking to the on-board `uslam_server` over WebRTC. Build a map, localize on it, drive to a goal, run a patrol loop, dock and charge — all without the phone app.
-
-![SLAM view](images/slam-view.png)
-
-Key points:
-
-- **Three-step flow** — `Mapping ➜ Localization ➜ Navigation`, gated by state and shown as a horizontal stepper banner under the header.
-- **Mapping** — `mapping/start` / `stop`; live point cloud streams over `rt/uslam/frontend/cloud_world_ds`, decoded off-thread by `libslam.wasm` and rendered as voxels.
-- **Localization** — drag a pose on the map, robot anchors and starts tracking; live scan + Go2 model both visible.
-- **Go to Goal** — drag a goal pose, robot drives there; auto-issues `navigation/start` if needed.
-- **Patrol** — multi-waypoint loop with full limit configuration: per-cycle time, total mission time, charge cycle time, loop count, BMS-SOC range. Reset to firmware defaults with one click.
-- **Auto-charge** — dedicated section with plate-distance tuning and a one-click "Disable in Patrol" that kills all three NEED_CHARGE triggers.
-- **Local map storage** — every saved map is cached in IndexedDB (PCD + PGM + TXT bundle); reloading uploads the bundle back to the robot via chunked `push_static_file` so localization/navigation work on saved maps even though the robot only has one physical slot.
-- **Zip import / export** — share or back up maps. Each saved-map row has Export → `<name>.zip`; the section header has Import .zip.
-- **Send Command panel** — left sidebar exposes a categorised template picker for ~56 SLAM commands, plus the live server log.
-- **PiP video feed** — draggable camera preview overlaid on the 3D viewport.
-- **Theme-aware** — dark and light themes apply to the 3D scene (background, grid, laser cloud) and the page chrome.
-
-Full protocol reference, state machines, file paths, and known quirks live in [docs/slam.md](docs/slam.md).
-
-## Browser Support
-
-| Browser | Status |
-|---------|--------|
-| Chrome | Tested, fully working |
-| Firefox | Experimental (WebRTC data channel timing differences) |
-| Safari | Not tested |
+| Topic | What's covered |
+|-------|---------------|
+| [Connection](docs/connection.md) | Family selection, STA-L / AP / Remote modes, network scan, AES-128 key flow for G1 ≥ 1.5.1 |
+| [Control View](docs/control.md) | Joysticks, action bar, modes, sport command IDs, BLE remote relay |
+| [Robot Status](docs/status.md) | Battery / motor / IMU / system panels for both families |
+| [Service Manager](docs/services.md) | MCF service list, protection flag, start/stop |
+| [Account Manager](docs/account.md) | Cloud sign-in, devices, tutorials, debug console |
+| [Bluetooth](docs/bluetooth.md) | Robot provisioning + remote pairing overview |
+| [Bluetooth V1/V2 protocol](docs/bluetooth-v1-v2.md) | GATT layout for Go2 and G1 < 1.5.1 |
+| [Bluetooth V3 protocol](docs/bluetooth-v3.md) | G1 ≥ 1.5.1 magic-prefix + GCM key exchange |
+| [BLE Remote Control](docs/remote-control.md) | Frame layout, axes/buttons mapping, WebRTC relay |
+| [SLAM](docs/slam.md) | Mapping → Localization → Navigation flow, patrol, auto-dock |
+| [LiDAR](docs/lidar.md) | Point cloud decoding pipeline |
 
 ## Project Structure
 
 ```
 src/
-  api/              # Unitree cloud API client (account, devices, firmware, etc.)
+  api/              # Unitree cloud API client (account, devices, firmware, …)
   connection/       # WebRTC, local/remote connectors, network scanner
   crypto/           # AES-ECB, RSA, AES-GCM for auth and SDP exchange
   protocol/         # Data channel handler, topics, sport commands
@@ -187,34 +106,23 @@ src/
 public/
   icons/            # Action and mode SVG icons
   sprites/          # UI sprites and backgrounds
-  models/           # Go2.glb 3D model
+  models/           # Go2.glb / G1.glb 3D models
 server/
   ble_server.py     # FastAPI BLE backend (scan, connect, WiFi config)
   scanner.mjs       # Standalone UDP multicast scanner (optional)
 ```
 
-## Sport Commands (API IDs)
+## Acknowledgements
 
-Actions and modes use the MCF sport API IDs matching firmware v1.1.11:
+Big thanks to the [TheRoboVerse](https://theroboverse.com) community.
 
-| Action | ID | Mode | ID |
-|--------|----|------|----|
-| Roll Over | 1021 | Free Walk | 2045 |
-| Stretch | 1017 | Pose | 1028 |
-| Shake Hand | 1016 | Run | 1011 |
-| Heart | 1036 | Walk Stair | 1049 |
-| Pounce | 1032 | Static Walk | 1061 |
-| Jump Forward | 1031 | Endurance | 1035 |
-| Greet | 1029 | Leash | 2056 |
-| Dance 1 | 1022 | Hand Stand | 2044 |
-| Dance 2 | 1023 | Free Avoid | 2048 |
-| Front Flip | 1030 | Bound | 2046 |
-| Back Flip | 2043 | Jump | 2047 |
-| Left Flip | 2041 | Stand | 1006 |
-| Damping | 1001 | Cross Step | 2051 |
-| Sit Down | 1009 | Rear Stand | 2050 |
-| Crouch | 1005 | Rage Mode | 2059 |
-| Lock On | 1004 | | |
+Special thanks to the [tfoldi WebRTC project](https://github.com/tfoldi/go2-webrtc) and [abizovnuralem](https://github.com/abizovnuralem) for adding LiDAR support, and [MrRobotoW](https://github.com/MrRobotoW) for the LiDAR visualization example.
+
+## Support
+
+If you like this project, please consider buying me a coffee:
+
+<a href="https://www.buymeacoffee.com/legion1581" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 ## License
 
