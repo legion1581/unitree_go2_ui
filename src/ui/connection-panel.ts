@@ -84,8 +84,8 @@ export class ConnectionPanel {
           <input type="text" id="ip-input" placeholder="192.168.12.1" />
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
-        <div class="ip-row" style="margin-top:8px;">
-          <input type="text" id="scan-sn-input" placeholder="Robot SN (for G1 firmware ≥ 1.5.1)" autocomplete="off" spellcheck="false" />
+        <div id="scan-sn-row" class="ip-row" style="margin-top:8px;display:none;">
+          <input type="text" id="scan-sn-input" placeholder="Robot SN (>=v1.5.1)" autocomplete="off" spellcheck="false" />
           <button id="scan-sn-btn" class="btn-scan" title="Targeted scan by SN — required for G1 firmware ≥ 1.5.1">Scan by SN</button>
         </div>
         <div id="scan-results" class="scan-results" style="display:none;"></div>
@@ -126,6 +126,9 @@ export class ConnectionPanel {
     const onPrefChange = (): void => {
       familyLabel.textContent = FAMILY_LABEL[cloudApi.connectFamily];
       this.onFamilyChange?.();
+      // Re-evaluate so the G1-only Scan-by-SN row appears/hides as the
+      // user toggles the Family pill.
+      this.updateVisibility();
     };
     onPrefChange();
     const prefsSlot = this.container.querySelector('#conn-prefs-slot') as HTMLElement;
@@ -193,6 +196,11 @@ export class ConnectionPanel {
     }
 
     ipGroup.style.display = isRemote ? 'none' : '';
+    // SN-targeted scan only matters for G1 — Go2 firmware doesn't gate
+    // multicast replies on the SN field, so the regular Scan button
+    // is sufficient there.
+    const snRow = this.container.querySelector('#scan-sn-row') as HTMLElement | null;
+    if (snRow) snRow.style.display = (!isRemote && cloudApi.connectFamily === 'G1') ? '' : 'none';
     this.robotPickerGroup.style.display = isRemote && cloudApi.isLoggedIn && this.devices.length > 1 ? '' : 'none';
 
     // Inline hint under the mode selector covers the remaining cases:
