@@ -284,7 +284,7 @@ export class StatusPage {
     // LiDAR
     this.updateLidar(s);
 
-    // Network
+    // Connection Type — lives in the System card now.
     this.setVal('net-type', s.networkType || 'Unknown');
   }
 
@@ -319,6 +319,9 @@ export class StatusPage {
       systemRows.push(this.row('Package Version', 'sys-firmware'));
     }
     systemRows.push(this.row('Motion Mode', 'sys-motion'));
+    // Robot-reported network type (4G / AP / STA-L / STA-T) — was its
+    // own 'Network' card; merged here since it's a single row.
+    systemRows.push(this.row('Connection Type', 'net-type'));
     content.appendChild(this.buildSection('System', systemRows));
 
     // Battery
@@ -472,11 +475,6 @@ export class StatusPage {
       this.lidarBody.appendChild(lidarWait);
       content.appendChild(this.buildSection('LiDAR', [], this.lidarBody));
     }
-
-    // Network
-    content.appendChild(this.buildSection('Network', [
-      this.row('Connection Type', 'net-type'),
-    ]));
   }
 
   private buildSection(title: string, children: HTMLElement[], customBody?: HTMLElement): HTMLElement {
