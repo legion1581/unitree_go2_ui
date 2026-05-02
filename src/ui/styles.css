@@ -2342,6 +2342,74 @@ html[data-theme="light"] .btn-connect.btn-connect-secondary:hover {
   border-color: #4a5ccf;
   color: #4a5ccf;
 }
+
+/* "Don't have an account? Create Account" row under the Login button. */
+.connection-panel .acct-create-row {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: #999;
+}
+.connection-panel .acct-link-btn {
+  background: transparent;
+  border: none;
+  padding: 0 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6879e4;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.connection-panel .acct-link-btn:hover {
+  color: #8a99ff;
+  text-decoration: underline;
+}
+html[data-theme="light"] .connection-panel .acct-create-row { color: #5a6170; }
+html[data-theme="light"] .connection-panel .acct-link-btn { color: #4a5ccf; }
+html[data-theme="light"] .connection-panel .acct-link-btn:hover { color: #2a3cad; }
+
+/* Image-captcha pair: SVG box on the left, text input on the right.
+ * The SVG box is click-to-refresh — server consumes the captcha session
+ * on POST register/email, so refreshing has no cost. */
+.connection-panel .acct-captcha-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.connection-panel .acct-captcha-img {
+  flex: 0 0 110px;
+  height: 42px;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.connection-panel .acct-captcha-img:hover {
+  border-color: #6879e4;
+}
+.connection-panel .acct-captcha-img svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.connection-panel .acct-captcha-row input {
+  flex: 1;
+  font-family: monospace;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  text-align: center;
+}
+html[data-theme="light"] .connection-panel .acct-captcha-img {
+  border-color: #c4cbd6;
+}
+html[data-theme="light"] .connection-panel .acct-captcha-img:hover {
+  border-color: #4a5ccf;
+}
 .acct-btn {
   padding: 10px 16px;
   border: none;

@@ -514,9 +514,37 @@ export class UnitreeCloudAPI {
     await this.post('captcha/email', { email });
   }
 
-  async registerEmail(email: string, password: string, captcha: string): Promise<void> {
+  /** Fetch a fresh image-captcha session for registration.
+   *  `code` is an opaque session token the server uses to look up which
+   *  puzzle was issued; `svg` is the raw SVG markup of the 4-character
+   *  distorted-text image, ready to inject into a container's innerHTML.
+   *  See APK LoginApi.getImageCode() / RegisterFragment.onCodeGetResult(). */
+  async getImageCaptcha(): Promise<{ code: string; svg: string }> {
+    return this.get<{ code: string; svg: string }>('captcha');
+  }
+
+  /** Email registration flow. Matches the official `register/email`
+   *  contract from the decompiled APK: the server expects both halves of
+   *  the captcha pair (`code` = session id from getImageCaptcha; `captcha`
+   *  = the 4-char string the user typed reading the SVG) plus three empty
+   *  company fields (always blank for personal accounts). On success the
+   *  response carries an access+refresh token — the user is logged in
+   *  immediately, no separate login call. */
+  async registerEmail(
+    email: string,
+    password: string,
+    captchaCode: string,
+    captchaSolution: string,
+  ): Promise<UserInfo> {
     const resp = await this.request<{ accessToken: string; refreshToken: string; user: UserInfo }>('POST', 'register/email', {
-      email, password: md5(password), captcha, region: 'US',
+      email,
+      password: md5(password),
+      code: captchaCode,
+      captcha: captchaSolution,
+      companyName: '',
+      companyContact: '',
+      companyAccountRemark: '',
+      region: '',
     });
     if (resp.code !== 100) throw new UnitreeCloudError(resp.code, resp.errorMsg || 'Registration failed');
     this.token = resp.data!.accessToken;
@@ -525,6 +553,7 @@ export class UnitreeCloudAPI {
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
     this.emitAuthChange();
+    return this.user!;
   }
 
   async resetPassword(email: string, captcha: string, newPassword: string): Promise<void> {
@@ -536,6 +565,17 @@ export class UnitreeCloudAPI {
   }
 
   logout(): void {
+    this.clearSession();
+  }
+
+  /** Permanently destroy the authenticated user's Unitree account.
+   *  Mirrors the official APK: bare `POST user/destroy` with no body —
+   *  the server identifies the account from the bearer token alone.
+   *  No password re-entry, no captcha, no soft-delete window. After a
+   *  100/true response the session is cleared locally too.
+   *  See LoginApi.deleteUser() in the decompiled G1 1.9.3 APK. */
+  async deleteAccount(): Promise<void> {
+    await this.post('user/destroy');
     this.clearSession();
   }
 

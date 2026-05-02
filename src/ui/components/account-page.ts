@@ -131,6 +131,10 @@ export class AccountPage {
       </div>
       <button id="acct-login-btn" class="btn-connect" type="button">Login</button>
       <div id="acct-login-status" class="status"></div>
+      <div class="acct-create-row">
+        Don't have an account?
+        <button id="acct-create-link" class="acct-link-btn" type="button">Create Account</button>
+      </div>
     `;
 
     // Family + Region pills. Family drives the AppName the cloud API signs
@@ -195,6 +199,141 @@ export class AccountPage {
 
     panel.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); loginBtn.click(); }
+    });
+
+    const createLink = panel.querySelector('#acct-create-link') as HTMLButtonElement;
+    createLink.addEventListener('click', () => this.renderRegisterScreen());
+
+    modal.appendChild(panel);
+    this.content.appendChild(modal);
+  }
+
+  /** Email-registration screen — same modal shell as the login view, with
+   *  an SVG image-captcha. Mirrors the official APK flow:
+   *    1. GET /captcha → ImageCodeBean { code, svg } (issued on mount, and
+   *       re-fetched whenever the user clicks the puzzle to refresh).
+   *    2. POST /register/email with email+password+code+captcha+blank
+   *       company fields. Server returns access+refresh token, so the
+   *       user is logged in immediately on success. */
+  private renderRegisterScreen(): void {
+    this.header.style.display = 'none';
+    this.tabBar.style.display = 'none';
+    this.tabButtons.forEach((btn) => btn.classList.remove('active'));
+    this.content.innerHTML = '';
+    this.content.scrollTop = 0;
+    this.content.classList.add('acct-loggedout-content');
+
+    const modal = document.createElement('div');
+    modal.className = 'connection-modal';
+    const panel = document.createElement('div');
+    panel.className = 'connection-panel';
+
+    panel.innerHTML = `
+      <div class="conn-back-row">
+        <button id="acct-reg-back" class="conn-back-link" type="button">
+          <svg class="conn-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Back to Login</span>
+        </button>
+      </div>
+      <h2 class="conn-title">Create Account</h2>
+      <div id="acct-reg-prefs"></div>
+      <div class="form-group">
+        <label for="acct-reg-email">Email</label>
+        <input type="email" id="acct-reg-email" placeholder="you@example.com" autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label for="acct-reg-pwd">Password</label>
+        <input type="password" id="acct-reg-pwd" placeholder="At least 8 characters" autocomplete="new-password" />
+      </div>
+      <div class="form-group">
+        <label for="acct-reg-captcha">Captcha</label>
+        <div class="acct-captcha-row">
+          <div id="acct-reg-captcha-img" class="acct-captcha-img" title="Click to refresh"></div>
+          <input type="text" id="acct-reg-captcha" placeholder="4 chars" maxlength="4" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <button id="acct-reg-btn" class="btn-connect" type="button">Create Account</button>
+      <div id="acct-reg-status" class="status"></div>
+    `;
+
+    // Region matters for which Unitree backend the registration hits;
+    // family controls the AppName the request signs as. Same picker as
+    // the login screen.
+    const prefsSlot = panel.querySelector('#acct-reg-prefs') as HTMLElement;
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showFamily: true, showRegion: true }));
+
+    const back = panel.querySelector('#acct-reg-back') as HTMLButtonElement;
+    back.addEventListener('click', () => this.renderLoggedOutScreen());
+
+    const emailEl = panel.querySelector('#acct-reg-email') as HTMLInputElement;
+    const pwdEl = panel.querySelector('#acct-reg-pwd') as HTMLInputElement;
+    const captchaEl = panel.querySelector('#acct-reg-captcha') as HTMLInputElement;
+    const captchaImg = panel.querySelector('#acct-reg-captcha-img') as HTMLElement;
+    const regBtn = panel.querySelector('#acct-reg-btn') as HTMLButtonElement;
+    const statusEl = panel.querySelector('#acct-reg-status') as HTMLElement;
+    const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info'): void => {
+      statusEl.textContent = text;
+      statusEl.className = `status status-${type}`;
+    };
+
+    // Captcha session id from the most recent /captcha call. Sent as
+    // `code` on register; cleared after a successful register so it
+    // can't be reused.
+    let captchaCode = '';
+    const refreshCaptcha = async (): Promise<void> => {
+      captchaImg.innerHTML = '<span style="font-size:11px;color:#888;">Loading…</span>';
+      try {
+        const { code, svg } = await cloudApi.getImageCaptcha();
+        captchaCode = code;
+        // The SVG is raw markup; injecting via innerHTML lets it inherit
+        // the container's sizing. Same approach the APK uses (loads the
+        // SVG into a WebView).
+        captchaImg.innerHTML = svg;
+      } catch (e) {
+        captchaCode = '';
+        captchaImg.innerHTML = '<span style="font-size:11px;color:#e57373;">Failed</span>';
+        setStatus(`Captcha failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      }
+    };
+    captchaImg.addEventListener('click', () => { void refreshCaptcha(); });
+    void refreshCaptcha();
+
+    regBtn.addEventListener('click', async () => {
+      const email = emailEl.value.trim();
+      const pwd = pwdEl.value;
+      const solution = captchaEl.value.trim();
+      // Same pre-submit checks the APK fragment runs (length-based, no
+      // regex on the email format — the server is the source of truth).
+      if (email.length < 3) { setStatus('Enter a valid email', 'error'); return; }
+      if (pwd.length < 8) { setStatus('Password must be at least 8 characters', 'error'); return; }
+      if (solution.length !== 4) { setStatus('Captcha must be 4 characters', 'error'); return; }
+      if (!captchaCode) { setStatus('Refresh the captcha and try again', 'error'); return; }
+
+      regBtn.disabled = true;
+      const orig = regBtn.textContent;
+      regBtn.textContent = 'Creating account…';
+      setStatus('', 'info');
+      try {
+        await cloudApi.registerEmail(email, pwd, captchaCode, solution);
+        // registerEmail saves the session + emits onAuthChange; switch
+        // straight to the devices tab (the user is now logged in).
+        this.switchTab('devices');
+      } catch (e) {
+        setStatus(`Registration failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+        // Server consumed the captcha session on failure (the APK does
+        // the same — it auto-refreshes after every failed register).
+        captchaEl.value = '';
+        void refreshCaptcha();
+      } finally {
+        regBtn.disabled = false;
+        regBtn.textContent = orig || 'Create Account';
+      }
+    });
+
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); regBtn.click(); }
     });
 
     modal.appendChild(panel);
@@ -373,6 +512,118 @@ export class AccountPage {
     logoutBtn.addEventListener('click', () => { cloudApi.logout(); this.switchTab('account'); });
     session.appendChild(logoutBtn);
     this.content.appendChild(session);
+
+    // ── Danger Zone: permanent account deletion ──
+    // POST user/destroy is irreversible and the server offers no
+    // confirmation step (see APK LoginApi.deleteUser → no body, no
+    // captcha). Gate it behind an inline typed-confirmation panel.
+    // Browser confirm()/prompt() are avoided here because some embedded
+    // contexts (kiosk shells, certain WebViews) silently block them.
+    const danger = this.section('Danger Zone');
+    danger.style.borderColor = '#c62828';
+
+    const warn = document.createElement('div');
+    warn.style.cssText = 'font-size:12px;color:#e57373;margin-bottom:10px;line-height:1.4;';
+    warn.textContent = 'Permanently delete this Unitree account. This cannot be undone — bound robots, devices, and account data are removed server-side.';
+    danger.appendChild(warn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'acct-btn acct-btn-danger';
+    deleteBtn.style.width = '100%';
+    deleteBtn.textContent = 'Delete Account';
+    danger.appendChild(deleteBtn);
+
+    // Inline confirm panel — hidden until the user clicks Delete Account.
+    // Replaces the previous confirm()/prompt() pair so it works in
+    // contexts where browser dialogs are blocked.
+    const confirmPanel = document.createElement('div');
+    confirmPanel.style.cssText = 'display:none;margin-top:12px;padding:12px;border:1px solid #c62828;border-radius:8px;background:rgba(198,40,40,0.06);';
+    danger.appendChild(confirmPanel);
+
+    const deleteStatus = document.createElement('div');
+    deleteStatus.style.cssText = 'margin-top:8px;font-size:12px;';
+    danger.appendChild(deleteStatus);
+
+    const setStatus = (text: string, color: string): void => {
+      deleteStatus.style.color = color;
+      deleteStatus.textContent = text;
+    };
+
+    const closeConfirm = (): void => {
+      confirmPanel.style.display = 'none';
+      confirmPanel.innerHTML = '';
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = 'Delete Account';
+    };
+
+    deleteBtn.addEventListener('click', () => {
+      const u = cloudApi.user;
+      const label = u?.email?.trim() || u?.nickname?.trim() || 'this account';
+      // Two-step confirm in DOM: a warning + a typed-match input + Cancel
+      // / Confirm Delete buttons. The Confirm button stays disabled until
+      // the user types "DELETE" exactly.
+      confirmPanel.innerHTML = `
+        <div style="font-size:13px;color:#fff;font-weight:600;margin-bottom:6px;">Permanently delete ${this.esc(label)}?</div>
+        <div style="font-size:12px;color:#e0e0e0;line-height:1.5;margin-bottom:10px;">
+          The account, all bound robots, and any cloud-stored data will be removed and
+          <strong>cannot be recovered</strong>.
+        </div>
+        <label for="acct-del-confirm" style="display:block;font-size:11px;color:#bbb;margin-bottom:4px;">Type <strong>DELETE</strong> (uppercase) to confirm:</label>
+        <input type="text" id="acct-del-confirm" class="acct-input" autocomplete="off" spellcheck="false" placeholder="DELETE" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;" />
+        <div style="display:flex;gap:8px;">
+          <button id="acct-del-cancel" class="acct-btn" type="button" style="flex:1;background:#2a2d35;color:#ccc;">Cancel</button>
+          <button id="acct-del-confirm-btn" class="acct-btn acct-btn-danger" type="button" style="flex:1;" disabled>Confirm Delete</button>
+        </div>
+      `;
+      confirmPanel.style.display = '';
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Confirm below…';
+      setStatus('', '');
+
+      const input = confirmPanel.querySelector('#acct-del-confirm') as HTMLInputElement;
+      const cancelBtn = confirmPanel.querySelector('#acct-del-cancel') as HTMLButtonElement;
+      const confirmBtn = confirmPanel.querySelector('#acct-del-confirm-btn') as HTMLButtonElement;
+      input.focus();
+
+      input.addEventListener('input', () => {
+        confirmBtn.disabled = input.value.trim() !== 'DELETE';
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !confirmBtn.disabled) { e.preventDefault(); confirmBtn.click(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
+      });
+
+      cancelBtn.addEventListener('click', () => {
+        closeConfirm();
+        setStatus('Cancelled — account not deleted.', '#888');
+      });
+
+      confirmBtn.addEventListener('click', async () => {
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        input.disabled = true;
+        confirmBtn.textContent = 'Deleting…';
+        setStatus('Deleting account…', '#888');
+        try {
+          await cloudApi.deleteAccount();
+          // Cached devices belong to the now-destroyed account — wipe them too.
+          try { localStorage.removeItem('unitree_devices_cache'); } catch { /* ignore */ }
+          confirmPanel.style.display = 'none';
+          setStatus('Account deleted. Returning to login…', '#66bb6a');
+          // switchTab routes to the logged-out screen since cloudApi.isLoggedIn
+          // is now false (clearSession already fired onAuthChange).
+          setTimeout(() => this.switchTab('account'), 600);
+        } catch (e) {
+          setStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+          confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
+          input.disabled = false;
+          confirmBtn.textContent = 'Confirm Delete';
+        }
+      });
+    });
+
+    this.content.appendChild(danger);
   }
 
   private renderLoginForm(): void {
