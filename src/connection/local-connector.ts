@@ -66,10 +66,10 @@ async function decryptData1(
         if (!aesHex) throw new Error('AES-128 key required to decrypt con_notify');
         if (sn) setCachedAesKey(sn, aesHex);
         const note = lastErr ? 'AES-128 key (prompted again, previous key failed)' : 'AES-128 key (prompted)';
-        console.log(`${tag()} ${note} for SN ${sn || '<unknown>'} — cached for next time`);
+        console.log(`${tag()} ${note} for SN ${sn || '<unknown>'} — cached for next time, key=${aesHex}`);
         onStep?.(`${note} — cached for SN ${sn || '<unknown>'}`);
       } else {
-        console.log(`${tag()} AES-128 key loaded from localStorage cache for SN ${sn}`);
+        console.log(`${tag()} AES-128 key loaded from localStorage cache for SN ${sn}, key=${aesHex}`);
         onStep?.(`AES-128 key from localStorage cache (SN ${sn})`);
       }
       try {
