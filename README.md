@@ -19,11 +19,10 @@ Built with TypeScript, Three.js, and Vite.
 
 ## Supported Robots
 
-| Family | Variants | Firmware | Auth |
-|--------|----------|----------|------|
-| **Go2** | AIR, PRO, EDU | 1.0.19 – 1.1.14 | static GCM key (`data2=2`) |
-| **G1**  | AIR, EDU      | 1.2.0 – 1.4.5   | static GCM key (`data2=2`) |
-| **G1**  | AIR, EDU      | 1.5.1+          | per-device AES-128 key (`data2=3`) — see [docs/connection.md](docs/connection.md#g1--151--aes-128-key-data23) |
+| Family | Auth |
+|--------|------|
+| **Go2** | `data2=1`, `data2=2` |
+| **G1**  | `data2=2`, `data2=3` — see [docs/connection.md](docs/connection.md#g1--151--aes-128-key-data23) |
 
 ## Tour
 
