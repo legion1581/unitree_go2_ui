@@ -5,7 +5,6 @@
  */
 
 import { btBackend } from '../../api/bt-backend';
-import { cloudApi } from '../../api/unitree-cloud';
 import { getCachedAesKey, setCachedAesKey } from '../../api/aes-key-derive';
 import { makeCopyButton } from './copy-button';
 
@@ -30,6 +29,12 @@ interface RemoteState {
   battery: number;
   rssi: number;
 }
+
+// Module-level address → BLE-name cache, populated from scan results.
+// Used to gate V3 probes by the actual robot SKU (Go2_* vs G1_*) rather
+// than the user's family pill, since the BT page is independent of the
+// Connect-screen family selection. Survives popup close/reopen.
+const robotNameByAddress: Map<string, string> = new Map();
 
 // Module-level cache for the popup's /info + /v3/* results, keyed by the
 // connected BLE address. Survives close/reopen so the panel can paint the
@@ -433,10 +438,17 @@ export class BtPage {
 
     // V3 info (G1 firmware 1.5.1+ only — see docs/bluetooth-v3.md). Per
     // the support table, V3 was never shipped on Go2 (any firmware), so
-    // we don't even build the V3 panel for Go2 — that avoids the
-    // backend firing F1/F2 BLE writes the robot will silently drop and
-    // keeps the BT-server logs quiet on V1/V2-only robots.
-    const probeV3 = cloudApi.connectFamily === 'G1';
+    // we only build the V3 panel when the connected device's BLE name
+    // confirms it's a G1. Keying off the actual scanned name (rather
+    // than the user's Connect-screen family pill) is correct here:
+    // BT scan can surface Go2_* and G1_* at the same time, so a single
+    // family pill can't represent the active BT pairing.
+    //
+    // When the name isn't known (e.g. reconnect across popup close
+    // without rescanning), default to *no probe* so Go2 reconnects stay
+    // quiet — G1 users can hit Scan once to repopulate the cache.
+    const robotName = robotNameByAddress.get(currentAddr) || '';
+    const probeV3 = /^G1[_\W]/i.test(robotName);
     const v3Rows = document.createElement('div');
     v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
     if (probeV3 && !cached.v3Ver && !cached.v3Gcm) {
@@ -1139,6 +1151,10 @@ export class BtPage {
     }
 
     for (const robot of data.robots) {
+      // Stash the BLE name so updateRobotSection can gate V3 by SKU
+      // ('Go2_*' = no V3, 'G1_*' = probe) without depending on the
+      // user's Connect-screen family setting.
+      if (robot.address && robot.name) robotNameByAddress.set(robot.address, robot.name);
       this.resultsDiv.appendChild(this.deviceRow(
         '\u{1F916}', robot.name, robot.address, robot.rssi, 'Robot',
       ));
