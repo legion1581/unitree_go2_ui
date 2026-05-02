@@ -121,8 +121,6 @@ server/
 
 Big thanks to the [TheRoboVerse](https://theroboverse.com) community.
 
-Special thanks to the [tfoldi WebRTC project](https://github.com/tfoldi/go2-webrtc) and [abizovnuralem](https://github.com/abizovnuralem) for adding LiDAR support, and [MrRobotoW](https://github.com/MrRobotoW) for the LiDAR visualization example.
-
 ## Support
 
 If you like this project, please consider buying me a coffee:
