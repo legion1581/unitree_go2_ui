@@ -34,7 +34,7 @@ Built with TypeScript, Three.js, and Vite.
 </p>
 
 <p align="center">
-  <img src="images/status_go2.png" width="32%" />
+  <img src="images/status_g1.png" width="32%" />
   <img src="images/services_go2.png" width="32%" />
   <img src="images/slam.png" width="32%" />
 </p>
