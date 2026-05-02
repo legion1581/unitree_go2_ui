@@ -102,10 +102,6 @@ export class App {
     selfTestResults: [],
   };
 
-  // Debug: throttle for the rt/lowstate dump (see handleLowState).
-  private lowStateLogLast = 0;
-  private lowStateLogged = false;
-
   constructor(root: HTMLElement) {
     this.root = root;
     root.innerHTML = '';
@@ -943,12 +939,11 @@ export class App {
       bms_state?: { soc?: number; current?: number; voltage?: number; cycle?: number; temps?: number[] };
       foot_force?: number[];
       imu_state?: { temperature?: number; rpy?: number[] };
+      // Go2 lowstate root carries the pack voltage (V) and a body NTC (°C);
+      // G1 doesn't ship these — they're read defensively below.
+      power_v?: number;
+      temperature_ntc1?: number;
     };
-
-    // Debug: dump the FULL lowstate payload on first arrival and once
-    // every ~5 s after that (so we can spot where Go2 stashes the
-    // voltage — bms_state alone doesn't expose it on the user's robot).
-    this.logLowStateSample(data);
 
 
     if (d.motor_state) {
@@ -1001,24 +996,36 @@ export class App {
       }
       if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
       if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
-      // Voltage: G1 ships pack_voltage/bat_voltage; Go2 ships voltage.
-      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
-      const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage  : undefined;
-      const voltage = typeof bms.voltage   === 'number' ? bms.voltage      : undefined;
-      if (pack !== undefined) this.robotState.batteryPackVoltage = pack;
-      if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
-      const v = pack ?? voltage ?? bat;
-      if (v !== undefined) this.robotState.batteryVoltage = v;
-      // Temps: G1 ships `temperature: [MOS, _, BAT1, RES, ...]`;
-      // Go2 ships `bq_ntc: [t1,t2]` + `mcu_ntc: [t1,t2]`.
-      const tempsArr = Array.isArray(bms.temperature) ? bms.temperature
-                     : Array.isArray(bms.temps)       ? bms.temps
-                     : null;
-      if (tempsArr) {
-        const numericTemps = (tempsArr as unknown[]).filter((t): t is number => typeof t === 'number');
-        this.robotState.batteryTemps = numericTemps;
-        if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
+
+      // Voltage + temperatures shape diverges per family — see comments
+      // below for the verified payload shapes.
+      if (cloudApi.connectFamily === 'G1') {
+        // G1 rt/lf/bmsstate: pack_voltage / bat_voltage in mV, temps in
+        // a `temperature` array (BatteryDataViewmodel.kt).
+        const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
+        const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage  : undefined;
+        if (pack !== undefined) {
+          this.robotState.batteryPackVoltage = pack;
+          this.robotState.batteryVoltage = pack;
+        }
+        if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
+        const tempsArr = Array.isArray(bms.temperature) ? bms.temperature
+                       : Array.isArray(bms.temps)       ? bms.temps
+                       : null;
+        if (tempsArr) {
+          const numericTemps = (tempsArr as unknown[]).filter((t): t is number => typeof t === 'number');
+          this.robotState.batteryTemps = numericTemps;
+          if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
+        }
       } else {
+        // Go2 verified live capture: bms_state has no voltage field at
+        // all. The pack voltage rides at the lowstate root as `power_v`
+        // (in *volts*, not mV — convert so the status page's /1000
+        // formatter still works). Battery temps come from `bq_ntc`
+        // (BQ fuel-gauge NTCs) and `mcu_ntc` (MCU NTCs).
+        if (typeof d.power_v === 'number') {
+          this.robotState.batteryVoltage = d.power_v * 1000;
+        }
         const bq  = Array.isArray(bms.bq_ntc)  ? (bms.bq_ntc  as unknown[]).filter((t): t is number => typeof t === 'number') : [];
         const mcu = Array.isArray(bms.mcu_ntc) ? (bms.mcu_ntc as unknown[]).filter((t): t is number => typeof t === 'number') : [];
         const all = [...bq, ...mcu];
@@ -1045,25 +1052,6 @@ export class App {
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
-  }
-
-  /** Log the FULL lowstate payload on first arrival and every ~5 s
-   *  after that, so the console doesn't drown in 50 Hz ticks but we
-   *  can still see every key (not just bms_state) when chasing where
-   *  a particular field lives on a given firmware. */
-  private logLowStateSample(data: unknown): void {
-    const now = Date.now();
-    if (!this.lowStateLogged) {
-      this.lowStateLogged = true;
-      this.lowStateLogLast = now;
-      const d = data as Record<string, unknown>;
-      console.log('[lowstate] first frame — top-level keys:', Object.keys(d));
-      console.log('[lowstate] first frame — full payload:', JSON.stringify(data, null, 2));
-      return;
-    }
-    if (now - this.lowStateLogLast < 5000) return;
-    this.lowStateLogLast = now;
-    console.log('[lowstate] sample (full payload):', JSON.stringify(data));
   }
 
   // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
