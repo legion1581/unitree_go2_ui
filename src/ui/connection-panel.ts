@@ -362,10 +362,11 @@ export class ConnectionPanel {
         this.setStatus('No robots found on network', 'error');
         return;
       }
-      // Single hit: just populate the IP, no list needed.
+      // Single hit: populate IP + SN, no list needed.
       if (results.length === 1) {
         const only = results[0];
         this.ipInput.value = only.ip;
+        this.setSnInputAndPersist(only.sn || '');
         if (only.ip !== DEFAULT_AP_IP) {
           this.modeSelect.value = 'STA-L';
           this.updateVisibility();
@@ -405,6 +406,7 @@ export class ConnectionPanel {
       row.innerHTML = `<span class="scan-result-ip">${r.ip}</span><span class="scan-result-sn">${r.sn || 'unknown'}</span>`;
       row.addEventListener('click', () => {
         this.ipInput.value = r.ip;
+        this.setSnInputAndPersist(r.sn || '');
         this.setStatus(`Selected ${r.ip} (SN: ${r.sn || 'unknown'})`, 'success');
         this.renderScanResults([]);
       });
@@ -415,6 +417,17 @@ export class ConnectionPanel {
   setStatus(text: string, type: 'info' | 'success' | 'error' = 'info'): void {
     this.statusEl.textContent = text;
     this.statusEl.className = `status status-${type}`;
+  }
+
+  /** Update the SN input + persist as the last-used SN for the current
+   *  family — same effect as the user typing into the field by hand
+   *  (which also persists via the input listener). */
+  private setSnInputAndPersist(sn: string): void {
+    this.scanSnInput.value = sn;
+    if (!sn) return;
+    try {
+      localStorage.setItem(`unitree_last_sn_${cloudApi.connectFamily.toLowerCase()}`, sn);
+    } catch { /* ignore */ }
   }
 
   setConnecting(connecting: boolean): void {
