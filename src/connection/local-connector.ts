@@ -38,6 +38,7 @@ async function decryptData1(
   resp: ConNotifyResponse,
   sn: string,
   promptKey?: AesKeyPrompter,
+  onStep?: (msg: string) => void,
 ): Promise<string> {
   if (resp.data2 === 2) {
     return await aesGcmDecrypt(resp.data1);
@@ -45,7 +46,8 @@ async function decryptData1(
   if (resp.data2 === 3) {
     // Per-device AES-128 key required (G1 ≥ 1.5.1). Pull from cache; if the
     // user hasn't derived one yet, ask via `promptKey` and cache the result.
-    let aesHex = sn ? getCachedAesKey(sn) : null;
+    const cached = sn ? getCachedAesKey(sn) : null;
+    let aesHex = cached;
     if (!aesHex) {
       if (!promptKey) {
         throw new Error('data2=3 needs an AES-128 key. Open Account → device tile → "AES Key" to derive one for this SN.');
@@ -53,8 +55,12 @@ async function decryptData1(
       aesHex = (await promptKey(sn)).trim();
       if (!aesHex) throw new Error('AES-128 key required to decrypt con_notify');
       if (sn) setCachedAesKey(sn, aesHex);
+      console.log(`${tag()} AES-128 key prompted from user for SN ${sn || '<unknown>'} — cached for next time`);
+      onStep?.(`AES-128 key (prompted) — cached for SN ${sn || '<unknown>'}`);
+    } else {
+      console.log(`${tag()} AES-128 key loaded from localStorage cache for SN ${sn}`);
+      onStep?.(`AES-128 key from localStorage cache (SN ${sn})`);
     }
-    console.log(`${tag()} Using cached AES-128 key for SN ${sn || '<unknown>'}`);
     return await aesGcmDecrypt(resp.data1, hexToBytes(aesHex));
   }
   return resp.data1;
@@ -121,7 +127,7 @@ export async function connectLocal(
 
     onStep?.('Exchanging SDP with robot...');
     if (method === 'new') {
-      answerSdp = await exchangeSdpNew(ip, sdpPayload, opts.sn ?? '', opts.promptKey);
+      answerSdp = await exchangeSdpNew(ip, sdpPayload, opts.sn ?? '', opts.promptKey, onStep);
     } else {
       answerSdp = await exchangeSdpOld(ip, sdpPayload);
     }
@@ -150,6 +156,7 @@ async function exchangeSdpNew(
   payload: SdpPayload,
   sn: string,
   promptKey?: AesKeyPrompter,
+  onStep?: (msg: string) => void,
 ): Promise<string> {
   const host = `${ip}:${LOCAL_PORT}`;
 
@@ -168,7 +175,7 @@ async function exchangeSdpNew(
   const notifyJson: ConNotifyResponse = JSON.parse(atob(notifyB64));
   console.log(`${tag()} con_notify response: data2=${notifyJson.data2}, data1 length=${notifyJson.data1.length}`);
 
-  const data1 = await decryptData1(notifyJson, sn, promptKey);
+  const data1 = await decryptData1(notifyJson, sn, promptKey, onStep);
   console.log(`${tag()} Decrypted data1 length: ${data1.length}`);
 
   // Extract public key (strip 10-char padding each end)

@@ -102,10 +102,6 @@ export class App {
     selfTestResults: [],
   };
 
-  // Debug: throttle for the bms_state dump (see handleLowState).
-  private bmsLogLast = 0;
-  private bmsLogged = false;
-
   constructor(root: HTMLElement) {
     this.root = root;
     root.innerHTML = '';
@@ -997,7 +993,6 @@ export class App {
 
     if (d.bms_state) {
       const bms = d.bms_state as Record<string, unknown>;
-      this.logBmsSample(bms);
       if (typeof bms.soc === 'number') {
         this.robotState.batteryPercent = bms.soc;
         this.navBar?.setBattery(bms.soc);
@@ -1009,10 +1004,17 @@ export class App {
       // Voltage + temperatures shape diverges per family — see comments
       // below for the verified payload shapes.
       if (cloudApi.connectFamily === 'G1') {
-        // G1 rt/lf/bmsstate: pack_voltage / bat_voltage in mV, temps in
-        // a `temperature` array (BatteryDataViewmodel.kt).
-        const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
-        const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage  : undefined;
+        // G1 rt/lf/bmsstate (verified live capture):
+        //   bmsvoltage: [pack_mV, bat_mV, _]   ← pack scalar at [0], bat at [1]
+        //   cell_vol:   [c0_mV, c1_mV, …]      ← per-cell, padded to 40
+        //   temperature:[MOS, _, BAT1, RES, …] ← per BatteryDataViewmodel.kt
+        // Some firmwares may also surface scalar pack_voltage/bat_voltage —
+        // accept either shape so a future rename doesn't break us.
+        const bmsv = Array.isArray(bms.bmsvoltage) ? bms.bmsvoltage as unknown[] : [];
+        const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage
+                   : (typeof bmsv[0] === 'number' ? bmsv[0] as number : undefined);
+        const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage
+                   : (typeof bmsv[1] === 'number' ? bmsv[1] as number : undefined);
         if (pack !== undefined) {
           this.robotState.batteryPackVoltage = pack;
           this.robotState.batteryVoltage = pack;
@@ -1061,24 +1063,6 @@ export class App {
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
-  }
-
-  /** Log the raw bms_state payload on first arrival and once every
-   *  ~5 s after that — first frame prints all keys + the full JSON so
-   *  we can verify which voltage / temperature field a given firmware
-   *  uses; subsequent dumps are one-line samples. */
-  private logBmsSample(bms: Record<string, unknown>): void {
-    const now = Date.now();
-    if (!this.bmsLogged) {
-      this.bmsLogged = true;
-      this.bmsLogLast = now;
-      console.log(`[bms] first frame — family=${cloudApi.connectFamily} keys:`, Object.keys(bms));
-      console.log('[bms] first frame — full payload:', JSON.stringify(bms, null, 2));
-      return;
-    }
-    if (now - this.bmsLogLast < 5000) return;
-    this.bmsLogLast = now;
-    console.log('[bms] sample:', JSON.stringify(bms));
   }
 
   // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
