@@ -102,6 +102,10 @@ export class App {
     selfTestResults: [],
   };
 
+  // Debug: throttle for the rt/lowstate dump (see handleLowState).
+  private lowStateLogLast = 0;
+  private lowStateLogged = false;
+
   constructor(root: HTMLElement) {
     this.root = root;
     root.innerHTML = '';
@@ -941,6 +945,11 @@ export class App {
       imu_state?: { temperature?: number; rpy?: number[] };
     };
 
+    // Debug: dump the lowstate keys + raw bms_state on the first frame
+    // and once every ~5s after that, so we can verify the Go2 BMS shape
+    // without flooding the console at the lowstate ~50 Hz tick.
+    this.logLowStateSample(data);
+
     if (d.motor_state) {
       if (this.scene3d) this.scene3d.robotModel.updateMotorState(d.motor_state);
       if (this.mappingPage) this.mappingPage.updateMotorState(d.motor_state);
@@ -1036,6 +1045,26 @@ export class App {
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
+  }
+
+  /** Log the raw lowstate payload on first arrival and then once every
+   *  ~5s, so the console doesn't drown in 50 Hz ticks. The first frame
+   *  prints the entire payload (helpful for finding where BMS lives on
+   *  a new firmware); subsequent dumps print just the bms_state slice. */
+  private logLowStateSample(data: unknown): void {
+    const now = Date.now();
+    if (!this.lowStateLogged) {
+      this.lowStateLogged = true;
+      this.lowStateLogLast = now;
+      const d = data as Record<string, unknown>;
+      console.log('[lowstate] first frame — top-level keys:', Object.keys(d));
+      console.log('[lowstate] full payload:', JSON.stringify(data, null, 2));
+      return;
+    }
+    if (now - this.lowStateLogLast < 5000) return;
+    this.lowStateLogLast = now;
+    const bms = (data as { bms_state?: unknown }).bms_state;
+    console.log('[lowstate] bms_state sample:', JSON.stringify(bms));
   }
 
   // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
