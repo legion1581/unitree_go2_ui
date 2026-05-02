@@ -188,6 +188,24 @@ export interface FirmwareInfo {
   description: string;
   download: string;
   md5: string;
+  /** Optional: present in v1/firmware/package/upgrade/list responses.
+   *  "1" = the cloud already pushed this package to the robot in a
+   *  previous session; the install can be triggered without redownload
+   *  (G1/Explorer two-step flow). */
+  alreadyDownload?: string;
+  /** Optional: human-readable warning text (e.g. low-battery caveat). */
+  note?: string;
+  /** Optional: package size in bytes. */
+  storageLimit?: number;
+}
+
+/** Progress payload from `firmware/upgrade/progress`.
+ *  - `code != 0` is treated as device-offline (matches APK). */
+export interface UpgradeProgress {
+  code: number;
+  current: number;
+  total: number;
+  message: string;
 }
 
 export interface AppVersionInfo {
@@ -688,6 +706,51 @@ export class UnitreeCloudAPI {
     const encoded = downloadPath.split('/').map(s => encodeURIComponent(s)).join('/');
     return `${FIRMWARE_CDN}${encoded}`;
   }
+
+  // ─── OTA: server-orchestrated firmware upgrade ───────────────────
+  // The cloud handles the heavy lifting — these endpoints just kick off
+  // the job (or resume a previous one) and let the app poll progress.
+  // Two paths exist (mirrors the APK):
+  //   * Go2 / quadruped:   single-shot `firmware/package/upgrade`
+  //   * G1 / Explorer:    two-step `firmware/package/download` then
+  //                       `firmware/package/install` (with a 500/1000
+  //                       progress boundary between phases).
+
+  /** Single-shot upgrade kick (Go2). Returns the updateId to poll on. */
+  async startFirmwareUpgrade(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/upgrade', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Two-step phase 1 (G1/Explorer): cloud pushes the package to the robot. */
+  async startFirmwareDownload(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/download', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Two-step phase 2 (G1/Explorer): robot applies the previously-downloaded package. */
+  async startFirmwareInstall(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/install', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Poll for OTA progress. `code != 0` means the cloud lost the device. */
+  async getUpgradeProgress(updateId: string): Promise<UpgradeProgress> {
+    return this.get<UpgradeProgress>('firmware/upgrade/progress', { updateId });
+  }
+
+  /** Resume anchor: returns the active updateId (or '' if nothing is running)
+   *  for the given robot. Lets the UI re-attach to an in-flight job after
+   *  app restart / reconnect. */
+  async getCurrentUpgradeTask(sn: string): Promise<string> {
+    try {
+      const r = await this.post<string>('firmware/upgrade/task/current', { sn });
+      return r || '';
+    } catch { return ''; }
+  }
+
+  // (device/online/status liveness probe is already exposed above as
+  // `getDeviceOnlineStatus(sn)`; the OTA controller uses it directly.)
 
   // ─── App info ────────────────────────────────────────────────────
 

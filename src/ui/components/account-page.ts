@@ -6,6 +6,7 @@ import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type Fi
 import { setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
 import { buildCloudPrefsRow } from './cloud-prefs';
 import { makeCopyButton } from './copy-button';
+import { OtaController, type Family as OtaFamily, type OtaState } from '../../api/ota-controller';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
@@ -850,7 +851,10 @@ export class AccountPage {
       }));
       this.content.appendChild(edit);
 
-      // Firmware
+      // Firmware Updates — manual download links + cloud-orchestrated OTA
+      // (matches the official APK flow). Family is inferred from the device
+      // series: Go2 uses single-shot upgrade, everything else (G1/H1/B2/R1)
+      // uses the Explorer two-step download+install.
       try {
         const fw = await cloudApi.listFirmwareUpdates(dev.sn);
         if (fw.length) {
@@ -869,6 +873,13 @@ export class AccountPage {
             fws.appendChild(row);
           }
           this.content.appendChild(fws);
+
+          // Cloud OTA — only the first (latest) entry is upgrade-eligible.
+          // Skip if there's no firmwareId (defensive; shouldn't happen).
+          if (fw[0].firmwareId) {
+            const family: OtaFamily = dev.series.startsWith('Go2') ? 'Go2' : 'G1';
+            this.content.appendChild(this.buildOtaSection(dev.sn, family, fw[0]));
+          }
         }
       } catch { /* ignore */ }
 
@@ -1384,6 +1395,198 @@ export class AccountPage {
     t.textContent = title;
     s.appendChild(t);
     return s;
+  }
+
+  /** Cloud-OTA control panel for one firmware. Mirrors the official APK
+   *  flow:
+   *    Go2: single Upgrade button → server runs download+install,
+   *         progress label flips at 50% from "Downloading" to "Installing".
+   *    G1:  Download button → polls until 50% boundary (current==500),
+   *         then surfaces an Install button → polls install to 100%.
+   *  Polling cadence: 1 s tick, 20-tick offline budget — matches the APK.
+   *  Resume support: on mount we check `getCurrentUpgradeTask(sn)` and
+   *  re-attach to any in-flight job so back-out + return doesn't lose
+   *  state. */
+  private buildOtaSection(sn: string, family: OtaFamily, fw: FirmwareInfo): HTMLElement {
+    const sec = this.section('Install via Cloud (OTA)');
+    sec.appendChild(this.makeOtaContent(sn, family, fw));
+    return sec;
+  }
+
+  private makeOtaContent(sn: string, family: OtaFamily, fw: FirmwareInfo): HTMLElement {
+    const wrap = document.createElement('div');
+
+    const subtitle = document.createElement('div');
+    subtitle.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;';
+    subtitle.innerHTML = `Server-orchestrated upgrade — the Unitree cloud pushes V${this.esc(fw.version)} to the robot. <strong style="color:#aaa;">${family === 'G1' ? 'Two-step (download then install).' : 'Single-step.'}</strong>`;
+    wrap.appendChild(subtitle);
+
+    const warn = document.createElement('div');
+    warn.style.cssText = 'font-size:11px;color:#e57373;margin-bottom:10px;line-height:1.4;';
+    warn.textContent = 'The robot must stay powered on and online with the cloud throughout. Do not power-cycle until the upgrade reports completion. The robot will reboot at the end.';
+    wrap.appendChild(warn);
+
+    const startBtn = document.createElement('button');
+    startBtn.className = 'acct-btn acct-btn-primary';
+    startBtn.textContent = family === 'G1' ? 'Start Download' : 'Start Upgrade';
+    startBtn.style.marginRight = '8px';
+
+    const installBtn = document.createElement('button');
+    installBtn.className = 'acct-btn acct-btn-primary';
+    installBtn.textContent = 'Install on Robot';
+    installBtn.style.cssText = 'margin-right:8px;display:none;';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'acct-btn';
+    cancelBtn.style.cssText = 'background:#2a2d35;color:#ccc;display:none;';
+    cancelBtn.textContent = 'Stop Watching';
+
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;';
+    buttons.append(startBtn, installBtn, cancelBtn);
+    wrap.appendChild(buttons);
+
+    // Progress bar (hidden until first non-idle state).
+    const barWrap = document.createElement('div');
+    barWrap.style.cssText = 'display:none;margin-bottom:8px;';
+    const barLabel = document.createElement('div');
+    barLabel.style.cssText = 'font-size:12px;color:#aaa;margin-bottom:4px;display:flex;justify-content:space-between;';
+    const barTrack = document.createElement('div');
+    barTrack.style.cssText = 'height:10px;background:#1a1d23;border-radius:5px;overflow:hidden;border:1px solid #2a2d35;';
+    const barFill = document.createElement('div');
+    barFill.style.cssText = 'height:100%;width:0;background:linear-gradient(90deg,#4fc3f7,#6879e4);transition:width 0.3s ease;';
+    barTrack.appendChild(barFill);
+    barWrap.append(barLabel, barTrack);
+    wrap.appendChild(barWrap);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:12px;line-height:1.4;';
+    wrap.appendChild(status);
+
+    const setStatus = (text: string, color: string): void => {
+      status.style.color = color;
+      status.textContent = text;
+    };
+
+    // Single controller per UI mount. Cancelled when device-detail is
+    // re-rendered (back / switchTab) — the cloud-side job keeps running.
+    let ctrl: OtaController | null = null;
+
+    const newController = (): OtaController => {
+      const c = new OtaController(sn, family, fw);
+      c.subscribe((s) => render(s));
+      return c;
+    };
+
+    const render = (s: OtaState): void => {
+      // Phase → button visibility map.
+      switch (s.phase) {
+        case 'idle':
+          startBtn.disabled = false;
+          startBtn.style.display = '';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          break;
+        case 'starting':
+          startBtn.disabled = true;
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          setStatus('Starting…', '#888');
+          break;
+        case 'downloading':
+          startBtn.style.display = 'none';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = '';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>${family === 'G1' ? 'Downloading to robot' : 'Cloud → Robot'}</span><span>${Math.round(s.progressPct)}%</span>`;
+          barFill.style.width = `${s.progressPct}%`;
+          setStatus(`current=${s.current} / total=${s.total}`, '#666');
+          break;
+        case 'awaiting-install':
+          startBtn.style.display = 'none';
+          installBtn.style.display = '';
+          installBtn.disabled = false;
+          cancelBtn.style.display = '';
+          barWrap.style.display = 'none';
+          setStatus('Download complete. Tap Install to apply on the robot.', '#66bb6a');
+          break;
+        case 'installing':
+          startBtn.style.display = 'none';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = '';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>Installing on robot</span><span>${Math.round(s.progressPct)}%</span>`;
+          barFill.style.width = `${s.progressPct}%`;
+          setStatus(`current=${s.current} / total=${s.total}`, '#666');
+          break;
+        case 'completed':
+          startBtn.disabled = true;
+          startBtn.style.display = '';
+          startBtn.textContent = 'Upgrade Complete';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>Done</span><span>100%</span>`;
+          barFill.style.width = '100%';
+          setStatus('Upgrade complete. The robot is rebooting and will reconnect shortly.', '#66bb6a');
+          break;
+        case 'failed':
+          startBtn.disabled = false;
+          startBtn.style.display = '';
+          startBtn.textContent = family === 'G1' ? 'Retry Download' : 'Retry Upgrade';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          setStatus(s.message || 'Upgrade failed.', '#e57373');
+          break;
+      }
+    };
+
+    startBtn.addEventListener('click', async () => {
+      // Spin up a fresh controller — the previous one (if any) is fully
+      // resolved by this point (completed / failed / cancelled).
+      ctrl?.cancel();
+      ctrl = newController();
+      try {
+        await ctrl.start();
+      } catch (e) {
+        setStatus(`Failed to start: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+      }
+    });
+
+    installBtn.addEventListener('click', async () => {
+      if (!ctrl) return;
+      installBtn.disabled = true;
+      try {
+        await ctrl.startInstall();
+      } catch (e) {
+        setStatus(`Install failed: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+        installBtn.disabled = false;
+      }
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      ctrl?.cancel();
+      ctrl = null;
+      // Reset to idle so the user can start over (cloud job keeps running
+      // server-side; "Stop Watching" just severs the local poll).
+      render({ phase: 'idle', progressPct: 0, current: 0, total: 0 });
+      startBtn.textContent = family === 'G1' ? 'Start Download' : 'Start Upgrade';
+      setStatus('Stopped watching. The cloud job (if any) keeps running on the robot.', '#888');
+    });
+
+    // Resume check — if the cloud reports an active task for this SN, hook
+    // the controller into it so back-out + return doesn't lose progress.
+    void cloudApi.getCurrentUpgradeTask(sn).then((updateId) => {
+      if (!updateId) return;
+      ctrl = newController();
+      ctrl.attach(updateId);
+      setStatus(`Resumed in-flight upgrade (updateId=${updateId})`, '#888');
+    });
+
+    return wrap;
   }
 
   private infoRow(parent: HTMLElement, label: string, value: string, mono = false, color = ''): void {
