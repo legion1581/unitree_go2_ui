@@ -129,11 +129,16 @@ export class ConnectionPanel {
     const onPrefChange = (): void => {
       familyLabel.textContent = FAMILY_LABEL[cloudApi.connectFamily];
       this.onFamilyChange?.();
-      // Restore the last SN typed for *this* family (G1 only — Go2
-      // doesn't have an SN field).
+      // Restore the last IP + SN typed for *this* family. Each is
+      // family-namespaced so a switch (e.g. G1 → Go2) doesn't carry
+      // the previous family's IP into the field — that used to
+      // silently connect to the wrong robot.
+      const fam = cloudApi.connectFamily.toLowerCase();
       try {
-        const last = localStorage.getItem(`unitree_last_sn_${cloudApi.connectFamily.toLowerCase()}`) || '';
-        this.scanSnInput.value = last;
+        this.ipInput.value = localStorage.getItem(`unitree_last_ip_${fam}`) || '';
+      } catch { /* ignore */ }
+      try {
+        this.scanSnInput.value = localStorage.getItem(`unitree_last_sn_${fam}`) || '';
       } catch { /* ignore */ }
       // Re-evaluate so the G1-only SN row appears/hides as the
       // user toggles the Family pill.
@@ -170,13 +175,10 @@ export class ConnectionPanel {
 
     this.modeSelect.value = 'STA-L';
 
-    // Restore the last IP the user actually connected with (Local modes
-    // only — Remote uses cloud devices). Stored on every successful
-    // handleConnect() / handleScan() write.
-    try {
-      const lastIp = localStorage.getItem('unitree_last_ip');
-      if (lastIp) this.ipInput.value = lastIp;
-    } catch { /* ignore */ }
+    // Family pill onChange already populated the IP for the active
+    // family (see onPrefChange below). No legacy unitree_last_ip read
+    // here — that was shared across families and led to connecting to
+    // the wrong robot on family switch.
 
     // Pre-populate the robot picker if the user is already logged in
     // (e.g. from auto-login at app start).
@@ -302,7 +304,9 @@ export class ConnectionPanel {
       // Persist the IP for next launch — only for Local modes; AP mode's
       // 192.168.12.1 is hardcoded so storing it is harmless but the
       // STA-L IP is the value that actually changes per network.
-      if (ip) try { localStorage.setItem('unitree_last_ip', ip); } catch { /* ignore */ }
+      // Family-namespaced so switching G1 ↔ Go2 doesn't carry over a
+      // foreign IP and silently target the wrong robot.
+      if (ip) try { localStorage.setItem(`unitree_last_ip_${cloudApi.connectFamily.toLowerCase()}`, ip); } catch { /* ignore */ }
       // Thread the SN through so the local connector can look up the
       // cached AES-128 key on the data2=3 path (G1 ≥ 1.5.1). Sources,
       // in order: typed value → first cloud-bound device of this family
