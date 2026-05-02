@@ -217,18 +217,17 @@ export class StatusPage {
   private applyState(s: RobotStatus): void {
     if (!this.built) return;
 
-    // System Info — values arriving via bashrunner (s.hardwareVersion /
-    // s.softwareVersion / s.ipAddress) override the connection-config
-    // seeds when present.
-    this.setVal('sys-family', cloudApi.connectFamily);
-    this.setVal('sys-mode',   this.system.mode || '—');
-    this.setVal('sys-ip',     s.ipAddress || this.system.ip || '—');
-    this.setVal('sys-sn',     this.system.serialNumber || '—');
-    this.setVal('sys-hw',     s.hardwareVersion || this.system.hardwareVersion || '—');
-    this.setVal('sys-sw',     s.softwareVersion || this.system.softwareVersion || '—');
-
-    // Firmware
-    this.setVal('fw-mode', s.motionMode || 'Unknown');
+    // System — combined card (Firmware was merged in). Bashrunner-fetched
+    // values (hardwareVersion / softwareVersion / ipAddress) override the
+    // connection-config seeds when present.
+    this.setVal('sys-family',   cloudApi.connectFamily);
+    this.setVal('sys-mode',     this.system.mode || '—');
+    this.setVal('sys-ip',       s.ipAddress || this.system.ip || '—');
+    this.setVal('sys-sn',       this.system.serialNumber || '—');
+    this.setVal('sys-firmware', s.firmwareVersion || '—');
+    this.setVal('sys-hw',       s.hardwareVersion || this.system.hardwareVersion || '—');
+    this.setVal('sys-sw',       s.softwareVersion || this.system.softwareVersion || '—');
+    this.setVal('sys-motion',   s.motionMode || 'Unknown');
 
     // Battery
     const batColor = s.batteryPercent <= 33 ? '#FF3D3D' : s.batteryPercent <= 66 ? '#FCD335' : '#42CF55';
@@ -297,9 +296,12 @@ export class StatusPage {
   }
 
   private buildSections(content: HTMLElement): void {
-    // System Info — surfaces what we know from the connection config
-    // (family, mode, IP, SN) plus the bashrunner-fetched hardware /
-    // software / IP fields once they land.
+    // System — single combined card with chassis identity (Family, Mode,
+    // IP, SN) plus firmware/version info. Family-aware rows: Go2 only
+    // surfaces a single Package Version (from get_whole_packet_version);
+    // G1 splits that into Hardware + Software (driven by separate
+    // bashrunner scripts the Explorer apk fires).
+    const family = cloudApi.connectFamily;
     const systemRows: HTMLElement[] = [
       this.row('Family', 'sys-family'),
       this.row('Mode', 'sys-mode'),
@@ -310,20 +312,14 @@ export class StatusPage {
     if (this.system.serialNumber) {
       systemRows.push(this.row('Serial Number', 'sys-sn'));
     }
-    // Hardware Version stays in System (it's a board-level identity);
-    // Software Version is firmware-y, so live it inside the Firmware
-    // section on G1 alongside Motion Mode.
-    systemRows.push(this.row('Hardware Version', 'sys-hw'));
-    if (cloudApi.connectFamily !== 'G1') {
+    if (family === 'G1') {
+      systemRows.push(this.row('Hardware Version', 'sys-hw'));
       systemRows.push(this.row('Software Version', 'sys-sw'));
+    } else {
+      systemRows.push(this.row('Package Version', 'sys-firmware'));
     }
+    systemRows.push(this.row('Motion Mode', 'sys-motion'));
     content.appendChild(this.buildSection('System', systemRows));
-
-    const firmwareRows: HTMLElement[] = [this.row('Motion Mode', 'fw-mode')];
-    if (cloudApi.connectFamily === 'G1') {
-      firmwareRows.unshift(this.row('Software Version', 'sys-sw'));
-    }
-    content.appendChild(this.buildSection('Firmware', firmwareRows));
 
     // Battery
     const batPctRow = this.row('Charge', 'bat-pct');
@@ -360,7 +356,6 @@ export class StatusPage {
     // with 29 callouts driven by a 6-tab metric switcher (Comm Quality /
     // Acc Loss / Position / Casing °C / Winding °C / Errors). Go2 keeps
     // the dense row table that's been there since launch.
-    const family = cloudApi.connectFamily;
     const motorBody = document.createElement('div');
     motorBody.className = 'status-section-body';
 

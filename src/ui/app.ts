@@ -990,17 +990,17 @@ export class App {
         this.mappingPage?.setBattery(bms.soc);
       }
       if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
-      // Voltages: Go2 lowstate ships an array `bmsvoltage: [pack, bat, _]`
-      // (mV); some payloads also expose `pack_voltage` / `bat_voltage` /
-      // `voltage` as scalars. Read whichever shape is present.
-      const bmsv = Array.isArray(bms.bmsvoltage) ? bms.bmsvoltage as unknown[] : [];
-      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage
-                 : (typeof bmsv[0] === 'number' ? bmsv[0] as number : undefined);
-      const bat  = typeof bms.bat_voltage === 'number' ? bms.bat_voltage
-                 : (typeof bmsv[1] === 'number' ? bmsv[1] as number : undefined);
-      const voltage = typeof bms.voltage === 'number' ? bms.voltage : undefined;
+      // Voltage shapes:
+      //   * Go2 lowstate.bms_state.voltage    — scalar pack voltage (mV)
+      //   * Go2 lowstate.bms_state.bmsvoltage — per-CELL array (~4.1 V each),
+      //     not pack — don't conflate with pack_voltage.
+      //   * G1  bmsstate.pack_voltage / .bat_voltage — scalars (mV).
+      const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
+      const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage  : undefined;
+      const voltage = typeof bms.voltage   === 'number' ? bms.voltage      : undefined;
       if (pack !== undefined) this.robotState.batteryPackVoltage = pack;
       if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
+      // G1 prefers pack_voltage; Go2 only has the scalar `voltage`.
       const v = pack ?? voltage ?? bat;
       if (v !== undefined) this.robotState.batteryVoltage = v;
       if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
@@ -1199,6 +1199,12 @@ export class App {
     //   * get_hardware_version.sh  -> "10"   (formatted as "2.<n/10>.<n%10>")
     //   * get_software_version.sh  -> "1.4.6"
     //   * get_whole_packet_version.sh -> firmware string
+    //
+    // Go2 firmware doesn't reliably echo the request `id` back, so script
+    // correlation can fail and `scriptName` ends up as '?'. In that case
+    // — and on the explicit whole_packet_version path — populate
+    // firmwareVersion. This matches main's universal "any bashrunner
+    // success → firmware version" behaviour and restores Go2.
     switch (scriptName) {
       case 'get_ip_address.sh': {
         if (info && typeof info === 'object') {
@@ -1222,14 +1228,12 @@ export class App {
         if (typeof info === 'string') this.robotState.softwareVersion = info;
         break;
       }
-      case 'get_whole_packet_version.sh': {
-        const v = typeof info === 'string' ? info : (result || '');
+      case 'get_whole_packet_version.sh':
+      default: {
+        const v = typeof info === 'string' ? info : (result || (typeof d.data === 'string' ? d.data : ''));
         if (v) this.robotState.firmwareVersion = v;
         break;
       }
-      default:
-        // Unknown script — silently ignore.
-        break;
     }
 
     if (this.currentScreen === 'status' && this.statusPage) {
