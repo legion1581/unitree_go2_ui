@@ -29,6 +29,25 @@ export const RTC_TOPIC = {
   UWB_STATE: 'rt/uwbstate',
   PUBLIC_NETWORK_STATUS: 'rt/public_network_status',
 
+  // G1-specific (firmware 1.5.1+) — humanoid topics.
+  // Modes + arm gestures all go through G1_ARM_REQUEST (no SPORT_MOD on G1).
+  // BMS_STATE carries battery (G1 doesn't ship the bms struct inside
+  // rt/lf/lowstate the way Go2 does). DOUBLE_IMU carries both
+  // imu_in_torso ("Body IMU") and imu_in_pelvis ("Crotch IMU") in one
+  // frame. Cross-checked against the Unitree Explorer 1.9.3 bundle —
+  // index-CtgArt9k.js routes on `["G1","R1"].includes(series)`.
+  G1_ARM_REQUEST: 'rt/api/arm/request',
+  G1_ARM_ACTION_STATE: 'rt/arm/action/state',
+  G1_DEX3_LEFT_STATE: 'rt/lf/dex3/left/state',
+  G1_DEX3_RIGHT_STATE: 'rt/lf/dex3/right/state',
+  BMS_STATE: 'rt/lf/bmsstate',
+  // The second (pelvis / "Crotch") IMU. The body IMU rides inside the
+  // regular lowstate envelope's imu_state field on G1, while the
+  // pelvis IMU is published as its own G1ImuState payload on this
+  // topic. Verified against DogCmdConstant.DOUBLE_IMU and
+  // BaseInfoViewModel.kt:195 in the decompiled apk.
+  SECONDARY_IMU: 'rt/lf/secondary_imu',
+
   // USLAM (3D LiDAR Mapping / Navigation / Patrol)
   USLAM_CMD: 'rt/uslam/client_command',
   USLAM_SERVER_LOG: 'rt/uslam/server_log',

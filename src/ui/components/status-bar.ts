@@ -1,4 +1,5 @@
 import { theme } from '../theme';
+import { cloudApi } from '../../api/unitree-cloud';
 
 const BT_SVG = (color: string) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
   <path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/>
@@ -26,12 +27,14 @@ export class NavBar {
   private batteryFill!: HTMLElement;
   private batteryText!: HTMLElement;
   private motorTempEl!: HTMLElement;
+  private motorTempLastValue: number | null = null;
+  private bodyTempLastValue: number | null = null;
+  private tempPopover: HTMLElement | null = null;
   private wifiIconEl!: HTMLImageElement;
   private btIconWrap!: HTMLElement;
   private themeIconWrap!: HTMLElement;
   private unsubTheme: () => void = () => {};
   private onBack: () => void;
-  private onBtIconClick: (() => void) | null = null;
 
   constructor(parent: HTMLElement, onBack: () => void) {
     this.onBack = onBack;
@@ -48,7 +51,7 @@ export class NavBar {
         <button class="back-btn">
           <img src="/sprites/nav-bar-left-icon.png" alt="Back" />
         </button>
-        <span class="nav-bar-title">Go2</span>
+        <span class="nav-bar-title">${cloudApi.connectFamily}</span>
       </div>
       <div class="nav-bar-right">
         <span class="motor-temp-label"></span>
@@ -65,7 +68,7 @@ export class NavBar {
         <div class="nav-theme-icon" title="Toggle theme"
              style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;margin-left:4px;transition:all 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>
         <div class="nav-bt-icon" title="Bluetooth: not connected"
-             style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;margin-left:4px;transition:all 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);">${BT_SVG('#b0b3bb')}</div>
+             style="cursor:default;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:50%;background:rgba(26,29,35,0.95);border:1.5px solid #3a3d45;margin-left:4px;transition:background 0.15s,border-color 0.15s;box-shadow:0 2px 6px rgba(0,0,0,0.3);">${BT_SVG('#b0b3bb')}</div>
       </div>
     `;
 
@@ -77,15 +80,7 @@ export class NavBar {
     this.btIconWrap = this.container.querySelector('.nav-bt-icon')!;
     this.themeIconWrap = this.container.querySelector('.nav-theme-icon')!;
 
-    this.btIconWrap.addEventListener('click', () => { this.onBtIconClick?.(); });
-    this.btIconWrap.addEventListener('mouseenter', () => {
-      this.btIconWrap.style.background = 'rgba(79,195,247,0.2)';
-      this.btIconWrap.style.transform = 'scale(1.05)';
-    });
-    this.btIconWrap.addEventListener('mouseleave', () => {
-      this.btIconWrap.style.background = this.btIconWrap.dataset.connected === 'true' ? 'rgba(79,195,247,0.15)' : 'rgba(26,29,35,0.95)';
-      this.btIconWrap.style.transform = 'scale(1)';
-    });
+    // BT icon is passive — no hover/click handlers. Status comes from setBluetoothStatus().
 
     // Theme toggle
     this.themeIconWrap.addEventListener('click', () => theme().toggle());
@@ -128,10 +123,59 @@ export class NavBar {
 
   setMotorTemp(maxTemp: number): void {
     const t = Math.round(maxTemp);
+    this.motorTempLastValue = t;
     this.motorTempEl.textContent = `${t}°C`;
     if (t > 70) this.motorTempEl.style.color = '#FF3D3D';
     else if (t > 50) this.motorTempEl.style.color = '#FCD335';
     else this.motorTempEl.style.color = '#aaa';
+    if (!this.motorTempEl.dataset.clickWired) {
+      this.motorTempEl.style.cursor = 'pointer';
+      this.motorTempEl.dataset.clickWired = '1';
+      this.motorTempEl.addEventListener('click', () => this.toggleTempPopover());
+    }
+    this.refreshTempPopover();
+  }
+
+  /** Body / chassis IMU temperature, surfaced alongside Max Motor Temp
+   *  in the navbar popover. Optional — Go2's lowstate.imu_state already
+   *  carries it; G1 lights it from rt/lf/lowstate_doubleimu. */
+  setBodyTemp(temp: number | null): void {
+    this.bodyTempLastValue = temp == null ? null : Math.round(temp);
+    this.refreshTempPopover();
+  }
+
+  private toggleTempPopover(): void {
+    if (this.tempPopover) { this.tempPopover.remove(); this.tempPopover = null; return; }
+    this.tempPopover = document.createElement('div');
+    this.tempPopover.className = 'nav-temp-popover';
+    this.tempPopover.style.cssText = 'position:absolute;background:rgba(20,22,28,0.97);border:1px solid #2a2d35;border-radius:6px;padding:8px 12px;font-size:12px;line-height:1.6;color:#e0e0e0;box-shadow:0 4px 16px rgba(0,0,0,0.4);z-index:50;white-space:nowrap;';
+    this.refreshTempPopover();
+    const r = this.motorTempEl.getBoundingClientRect();
+    const parentR = this.container.getBoundingClientRect();
+    this.tempPopover.style.top = `${r.bottom - parentR.top + 4}px`;
+    this.tempPopover.style.left = `${r.left - parentR.left}px`;
+    this.container.appendChild(this.tempPopover);
+    // Dismiss on outside click
+    setTimeout(() => {
+      const off = (e: PointerEvent) => {
+        if (!this.tempPopover) return;
+        if (this.motorTempEl.contains(e.target as Node)) return;
+        this.tempPopover.remove();
+        this.tempPopover = null;
+        document.removeEventListener('pointerdown', off);
+      };
+      document.addEventListener('pointerdown', off);
+    }, 0);
+  }
+
+  private refreshTempPopover(): void {
+    if (!this.tempPopover) return;
+    const motor = this.motorTempLastValue;
+    const body = this.bodyTempLastValue;
+    this.tempPopover.innerHTML = `
+      <div><span style="color:#888;">Motor:</span> ${motor != null ? motor + '°C' : '—'}</div>
+      <div><span style="color:#888;">Body:</span> ${body != null ? body + '°C' : '—'}</div>
+    `;
   }
 
   setNetworkType(type: string): void {
@@ -153,9 +197,5 @@ export class NavBar {
     this.btIconWrap.dataset.connected = connected ? 'true' : 'false';
     this.btIconWrap.style.borderColor = connected ? 'rgba(79,195,247,0.5)' : '#3a3d45';
     this.btIconWrap.style.background = connected ? 'rgba(79,195,247,0.15)' : 'rgba(26,29,35,0.95)';
-  }
-
-  setBtIconClick(handler: () => void): void {
-    this.onBtIconClick = handler;
   }
 }

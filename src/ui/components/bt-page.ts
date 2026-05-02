@@ -1,9 +1,12 @@
 /**
- * Small overlay popover triggered from the nav-bar BT icon.
- * Shows the current BLE connection(s) and offers quick Scan / Disconnect actions.
+ * Bluetooth page — full-screen view (mirrors AccountPage). Reached from the
+ * landing-page Bluetooth tile. Shows the current BLE connection(s) and offers
+ * Scan / Connect / Disconnect / WiFi-config controls.
  */
 
 import { btBackend } from '../../api/bt-backend';
+import { getCachedAesKey, setCachedAesKey } from '../../api/aes-key-derive';
+import { makeCopyButton } from './copy-button';
 
 const BLE_API = '/ble-api';
 
@@ -14,7 +17,12 @@ interface ScanResult {
   remotes: Array<{ name: string; address: string; rssi: number | null }>;
 }
 interface AdapterInfo { name: string; address: string; up: boolean; type: string; }
-interface RobotInfo { serial_number: string; ap_mac: string; protocol: string; address: string; }
+interface RobotInfo {
+  serial_number: string;
+  ap_mac: string;
+  protocol: string;
+  address: string;
+}
 interface RemoteState {
   lx: number; ly: number; rx: number; ry: number;
   buttons: Record<string, boolean>;
@@ -22,10 +30,29 @@ interface RemoteState {
   rssi: number;
 }
 
-export class BtPopover {
-  private overlay: HTMLElement;
-  private panel: HTMLElement;
-  private onClose: () => void;
+// Module-level address → BLE-name cache, populated from scan results.
+// Used to gate V3 probes by the actual robot SKU (Go2_* vs G1_*) rather
+// than the user's family pill, since the BT page is independent of the
+// Connect-screen family selection. Survives popup close/reopen.
+const robotNameByAddress: Map<string, string> = new Map();
+
+// Module-level cache for the popup's /info + /v3/* results, keyed by the
+// connected BLE address. Survives close/reopen so the panel can paint the
+// last-known values immediately and re-fetch in the background, instead of
+// always flashing through a "Loading robot info…" → fetch cycle.
+type V3Probe = { version: string | null; supported: boolean };
+type V3KeyProbe = { key: string | null; supported: boolean };
+type CachedRobotPanel = {
+  info?: RobotInfo;
+  v3Ver?: V3Probe;
+  v3Gcm?: V3KeyProbe;
+};
+const robotPanelCache: Map<string, CachedRobotPanel> = new Map();
+
+export class BtPage {
+  private container: HTMLElement;
+  private content: HTMLElement;
+  private onBack: () => void;
   private robotBody: HTMLElement | null = null;
   private remoteBody: HTMLElement | null = null;
   private emptyPlaceholder: HTMLElement | null = null;
@@ -35,6 +62,18 @@ export class BtPopover {
   private remoteStatus: RemoteStatus = { connected: false, address: '', name: '' };
   private lastRenderedRemoteAddr = '';   // to avoid DOM rebuild when nothing changed
   private lastRenderedRobotAddr = '';
+  // Last-seen V3 + GCM-decode state, used to gate the WiFi form. Reset
+  // when status changes to disconnected.
+  private v3Supported = false;
+  private gcmDecodeWorks = false;
+  // Wired by the WiFi form so the AES gate / /info refresh can re-enable
+  // it when V3 GCM actually starts decrypting.
+  private wifiGateApply: ((enabled: boolean) => void) | null = null;
+  // Set by updateRobotSection so the AES gate (and any future caller)
+  // can refresh just /info without rebuilding the entire panel — a full
+  // rebuild while the user is typing in the AES input ejects focus and
+  // turns subsequent backspaces into browser-back navigation.
+  private renderInfoRowsCb: ((info: RobotInfo) => void) | null = null;
   private connectingAddrs: Set<string> = new Set();  // addresses with an in-flight connect
   private unsubStatus: (() => void) | null = null;
   private unsubAdapters: (() => void) | null = null;
@@ -47,21 +86,29 @@ export class BtPopover {
     meta: HTMLElement;
   } | null = null;
 
-  constructor(onClose: () => void) {
-    this.onClose = onClose;
+  constructor(parent: HTMLElement, onBack: () => void) {
+    this.onBack = onBack;
 
-    this.overlay = document.createElement('div');
-    this.overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:9500;display:flex;justify-content:flex-end;align-items:flex-start;padding:54px 18px 0 0;';
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) this.close();
-    });
+    this.container = document.createElement('div');
+    this.container.className = 'status-page';
 
-    this.panel = document.createElement('div');
-    this.panel.className = 'bt-popover-panel';
-    this.panel.style.cssText = 'border-radius:10px;padding:14px 16px;width:420px;max-height:calc(100vh - 80px);overflow-y:auto;min-height:320px;box-sizing:border-box;font-size:13px;box-shadow:0 8px 28px rgba(0,0,0,0.5);';
-    this.overlay.appendChild(this.panel);
+    const header = document.createElement('div');
+    header.className = 'page-header';
+    const backBtn = document.createElement('button');
+    backBtn.className = 'page-back-btn';
+    backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
+    backBtn.addEventListener('click', () => this.onBack());
+    header.appendChild(backBtn);
+    const title = document.createElement('h2');
+    title.textContent = 'Bluetooth';
+    header.appendChild(title);
+    this.container.appendChild(header);
 
-    document.body.appendChild(this.overlay);
+    this.content = document.createElement('div');
+    this.content.className = 'page-content bt-page-content';
+    this.container.appendChild(this.content);
+    parent.appendChild(this.container);
+
     this.buildLayout();
 
     // Subscribe to backend topics — messages flow in via the shared singleton WS
@@ -77,12 +124,11 @@ export class BtPopover {
     });
   }
 
-  close(): void {
+  destroy(): void {
     this.unsubStatus?.(); this.unsubStatus = null;
     this.unsubAdapters?.(); this.unsubAdapters = null;
     this.unsubRemoteState?.(); this.unsubRemoteState = null;
-    this.overlay.remove();
-    this.onClose();
+    this.container.remove();
   }
 
   private esc(s: string): string {
@@ -111,6 +157,52 @@ export class BtPopover {
     return btn;
   }
 
+  /**
+   * Compact info row with an optional Copy button. Used for SN / AP MAC so
+   * the user can grab those values into the bind form quickly. Renders a
+   * dash if `value` is empty (no copy button in that case).
+   */
+  private infoRowWithCopy(label: string, value: string, dataAttr?: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;min-height:18px;';
+    const lbl = document.createElement('span');
+    lbl.style.color = '#666';
+    lbl.style.flexShrink = '0';
+    lbl.textContent = label;
+    const val = document.createElement('span');
+    if (dataAttr) val.setAttribute(dataAttr, '');
+    val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    if (value) {
+      val.title = value;
+      val.textContent = value;
+    } else {
+      val.style.color = '#555';
+      val.textContent = '\u2014';
+    }
+    row.append(lbl, val);
+    if (value) row.appendChild(this.copyButton(value));
+    return row;
+  }
+
+  private keyRow(label: string, value: string): HTMLDivElement {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:nowrap;';
+    const lbl = document.createElement('span');
+    lbl.style.color = '#666';
+    lbl.style.flexShrink = '0';
+    lbl.textContent = label;
+    const val = document.createElement('span');
+    val.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+    val.title = value;
+    val.textContent = value;
+    row.append(lbl, val, this.copyButton(value));
+    return row;
+  }
+
+  private copyButton(text: string): HTMLButtonElement {
+    return makeCopyButton(text);
+  }
+
   private section(title: string): HTMLElement {
     const s = document.createElement('div');
     s.style.cssText = 'margin-bottom:12px;';
@@ -122,25 +214,14 @@ export class BtPopover {
   }
 
   private buildLayout(): void {
-    this.panel.innerHTML = '';
-
-    // Header
-    const header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;';
-    header.innerHTML = '<div style="font-size:14px;font-weight:600;color:#e0e0e0;">Bluetooth</div>';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.style.cssText = 'background:none;border:none;color:#888;font-size:22px;cursor:pointer;line-height:1;padding:0 6px;';
-    closeBtn.addEventListener('click', () => this.close());
-    header.appendChild(closeBtn);
-    this.panel.appendChild(header);
+    this.content.innerHTML = '';
 
     // Adapter selector
     const adapterSec = this.section('Adapter');
     this.adapterBody = document.createElement('div');
     this.adapterBody.style.minHeight = '28px';
     adapterSec.appendChild(this.adapterBody);
-    this.panel.appendChild(adapterSec);
+    this.content.appendChild(adapterSec);
 
     // Connected Devices section (Robot + Remote unified)
     const devicesSec = this.section('Connected Devices');
@@ -153,7 +234,7 @@ export class BtPopover {
     this.emptyPlaceholder.style.cssText = 'font-size:12px;color:#666;padding:2px 0;';
     this.emptyPlaceholder.textContent = 'No devices connected';
     devicesSec.appendChild(this.emptyPlaceholder);
-    this.panel.appendChild(devicesSec);
+    this.content.appendChild(devicesSec);
 
     // Scan section (results list persists)
     const scanSec = this.section('Scan');
@@ -180,7 +261,7 @@ export class BtPopover {
     this.resultsDiv = document.createElement('div');
     this.resultsDiv.style.minHeight = '20px';
     scanSec.appendChild(this.resultsDiv);
-    this.panel.appendChild(scanSec);
+    this.content.appendChild(scanSec);
   }
 
   private async refreshStatus(): Promise<void> {
@@ -271,6 +352,13 @@ export class BtPopover {
     this.robotBody.innerHTML = '';
     if (!this.robotStatus.connected) {
       this.robotBody.style.display = 'none';
+      // Drop any stale cache for the previously-connected robot so a fresh
+      // connection re-fetches /info instead of painting old values.
+      robotPanelCache.delete(this.lastRenderedRobotAddr);
+      // Reset gate state — a different robot may not even speak V3.
+      this.v3Supported = false;
+      this.gcmDecodeWorks = false;
+      this.wifiGateApply = null;
       this.updateEmptyPlaceholder();
       return;
     }
@@ -283,26 +371,152 @@ export class BtPopover {
     subHeader.textContent = 'Robot';
     this.robotBody.appendChild(subHeader);
 
-    // Connected header + info
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;';
-    info.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
+    info.style.cssText = 'font-size:12px;color:#66bb6a;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;';
+    const addrText = document.createElement('span');
+    addrText.innerHTML = `Connected to <strong style="font-family:monospace;">${this.esc(this.robotStatus.address)}</strong> (${this.esc(this.robotStatus.protocol)})`;
+    info.appendChild(addrText);
+    if (this.robotStatus.address) info.appendChild(this.copyButton(this.robotStatus.address));
     this.robotBody.appendChild(info);
 
-    // Info rows (serial number, AP MAC) — lazy loaded
+    // Info rows (serial number, AP MAC) — lazy loaded.
     const infoRows = document.createElement('div');
     infoRows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
-    infoRows.innerHTML = `<div>Loading robot info...</div>`;
     this.robotBody.appendChild(infoRows);
 
-    this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
-      infoRows.innerHTML = `
-        <div><span style="color:#666;">SN:</span> ${this.esc(rInfo.serial_number || '—')}</div>
-        <div><span style="color:#666;">AP MAC:</span> ${this.esc(rInfo.ap_mac || '—')}</div>
-      `;
-    }).catch(() => { infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>'; });
+    // Use cached values for an instant render, then fall through to fetch.
+    const cached = robotPanelCache.get(currentAddr) || {};
+    if (!cached.info) {
+      infoRows.innerHTML = '<div>Loading robot info...</div>';
+    }
 
-    // WiFi config
+    // /info gives us the V1/V2 transport label; /v3/* tells us whether the
+    // V3 GCM-key extension is also present. Surface the protocol row as
+    // "V2 (NUS) + V3" when both are detected. Both fetches run in parallel;
+    // a small render() reads the latest known state and rewrites the row.
+    let baseProto: string | undefined;
+    let v3Supported: boolean | undefined;
+    const renderProtoRow = (): void => {
+      const cell = infoRows.querySelector('[data-proto-row]');
+      if (!cell || baseProto === undefined) return;
+      const suffix = v3Supported === true ? ' + V3' : '';
+      cell.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto + suffix)}`;
+    };
+
+    const renderInfoRows = (rInfo: RobotInfo): void => {
+      // Map the backend's protocol token to a human-readable version label.
+      // V1 = legacy FFE0 service (Go2 < 1.1.11, all G1). V2 = Nordic UART
+      // (Go2 >= 1.1.11). See docs/bluetooth-v1-v2.md.
+      baseProto = rInfo.protocol === 'nus'  ? 'V2 (NUS)'
+                : rInfo.protocol === 'ffe0' ? 'V1 (FFE0)'
+                : (rInfo.protocol || '—');
+      const snVal = rInfo.serial_number || '';
+      const macVal = rInfo.ap_mac || '';
+      infoRows.innerHTML = '';
+      infoRows.appendChild(this.infoRowWithCopy('SN:', snVal, 'data-sn'));
+      infoRows.appendChild(this.infoRowWithCopy('AP MAC:', macVal, 'data-mac'));
+      // On V3 firmware, /info returning a real AP MAC proves the AES key
+      // is decrypting frames correctly (the F1 fallback path populates SN
+      // only, never AP MAC). That's our signal to ungate the WiFi form.
+      this.gcmDecodeWorks = !!macVal;
+      this.refreshWifiGate();
+      const proto = document.createElement('div');
+      proto.setAttribute('data-proto-row', '');
+      proto.innerHTML = `<span style="color:#666;">Protocol:</span> ${this.esc(baseProto)}`;
+      infoRows.appendChild(proto);
+      renderProtoRow();
+    };
+
+    this.renderInfoRowsCb = renderInfoRows;
+    if (cached.info) renderInfoRows(cached.info);
+    this.fetchJSON<RobotInfo>('/info').then((rInfo) => {
+      robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), info: rInfo });
+      renderInfoRows(rInfo);
+    }).catch(() => {
+      if (!cached.info) infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>';
+    });
+
+    // V3 info (G1 firmware 1.5.1+ only — see docs/bluetooth-v3.md). Per
+    // the support table, V3 was never shipped on Go2 (any firmware), so
+    // we only build the V3 panel when the connected device's BLE name
+    // confirms it's a G1. Keying off the actual scanned name (rather
+    // than the user's Connect-screen family pill) is correct here:
+    // BT scan can surface Go2_* and G1_* at the same time, so a single
+    // family pill can't represent the active BT pairing.
+    //
+    // When the name isn't known (e.g. reconnect across popup close
+    // without rescanning), default to *no probe* so Go2 reconnects stay
+    // quiet — G1 users can hit Scan once to repopulate the cache.
+    const robotName = robotNameByAddress.get(currentAddr) || '';
+    const probeV3 = /^G1[_\W]/i.test(robotName);
+    const v3Rows = document.createElement('div');
+    v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
+    if (probeV3 && !cached.v3Ver && !cached.v3Gcm) {
+      v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
+    }
+    if (probeV3) this.robotBody.appendChild(v3Rows);
+
+    // AES-128 paste field — only useful on V3 firmware (G1 ≥ 1.5.1).
+    // Build *only* when we're actually probing V3: buildAesGate's
+    // constructor pre-fills from the localStorage AES cache and, if
+    // anything's there, immediately POSTs /v3/aes-key. That side-effect
+    // would generate spurious BLE traffic on Go2 even with the panel
+    // hidden — so skip the construction entirely when probeV3 is false.
+    let aesGate: ReturnType<BtPage['buildAesGate']> | null = null;
+    if (probeV3) {
+      aesGate = this.buildAesGate();
+      aesGate.wrap.style.display = 'none';
+      this.robotBody.appendChild(aesGate.wrap);
+    }
+
+    const renderV3 = (gcm: V3KeyProbe, ver: V3Probe): void => {
+      v3Supported = gcm.supported || ver.supported;
+      this.v3Supported = v3Supported;
+      this.refreshWifiGate();
+      renderProtoRow();
+      if (!v3Supported) {
+        v3Rows.remove();
+        aesGate?.wrap.remove();
+        return;
+      }
+      v3Rows.innerHTML = '';
+      if (ver.supported && ver.version) {
+        const row = document.createElement('div');
+        row.innerHTML = `<span style="color:#666;">FW Ver:</span> ${this.esc(ver.version)}`;
+        v3Rows.appendChild(row);
+      }
+      if (gcm.supported && gcm.key) {
+        // What F2 actually returns is a 256-byte RSA-encrypted blob (344
+        // chars b64), not a plain key. Under MTU<32 the F2 chunks get
+        // truncated to ~44 chars total — flag that so the user knows the
+        // payload is unusable for bindExtData.
+        const isFull = gcm.key.length >= 300;
+        v3Rows.appendChild(this.keyRow(
+          isFull ? '344B RSA:' : `344B RSA (TRUNCATED ${gcm.key.length} ch — MTU exchange failed):`,
+          gcm.key,
+        ));
+      }
+      if (aesGate) aesGate.wrap.style.display = '';
+    };
+
+    if (probeV3) {
+      if (cached.v3Ver && cached.v3Gcm) renderV3(cached.v3Gcm, cached.v3Ver);
+      Promise.all([
+        this.fetchJSON<V3KeyProbe>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false }) as V3KeyProbe),
+        this.fetchJSON<V3Probe>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false }) as V3Probe),
+      ]).then(([gcm, ver]) => {
+        robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), v3Gcm: gcm, v3Ver: ver });
+        renderV3(gcm, ver);
+      });
+    } else {
+      // Go2: short-circuit the gate state — V3 not supported, so the
+      // WiFi form ungate path treats this as a regular V1/V2 connection.
+      renderV3({ key: null, supported: false }, { version: null, supported: false });
+    }
+
+    // WiFi config — gated on V3 firmware until a valid AES-128 key is provided.
+    // The aesGate field above publishes its state via `aesGate.isReady()`; we
+    // wire the form to listen so it disables/enables in real time.
     const wifiHeader = document.createElement('div');
     wifiHeader.style.cssText = 'font-size:10px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px;';
     wifiHeader.textContent = 'WiFi Configuration';
@@ -355,24 +569,48 @@ export class BtPopover {
       applyBtn.textContent = 'Applying...';
       wifiStatus.textContent = 'Sending...';
       wifiStatus.style.color = '#4fc3f7';
+      // Send phase covers the four GCM-acked ops (TYPE/SSID/PWD/COUNTRY)
+      // — typically <4 s. After that the backend waits up to 40 s for the
+      // robot's op-0x08 ready push, so flip the label so the user knows
+      // we're now waiting on the robot, not the link.
+      const awaitTimer = window.setTimeout(() => {
+        wifiStatus.textContent = 'Awaiting connection...';
+      }, 4000);
       try {
-        const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean> }>('/wifi', {
+        const resp = await this.fetchJSON<{ success: boolean; details: Record<string, boolean>; error: string | null }>('/wifi', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, password: pwdInput.input.value, ap_mode: apMode, country: countrySelect.select.value }),
-        });
+        }, 60000);
         if (resp.success) {
           wifiStatus.textContent = 'WiFi configured';
           wifiStatus.style.color = '#66bb6a';
+        } else if (resp.error) {
+          // The backend already mapped the failed step + result code to a
+          // human message — prefer it over the raw key list.
+          wifiStatus.textContent = resp.error;
+          wifiStatus.style.color = '#ff9800';
         } else {
-          const failed = Object.entries(resp.details).filter(([, v]) => !v).map(([k]) => k).join(', ');
-          wifiStatus.textContent = `Failed: ${failed}`;
+          // Pre-ready failure (TYPE/SSID/PWD/COUNTRY rejected by the
+          // firmware). Map the failed key to a human label.
+          const stepLabels: Record<string, string> = {
+            mode: 'set mode',
+            ssid: 'set SSID',
+            password: 'set password',
+            country: 'apply country / start AP',
+          };
+          const failed = Object.entries(resp.details)
+            .filter(([, v]) => v === false)
+            .map(([k]) => stepLabels[k] || k)
+            .join(', ');
+          wifiStatus.textContent = failed ? `Failed at: ${failed}` : 'Failed';
           wifiStatus.style.color = '#ff9800';
         }
       } catch (e) {
         wifiStatus.textContent = `Error: ${e instanceof Error ? e.message : String(e)}`;
         wifiStatus.style.color = '#ef5350';
       } finally {
+        clearTimeout(awaitTimer);
         applyBtn.disabled = false;
         applyBtn.textContent = 'Apply WiFi';
       }
@@ -390,6 +628,210 @@ export class BtPopover {
     applyRow.appendChild(disc);
     this.robotBody.appendChild(applyRow);
     this.robotBody.appendChild(wifiStatus);
+
+    // WiFi gate: V1/V2 firmware is always enabled; V3 firmware stays
+    // greyed out until BOTH a 32-hex AES-128 key is in the input AND
+    // /info has confirmed the key actually GCM-decrypts (real AP MAC
+    // back from the robot, not just the F1-extracted SN). Disconnect
+    // button stays clickable in either case.
+    const setWifiEnabled = (enabled: boolean): void => {
+      const dim = enabled ? '' : '0.4';
+      [ssidInput.input, pwdInput.input, countrySelect.select, applyBtn].forEach((el) => {
+        (el as HTMLInputElement | HTMLSelectElement | HTMLButtonElement).disabled = !enabled;
+      });
+      [ssidInput.wrap, pwdInput.wrap, countrySelect.wrap, applyBtn].forEach((el) => {
+        (el as HTMLElement).style.opacity = dim;
+      });
+      [staBtn, apBtn].forEach((b) => { b.disabled = !enabled; b.style.opacity = dim; });
+    };
+    this.wifiGateApply = setWifiEnabled;
+    if (aesGate) {
+      aesGate.onChange(() => this.refreshWifiGate());
+      // Initial gate evaluation — pulls v3Supported / gcmDecodeWorks from
+      // whatever the V3 + /info promises have set so far.
+      this.aesGateReady = aesGate.isReady;
+    } else {
+      // No V3 path on this device — keep aesGateReady at its safe default
+      // (() => false). v3Supported stays false too, so the WiFi gate
+      // shortcuts to "always enabled".
+      this.aesGateReady = () => false;
+    }
+    this.refreshWifiGate();
+  }
+
+  /** Re-evaluate the WiFi form's enabled state from the current
+   *  (v3Supported, gcmDecodeWorks, aesGateReady) tuple. Cheap, idempotent.
+   *  V1/V2 firmware: always enabled.
+   *  V3 firmware: enabled iff AES key is 32 hex chars AND /info has
+   *  returned a real AP MAC (proof the key decrypts). */
+  private aesGateReady: () => boolean = () => false;
+  private refreshWifiGate(): void {
+    if (!this.wifiGateApply) return;
+    const enabled = !this.v3Supported || (this.aesGateReady() && this.gcmDecodeWorks);
+    this.wifiGateApply(enabled);
+  }
+
+  /** Refresh /info and re-render the SN / AP MAC rows in place. Used
+   *  after the AES key gate POSTs a new key to the backend — the user
+   *  is mid-typing in the AES input, so we must NOT rebuild the whole
+   *  panel (that ejects focus and turns subsequent backspaces into
+   *  browser-back navigation). Updates only the existing infoRows DOM. */
+  private async refreshInfo(): Promise<void> {
+    if (!this.robotStatus.connected) return;
+    const addr = this.robotStatus.address;
+    try {
+      const rInfo = await this.fetchJSON<RobotInfo>('/info');
+      robotPanelCache.set(addr, { ...(robotPanelCache.get(addr) || {}), info: rInfo });
+      this.renderInfoRowsCb?.(rInfo);
+    } catch { /* leave previous values in place */ }
+  }
+
+  /**
+   * Build the AES-128 key input. On V3 firmware (G1 ≥ 1.5.1) the per-device
+   * 16-byte key gates SN / AP MAC fetches and the WiFi form, since all
+   * those ops are AES-GCM-encrypted. The key is keyed by SN — but we don't
+   * know the SN before the key decrypts the first GET_SN, so we just
+   * surface the last-used key (or any single cached entry from the Account
+   * page) and let the user paste/edit.
+   */
+  private buildAesGate(): { wrap: HTMLElement; isReady: () => boolean; onChange: (cb: (ready: boolean) => void) => void } {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:10px;padding:8px 10px;border:1px solid #2a2d35;border-radius:6px;background:rgba(0,0,0,0.15);';
+
+    const lbl = document.createElement('div');
+    lbl.style.cssText = 'font-size:11px;color:#666;margin-bottom:6px;';
+    lbl.textContent = 'AES-128 Key (required to unlock WiFi / SN / AP MAC)';
+    wrap.appendChild(lbl);
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    input.placeholder = '32 hex characters';
+    input.className = 'bt-field';
+    input.style.cssText = 'flex:1;padding:6px 8px;font-family:monospace;font-size:11px;border-radius:4px;box-sizing:border-box;';
+    row.appendChild(input);
+
+    const status = document.createElement('span');
+    status.style.cssText = 'font-size:11px;min-width:54px;text-align:right;';
+    row.appendChild(status);
+
+    wrap.appendChild(row);
+
+    // Try to surface any AES key the user has already cached via the Account
+    // page (any device — the popup doesn't yet know which SN this BLE robot
+    // maps to, but offering the most recently cached key is a reasonable
+    // first guess). Stored under unitree_aes_keys_v1 → {sn: hex}.
+    let candidate = '';
+    try {
+      const raw = localStorage.getItem('unitree_aes_keys_v1');
+      if (raw) {
+        const obj = JSON.parse(raw) as Record<string, string>;
+        const entries = Object.entries(obj).filter(([, v]) => /^[0-9a-fA-F]{32}$/.test(v));
+        if (entries.length === 1) candidate = entries[0][1];
+      }
+    } catch { /* corrupt cache */ }
+    if (candidate) input.value = candidate;
+
+    const listeners: Array<(ready: boolean) => void> = [];
+    let lastReady = false;
+    // We always POST the key on transition-to-ready (initial pre-fill or
+    // user edit) AND always refresh /info afterwards. The earlier guard
+    // that skipped refreshInfo on initial pre-fill was wrong — without
+    // refresh, /info had already returned before the AES key was set, so
+    // SN/MAC stayed empty and the WiFi gate stayed disabled.
+    const refresh = (): void => {
+      const v = input.value.trim();
+      const ready = /^[0-9a-fA-F]{32}$/.test(v);
+      if (ready) {
+        status.textContent = '✓ ready';
+        status.style.color = '#66bb6a';
+      } else if (v.length === 0) {
+        status.textContent = 'paste key';
+        status.style.color = '#888';
+      } else {
+        status.textContent = `${v.length}/32`;
+        status.style.color = '#ff9800';
+      }
+      if (ready !== lastReady) {
+        lastReady = ready;
+        if (ready) {
+          try { setCachedAesKey('_last', v.toLowerCase()); } catch { /* private mode */ }
+          (async () => {
+            try {
+              // Backend now runs the full GCM handshake (GET_TIME_3 →
+              // CHECK_3 ack) before returning, which can take up to ~10 s
+              // when this call races ahead of /connect. Give it room.
+              const resp = await fetch(`${BLE_API}/v3/aes-key?key=${encodeURIComponent(v.toLowerCase())}`, { method: 'POST', signal: AbortSignal.timeout(15000) });
+              if (!resp.ok) {
+                const body = await resp.text();
+                status.textContent = `key rejected: ${body.slice(0, 60)}`;
+                status.style.color = '#e57373';
+                return;
+              }
+              const body = await resp.json().catch(() => ({} as { armed?: boolean }));
+              if (body.armed) {
+                status.textContent = '✓ key armed';
+                status.style.color = '#66bb6a';
+                // Handshake confirmed — /info will now resolve SN/MAC on
+                // the first try. refreshInfo() updates the SN/MAC rows
+                // in place so it doesn't eject focus from this input.
+                this.refreshInfo();
+              } else {
+                // Backend installed the key but the handshake didn't
+                // complete (likely raced ahead of /connect, or robot
+                // didn't reply). One automatic retry: poll /info a few
+                // times — the connect flow may finish armed soon after.
+                status.textContent = '… arming key';
+                status.style.color = '#ff9800';
+                for (let attempt = 0; attempt < 4; attempt++) {
+                  await new Promise(r => setTimeout(r, 1500));
+                  try {
+                    const info = await this.fetchJSON<RobotInfo>('/info');
+                    if (info.ap_mac) {
+                      // /info returning AP MAC proves the GCM path is
+                      // working now (F1 fallback never populates MAC).
+                      status.textContent = '✓ key armed';
+                      status.style.color = '#66bb6a';
+                      this.renderInfoRowsCb?.(info);
+                      return;
+                    }
+                  } catch { /* keep retrying */ }
+                }
+                status.textContent = 'key not armed — try reconnect';
+                status.style.color = '#e57373';
+              }
+            } catch (e) {
+              status.textContent = `send failed: ${e instanceof Error ? e.message : String(e)}`;
+              status.style.color = '#e57373';
+            }
+          })();
+        }
+        for (const cb of listeners) cb(ready);
+      }
+    };
+    input.addEventListener('input', refresh);
+    // Defense in depth: when the input briefly loses focus (e.g. status
+    // update repaints something nearby) some browsers route Backspace to
+    // history.back(). Stop the key from bubbling out of the input — the
+    // input still gets the default delete behavior.
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Backspace' || e.key === 'Delete') e.stopPropagation();
+    });
+    // Use the "_last" sentinel as a fallback if no candidate was set.
+    if (!candidate) {
+      const last = getCachedAesKey('_last');
+      if (last) input.value = last;
+    }
+    refresh();
+
+    return {
+      wrap,
+      isReady: () => lastReady,
+      onChange: (cb) => { listeners.push(cb); },
+    };
   }
 
   private wifiInput(label: string, type: string): { wrap: HTMLElement; input: HTMLInputElement } {
@@ -586,6 +1028,15 @@ export class BtPopover {
     stickInfo.style.cssText = 'text-align:center;font-size:9px;color:#555;font-family:monospace;margin-top:6px;';
     ctrl.appendChild(stickInfo);
 
+    // Heads-up: tearing down the BLE link kills the BT-remote relay too.
+    // Users coming here just to *check* the relay status should hit the
+    // page back button instead of Disconnect — see README → "BT remote
+    // relay" for the full flow.
+    const note = document.createElement('div');
+    note.style.cssText = 'margin-top:6px;padding:8px 10px;border-left:2px solid #4fc3f7;background:rgba(79,195,247,0.06);border-radius:4px;font-size:11px;color:#aaa;line-height:1.5;';
+    note.innerHTML = 'Want to use the <strong style="color:#4fc3f7;">BT remote relay</strong> on the control screen? Press the page <strong>back button</strong> — Disconnect tears down the BLE link and the relay loses its source. (See README → "BT remote relay".)';
+    this.remoteBody.appendChild(note);
+
     // Disconnect
     const disc = this.button('Disconnect Remote', async () => {
       disc.disabled = true;
@@ -593,6 +1044,7 @@ export class BtPopover {
       try { await this.fetchJSON('/remote/disconnect', { method: 'POST' }); } catch {}
       this.refreshStatus();
     }, 'danger');
+    disc.style.marginTop = '8px';
     this.remoteBody.appendChild(disc);
 
     // Store refs + subscribe to WebSocket for push updates
@@ -711,6 +1163,10 @@ export class BtPopover {
     }
 
     for (const robot of data.robots) {
+      // Stash the BLE name so updateRobotSection can gate V3 by SKU
+      // ('Go2_*' = no V3, 'G1_*' = probe) without depending on the
+      // user's Connect-screen family setting.
+      if (robot.address && robot.name) robotNameByAddress.set(robot.address, robot.name);
       this.resultsDiv.appendChild(this.deviceRow(
         '\u{1F916}', robot.name, robot.address, robot.rssi, 'Robot',
       ));
@@ -758,13 +1214,13 @@ export class BtPopover {
   }
 
   private showError(msg: string): void {
-    const existing = this.panel.querySelector('.bt-popover-error');
+    const existing = this.content.querySelector('.bt-page-error');
     existing?.remove();
     const err = document.createElement('div');
-    err.className = 'bt-popover-error';
+    err.className = 'bt-page-error';
     err.style.cssText = 'margin-top:8px;padding:8px 10px;background:rgba(239,83,80,0.1);border:1px solid rgba(239,83,80,0.3);border-radius:5px;color:#ef5350;font-size:11px;';
     err.textContent = msg;
-    this.panel.appendChild(err);
+    this.content.appendChild(err);
     setTimeout(() => err.remove(), 5000);
   }
 

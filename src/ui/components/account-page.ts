@@ -3,45 +3,54 @@
  */
 
 import { cloudApi, getLastResponseMeta, type RobotDevice, type UserInfo, type FirmwareInfo, type TutorialGroup, type ChangelogEntry, type AppVersionInfo } from '../../api/unitree-cloud';
+import { setCachedAesKey, clearCachedAesKey, rsaEncryptSn } from '../../api/aes-key-derive';
+import { buildCloudPrefsRow } from './cloud-prefs';
+import { makeCopyButton } from './copy-button';
+import { OtaController, type Family as OtaFamily, type OtaState } from '../../api/ota-controller';
 
 type Tab = 'devices' | 'info' | 'account' | 'debug';
 
 export class AccountPage {
   private container: HTMLElement;
   private content: HTMLElement;
+  private header!: HTMLElement;
+  private tabBar!: HTMLElement;
   private currentTab: Tab = 'devices';
   private tabButtons: Map<Tab, HTMLElement> = new Map();
 
   constructor(parent: HTMLElement, private onBack: () => void) {
     this.container = document.createElement('div');
-    this.container.className = 'status-page';
+    this.container.className = 'status-page acct-page';
 
-    // Header
-    const header = document.createElement('div');
-    header.className = 'page-header';
+    // Header — hidden on the logged-out screen (the modal there has its own
+    // inline back button so the layout matches the Connect screen).
+    this.header = document.createElement('div');
+    this.header.className = 'page-header';
     const backBtn = document.createElement('button');
     backBtn.className = 'page-back-btn';
     backBtn.innerHTML = `<img src="/sprites/nav-bar-left-icon.png" alt="Back" />`;
     backBtn.addEventListener('click', onBack);
-    header.appendChild(backBtn);
+    this.header.appendChild(backBtn);
     const title = document.createElement('h2');
     title.textContent = 'Account Manager';
-    header.appendChild(title);
-    this.container.appendChild(header);
+    this.header.appendChild(title);
+    this.container.appendChild(this.header);
 
-    // Tab bar
-    const tabBar = document.createElement('div');
-    tabBar.className = 'acct-tab-bar';
+    // Tab bar — hidden when logged out (the login screen is the only thing
+    // that makes sense before auth, and the tabs would just bounce back to
+    // it via switchTab).
+    this.tabBar = document.createElement('div');
+    this.tabBar.className = 'acct-tab-bar';
     const tabLabels: Record<Tab, string> = { devices: 'Devices', info: 'Info', account: 'Account', debug: 'Debug' };
     for (const [tab, label] of Object.entries(tabLabels) as [Tab, string][]) {
       const btn = document.createElement('button');
       btn.className = 'acct-tab-btn';
       btn.textContent = label;
       btn.addEventListener('click', () => this.switchTab(tab));
-      tabBar.appendChild(btn);
+      this.tabBar.appendChild(btn);
       this.tabButtons.set(tab, btn);
     }
-    this.container.appendChild(tabBar);
+    this.container.appendChild(this.tabBar);
 
     this.content = document.createElement('div');
     this.content.className = 'page-content';
@@ -49,21 +58,287 @@ export class AccountPage {
     parent.appendChild(this.container);
 
     if (!cloudApi.isLoggedIn) cloudApi.loadSession();
-    this.switchTab(cloudApi.isLoggedIn ? 'devices' : 'account');
+    if (cloudApi.isLoggedIn) this.switchTab('devices');
+    else this.renderLoggedOutScreen();
   }
 
   private switchTab(tab: Tab): void {
+    if (!cloudApi.isLoggedIn) { this.renderLoggedOutScreen(); return; }
+    this.header.style.display = '';
+    this.tabBar.style.display = '';
     this.currentTab = tab;
     this.tabButtons.forEach((btn, t) => btn.classList.toggle('active', t === tab));
     this.content.innerHTML = '';
+    this.content.classList.remove('acct-loggedout-content');
     this.content.scrollTop = 0;
 
     if (tab === 'account') { this.renderAccountTab(); return; }
-    if (!cloudApi.isLoggedIn) { this.renderLoginForm(); return; }
-
     if (tab === 'devices') this.renderDevicesTab();
     else if (tab === 'info') this.renderInfoTab();
     else if (tab === 'debug') this.renderDebugTab();
+  }
+
+  /** Logged-out view: render a modal that visually mirrors the Connect
+   *  screen — same `.connection-modal` shell, same inline `.conn-header`
+   *  back-button + title, same `.form-group` / `.btn-connect` elements.
+   *  The page-level header and tab bar are hidden so the back button only
+   *  appears in one place. */
+  private renderLoggedOutScreen(): void {
+    this.header.style.display = 'none';
+    this.tabBar.style.display = 'none';
+    this.tabButtons.forEach((btn) => btn.classList.remove('active'));
+    this.content.innerHTML = '';
+    this.content.scrollTop = 0;
+    this.content.classList.add('acct-loggedout-content');
+
+    const modal = document.createElement('div');
+    modal.className = 'connection-modal';
+
+    const panel = document.createElement('div');
+    panel.className = 'connection-panel';
+
+    panel.innerHTML = `
+      <div class="conn-back-row">
+        <button id="acct-login-back" class="conn-back-link" type="button">
+          <svg class="conn-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Main page</span>
+        </button>
+      </div>
+      <h2 class="conn-title">Login</h2>
+      <div id="acct-login-prefs"></div>
+      <div class="form-group">
+        <div class="auth-toggle-row">
+          <button class="auth-tab active" type="button" data-auth="credentials">Email / Password</button>
+          <button class="auth-tab" type="button" data-auth="token">Token</button>
+        </div>
+      </div>
+      <div id="acct-credentials-pane">
+        <div class="form-group">
+          <label for="acct-login-email">Email</label>
+          <input type="email" id="acct-login-email" placeholder="Unitree account email" autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="acct-login-pwd">Password</label>
+          <input type="password" id="acct-login-pwd" placeholder="Account password" autocomplete="current-password" />
+        </div>
+      </div>
+      <div id="acct-token-pane" style="display:none;">
+        <div class="form-group">
+          <label for="acct-login-token">Access Token</label>
+          <input type="text" id="acct-login-token" placeholder="Paste access token" />
+        </div>
+      </div>
+      <button id="acct-login-btn" class="btn-connect" type="button">Login</button>
+      <div id="acct-login-status" class="status"></div>
+      <div class="acct-create-row">
+        Don't have an account?
+        <button id="acct-create-link" class="acct-link-btn" type="button">Create Account</button>
+      </div>
+    `;
+
+    // Family + Region pills. Family drives the AppName the cloud API signs
+    // its requests with (Go2 vs G1 use different app identities); Region
+    // (Global / CN) picks which Unitree endpoint to hit. Both must be set
+    // before login so the request fires against the right backend.
+    const prefsSlot = panel.querySelector('#acct-login-prefs') as HTMLElement;
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showFamily: true, showRegion: true }));
+
+    const back = panel.querySelector('#acct-login-back') as HTMLButtonElement;
+    back.addEventListener('click', () => this.onBack());
+
+    const emailEl = panel.querySelector('#acct-login-email') as HTMLInputElement;
+    const pwdEl = panel.querySelector('#acct-login-pwd') as HTMLInputElement;
+    const tokEl = panel.querySelector('#acct-login-token') as HTMLInputElement;
+    const loginBtn = panel.querySelector('#acct-login-btn') as HTMLButtonElement;
+    const credentialsPane = panel.querySelector('#acct-credentials-pane') as HTMLElement;
+    const tokenPane = panel.querySelector('#acct-token-pane') as HTMLElement;
+    const tabs = panel.querySelectorAll('.auth-tab');
+    const statusEl = panel.querySelector('#acct-login-status') as HTMLElement;
+    const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info'): void => {
+      statusEl.textContent = text;
+      statusEl.className = `status status-${type}`;
+    };
+
+    let useToken = false;
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        useToken = (tab as HTMLElement).dataset.auth === 'token';
+        tabs.forEach((t) => t.classList.toggle('active', t === tab));
+        credentialsPane.style.display = useToken ? 'none' : '';
+        tokenPane.style.display = useToken ? '' : 'none';
+        setStatus('', 'info');
+      });
+    });
+
+    loginBtn.addEventListener('click', async () => {
+      loginBtn.disabled = true;
+      const orig = loginBtn.textContent;
+      loginBtn.textContent = 'Logging in...';
+      setStatus('', 'info');
+      try {
+        if (useToken) {
+          const t = tokEl.value.trim();
+          if (!t) throw new Error('Paste an access token');
+          cloudApi.setAccessToken(t);
+          cloudApi.saveSession();
+        } else {
+          const email = emailEl.value.trim();
+          const pwd = pwdEl.value;
+          if (!email || !pwd) throw new Error('Enter email and password');
+          await cloudApi.loginEmail(email, pwd);
+        }
+        this.switchTab('devices');
+      } catch (e) {
+        setStatus(`Login failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = orig || 'Login';
+      }
+    });
+
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); loginBtn.click(); }
+    });
+
+    const createLink = panel.querySelector('#acct-create-link') as HTMLButtonElement;
+    createLink.addEventListener('click', () => this.renderRegisterScreen());
+
+    modal.appendChild(panel);
+    this.content.appendChild(modal);
+  }
+
+  /** Email-registration screen — same modal shell as the login view, with
+   *  an SVG image-captcha. Mirrors the official APK flow:
+   *    1. GET /captcha → ImageCodeBean { code, svg } (issued on mount, and
+   *       re-fetched whenever the user clicks the puzzle to refresh).
+   *    2. POST /register/email with email+password+code+captcha+blank
+   *       company fields. Server returns access+refresh token, so the
+   *       user is logged in immediately on success. */
+  private renderRegisterScreen(): void {
+    this.header.style.display = 'none';
+    this.tabBar.style.display = 'none';
+    this.tabButtons.forEach((btn) => btn.classList.remove('active'));
+    this.content.innerHTML = '';
+    this.content.scrollTop = 0;
+    this.content.classList.add('acct-loggedout-content');
+
+    const modal = document.createElement('div');
+    modal.className = 'connection-modal';
+    const panel = document.createElement('div');
+    panel.className = 'connection-panel';
+
+    panel.innerHTML = `
+      <div class="conn-back-row">
+        <button id="acct-reg-back" class="conn-back-link" type="button">
+          <svg class="conn-back-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="15 18 9 12 15 6"></polyline>
+          </svg>
+          <span>Back to Login</span>
+        </button>
+      </div>
+      <h2 class="conn-title">Create Account</h2>
+      <div id="acct-reg-prefs"></div>
+      <div class="form-group">
+        <label for="acct-reg-email">Email</label>
+        <input type="email" id="acct-reg-email" placeholder="you@example.com" autocomplete="username" />
+      </div>
+      <div class="form-group">
+        <label for="acct-reg-pwd">Password</label>
+        <input type="password" id="acct-reg-pwd" placeholder="At least 8 characters" autocomplete="new-password" />
+      </div>
+      <div class="form-group">
+        <label for="acct-reg-captcha">Captcha</label>
+        <div class="acct-captcha-row">
+          <div id="acct-reg-captcha-img" class="acct-captcha-img" title="Click to refresh"></div>
+          <input type="text" id="acct-reg-captcha" placeholder="4 chars" maxlength="4" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <button id="acct-reg-btn" class="btn-connect" type="button">Create Account</button>
+      <div id="acct-reg-status" class="status"></div>
+    `;
+
+    // Region matters for which Unitree backend the registration hits;
+    // family controls the AppName the request signs as. Same picker as
+    // the login screen.
+    const prefsSlot = panel.querySelector('#acct-reg-prefs') as HTMLElement;
+    prefsSlot.replaceWith(buildCloudPrefsRow({ showFamily: true, showRegion: true }));
+
+    const back = panel.querySelector('#acct-reg-back') as HTMLButtonElement;
+    back.addEventListener('click', () => this.renderLoggedOutScreen());
+
+    const emailEl = panel.querySelector('#acct-reg-email') as HTMLInputElement;
+    const pwdEl = panel.querySelector('#acct-reg-pwd') as HTMLInputElement;
+    const captchaEl = panel.querySelector('#acct-reg-captcha') as HTMLInputElement;
+    const captchaImg = panel.querySelector('#acct-reg-captcha-img') as HTMLElement;
+    const regBtn = panel.querySelector('#acct-reg-btn') as HTMLButtonElement;
+    const statusEl = panel.querySelector('#acct-reg-status') as HTMLElement;
+    const setStatus = (text: string, type: 'info' | 'success' | 'error' = 'info'): void => {
+      statusEl.textContent = text;
+      statusEl.className = `status status-${type}`;
+    };
+
+    // Captcha session id from the most recent /captcha call. Sent as
+    // `code` on register; cleared after a successful register so it
+    // can't be reused.
+    let captchaCode = '';
+    const refreshCaptcha = async (): Promise<void> => {
+      captchaImg.innerHTML = '<span style="font-size:11px;color:#888;">Loading…</span>';
+      try {
+        const { code, svg } = await cloudApi.getImageCaptcha();
+        captchaCode = code;
+        // The SVG is raw markup; injecting via innerHTML lets it inherit
+        // the container's sizing. Same approach the APK uses (loads the
+        // SVG into a WebView).
+        captchaImg.innerHTML = svg;
+      } catch (e) {
+        captchaCode = '';
+        captchaImg.innerHTML = '<span style="font-size:11px;color:#e57373;">Failed</span>';
+        setStatus(`Captcha failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+      }
+    };
+    captchaImg.addEventListener('click', () => { void refreshCaptcha(); });
+    void refreshCaptcha();
+
+    regBtn.addEventListener('click', async () => {
+      const email = emailEl.value.trim();
+      const pwd = pwdEl.value;
+      const solution = captchaEl.value.trim();
+      // Same pre-submit checks the APK fragment runs (length-based, no
+      // regex on the email format — the server is the source of truth).
+      if (email.length < 3) { setStatus('Enter a valid email', 'error'); return; }
+      if (pwd.length < 8) { setStatus('Password must be at least 8 characters', 'error'); return; }
+      if (solution.length !== 4) { setStatus('Captcha must be 4 characters', 'error'); return; }
+      if (!captchaCode) { setStatus('Refresh the captcha and try again', 'error'); return; }
+
+      regBtn.disabled = true;
+      const orig = regBtn.textContent;
+      regBtn.textContent = 'Creating account…';
+      setStatus('', 'info');
+      try {
+        await cloudApi.registerEmail(email, pwd, captchaCode, solution);
+        // registerEmail saves the session + emits onAuthChange; switch
+        // straight to the devices tab (the user is now logged in).
+        this.switchTab('devices');
+      } catch (e) {
+        setStatus(`Registration failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
+        // Server consumed the captcha session on failure (the APK does
+        // the same — it auto-refreshes after every failed register).
+        captchaEl.value = '';
+        void refreshCaptcha();
+      } finally {
+        regBtn.disabled = false;
+        regBtn.textContent = orig || 'Create Account';
+      }
+    });
+
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); regBtn.click(); }
+    });
+
+    modal.appendChild(panel);
+    this.content.appendChild(modal);
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -79,11 +354,7 @@ export class AccountPage {
       const u = cloudApi.user;
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:14px;margin-bottom:12px;';
-      if (u.avatar) {
-        row.innerHTML = `<img src="${this.esc(u.avatar)}" style="width:56px;height:56px;border-radius:50%;object-fit:cover;border:2px solid #2a2d35;">`;
-      } else {
-        row.innerHTML = `<div style="width:56px;height:56px;border-radius:50%;background:#2a2d35;display:flex;align-items:center;justify-content:center;font-size:22px;color:#666;">${(u.nickname || '?')[0].toUpperCase()}</div>`;
-      }
+      row.appendChild(this.createAvatarImg(u.avatar, 56, u.nickname || u.email || '?', true));
       const info = document.createElement('div');
       info.innerHTML = `<div style="font-size:16px;font-weight:600;">${this.esc(u.nickname)}</div>
         <div style="font-size:12px;color:#666;">${this.esc(u.email)}</div>
@@ -115,8 +386,11 @@ export class AccountPage {
     if (cloudApi.user?.avatar) {
       const preview = document.createElement('div');
       preview.style.cssText = 'margin-bottom:10px;';
-      preview.innerHTML = `<img src="${this.esc(cloudApi.user.avatar)}" style="width:64px;height:64px;border-radius:8px;object-fit:cover;">
-        <div style="font-size:10px;color:#444;margin-top:4px;word-break:break-all;max-width:250px;">${this.esc(cloudApi.user.avatar)}</div>`;
+      preview.appendChild(this.createAvatarImg(cloudApi.user.avatar, 64, cloudApi.user.nickname || cloudApi.user.email || '?', false));
+      const urlText = document.createElement('div');
+      urlText.style.cssText = 'font-size:10px;color:#444;margin-top:4px;word-break:break-all;max-width:250px;';
+      urlText.textContent = cloudApi.user.avatar;
+      preview.appendChild(urlText);
       avatarSec.appendChild(preview);
     }
     const avatarUrlInput = this.input('Avatar URL', 'url');
@@ -131,7 +405,8 @@ export class AccountPage {
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.accept = 'image/*';
-    fileInput.style.cssText = 'width:100%;padding:6px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:12px;margin-bottom:8px;';
+    fileInput.className = 'acct-input acct-file-input';
+    fileInput.style.cssText = 'padding:6px;font-size:12px;margin-bottom:8px;';
     avatarSec.appendChild(fileInput);
 
     avatarSec.appendChild(this.button('Update Avatar', async () => {
@@ -223,24 +498,133 @@ export class AccountPage {
 
     // Refresh / Logout
     const session = this.section('Session');
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;';
-    const refreshBtn = document.createElement('button');
-    refreshBtn.className = 'acct-btn';
-    refreshBtn.style.cssText = 'background:#1a1d23;color:#4fc3f7;border:1px solid #2a2d35;flex:1;';
-    refreshBtn.textContent = 'Refresh Info';
-    refreshBtn.addEventListener('click', async () => {
-      try { await cloudApi.getUserInfo(); this.switchTab('account'); } catch (e) { alert(String(e)); }
-    });
-    btnRow.appendChild(refreshBtn);
+
+    // Access-token row with hover-to-parse info popover. Auto-login keeps the
+    // token alive across reloads, so surfacing the parsed claims (exp/iat) is
+    // useful for spotting refresh issues without poking around in DevTools.
+    if (cloudApi.accessToken) {
+      session.appendChild(this.buildTokenRow('Access Token', cloudApi.accessToken));
+    }
+
     const logoutBtn = document.createElement('button');
     logoutBtn.className = 'acct-btn acct-btn-danger';
-    logoutBtn.style.flex = '1';
+    logoutBtn.style.width = '100%';
     logoutBtn.textContent = 'Logout';
     logoutBtn.addEventListener('click', () => { cloudApi.logout(); this.switchTab('account'); });
-    btnRow.appendChild(logoutBtn);
-    session.appendChild(btnRow);
+    session.appendChild(logoutBtn);
     this.content.appendChild(session);
+
+    // ── Danger Zone: permanent account deletion ──
+    // POST user/destroy is irreversible and the server offers no
+    // confirmation step (see APK LoginApi.deleteUser → no body, no
+    // captcha). Gate it behind an inline typed-confirmation panel.
+    // Browser confirm()/prompt() are avoided here because some embedded
+    // contexts (kiosk shells, certain WebViews) silently block them.
+    const danger = this.section('Danger Zone');
+    danger.style.borderColor = '#c62828';
+
+    const warn = document.createElement('div');
+    warn.style.cssText = 'font-size:12px;color:#e57373;margin-bottom:10px;line-height:1.4;';
+    warn.textContent = 'Permanently delete this Unitree account. This cannot be undone — bound robots, devices, and account data are removed server-side.';
+    danger.appendChild(warn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'acct-btn acct-btn-danger';
+    deleteBtn.style.width = '100%';
+    deleteBtn.textContent = 'Delete Account';
+    danger.appendChild(deleteBtn);
+
+    // Inline confirm panel — hidden until the user clicks Delete Account.
+    // Replaces the previous confirm()/prompt() pair so it works in
+    // contexts where browser dialogs are blocked.
+    const confirmPanel = document.createElement('div');
+    confirmPanel.style.cssText = 'display:none;margin-top:12px;padding:12px;border:1px solid #c62828;border-radius:8px;background:rgba(198,40,40,0.06);';
+    danger.appendChild(confirmPanel);
+
+    const deleteStatus = document.createElement('div');
+    deleteStatus.style.cssText = 'margin-top:8px;font-size:12px;';
+    danger.appendChild(deleteStatus);
+
+    const setStatus = (text: string, color: string): void => {
+      deleteStatus.style.color = color;
+      deleteStatus.textContent = text;
+    };
+
+    const closeConfirm = (): void => {
+      confirmPanel.style.display = 'none';
+      confirmPanel.innerHTML = '';
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = 'Delete Account';
+    };
+
+    deleteBtn.addEventListener('click', () => {
+      const u = cloudApi.user;
+      const label = u?.email?.trim() || u?.nickname?.trim() || 'this account';
+      // Two-step confirm in DOM: a warning + a typed-match input + Cancel
+      // / Confirm Delete buttons. The Confirm button stays disabled until
+      // the user types "DELETE" exactly.
+      confirmPanel.innerHTML = `
+        <div style="font-size:13px;color:#fff;font-weight:600;margin-bottom:6px;">Permanently delete ${this.esc(label)}?</div>
+        <div style="font-size:12px;color:#e0e0e0;line-height:1.5;margin-bottom:10px;">
+          The account, all bound robots, and any cloud-stored data will be removed and
+          <strong>cannot be recovered</strong>.
+        </div>
+        <label for="acct-del-confirm" style="display:block;font-size:11px;color:#bbb;margin-bottom:4px;">Type <strong>DELETE</strong> (uppercase) to confirm:</label>
+        <input type="text" id="acct-del-confirm" class="acct-input" autocomplete="off" spellcheck="false" placeholder="DELETE" style="font-family:monospace;letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;" />
+        <div style="display:flex;gap:8px;">
+          <button id="acct-del-cancel" class="acct-btn" type="button" style="flex:1;background:#2a2d35;color:#ccc;">Cancel</button>
+          <button id="acct-del-confirm-btn" class="acct-btn acct-btn-danger" type="button" style="flex:1;" disabled>Confirm Delete</button>
+        </div>
+      `;
+      confirmPanel.style.display = '';
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Confirm below…';
+      setStatus('', '');
+
+      const input = confirmPanel.querySelector('#acct-del-confirm') as HTMLInputElement;
+      const cancelBtn = confirmPanel.querySelector('#acct-del-cancel') as HTMLButtonElement;
+      const confirmBtn = confirmPanel.querySelector('#acct-del-confirm-btn') as HTMLButtonElement;
+      input.focus();
+
+      input.addEventListener('input', () => {
+        confirmBtn.disabled = input.value.trim() !== 'DELETE';
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !confirmBtn.disabled) { e.preventDefault(); confirmBtn.click(); }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
+      });
+
+      cancelBtn.addEventListener('click', () => {
+        closeConfirm();
+        setStatus('Cancelled — account not deleted.', '#888');
+      });
+
+      confirmBtn.addEventListener('click', async () => {
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        input.disabled = true;
+        confirmBtn.textContent = 'Deleting…';
+        setStatus('Deleting account…', '#888');
+        try {
+          await cloudApi.deleteAccount();
+          // Cached devices belong to the now-destroyed account — wipe them too.
+          try { localStorage.removeItem('unitree_devices_cache'); } catch { /* ignore */ }
+          confirmPanel.style.display = 'none';
+          setStatus('Account deleted. Returning to login…', '#66bb6a');
+          // switchTab routes to the logged-out screen since cloudApi.isLoggedIn
+          // is now false (clearSession already fired onAuthChange).
+          setTimeout(() => this.switchTab('account'), 600);
+        } catch (e) {
+          setStatus(`Failed: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+          confirmBtn.disabled = false;
+          cancelBtn.disabled = false;
+          input.disabled = false;
+          confirmBtn.textContent = 'Confirm Delete';
+        }
+      });
+    });
+
+    this.content.appendChild(danger);
   }
 
   private renderLoginForm(): void {
@@ -303,6 +687,12 @@ export class AccountPage {
     this.content.innerHTML = '<div style="color:#666;padding:20px;">Loading devices...</div>';
     try {
       const devices = await cloudApi.listDevices();
+      // Seed the local AES-key cache from any cloud-stored keys so the
+      // data2=3 connect path doesn't have to prompt for SNs that have
+      // already been bound (e.g. via the official Unitree app).
+      for (const d of devices) {
+        if (d.key && d.key.trim()) setCachedAesKey(d.sn, d.key.trim());
+      }
       this.content.innerHTML = '';
 
       const hdr = document.createElement('div');
@@ -345,9 +735,21 @@ export class AccountPage {
       this.content.appendChild(grid);
 
       if (!devices.length) {
+        // Friendlier empty state — the account is fine, just nothing bound.
+        // Account / Info / Debug tabs at the top still work; we want this to
+        // feel like a starting point, not an error.
         const empty = document.createElement('div');
-        empty.style.cssText = 'color:#555;text-align:center;padding:40px 0;';
-        empty.textContent = 'No robots bound to your account.';
+        empty.style.cssText = 'color:#888;text-align:center;padding:30px 16px;border:1px dashed #2a2d35;border-radius:8px;margin-top:8px;';
+        empty.innerHTML = `
+          <div style="font-size:14px;color:#bbb;margin-bottom:6px;">No robots bound to this account yet.</div>
+          <div style="font-size:11px;line-height:1.5;color:#777;max-width:340px;margin:0 auto 14px;">Click <strong>+ Add</strong> above to register one, or jump to another tab — your login is active.</div>
+        `;
+        const cta = document.createElement('button');
+        cta.className = 'acct-btn acct-btn-primary';
+        cta.style.cssText = 'padding:6px 16px;font-size:12px;';
+        cta.textContent = '+ Add a robot';
+        cta.addEventListener('click', () => this.showBindForm());
+        empty.appendChild(cta);
         this.content.appendChild(empty);
       }
     } catch (e) {
@@ -362,11 +764,8 @@ export class AccountPage {
 
     // Online badge
     const badge = document.createElement('span');
-    badge.style.cssText = `position:absolute;top:10px;right:12px;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;${
-      online === true ? 'background:#1b5e20;color:#a5d6a7;' :
-      online === false ? 'background:#333;color:#666;' :
-      'background:#222;color:#555;'
-    }`;
+    const state = online === true ? 'online' : online === false ? 'offline' : 'unknown';
+    badge.className = `acct-status-badge acct-status-${state}`;
     badge.textContent = online === true ? 'Online' : online === false ? 'Offline' : '—';
     tile.appendChild(badge);
 
@@ -381,28 +780,32 @@ export class AccountPage {
     if (dev.model) this.infoRow(tile, 'Model', dev.model);
     if (dev.connIp) this.infoRow(tile, 'IP', dev.connIp, true);
     if (dev.connMode) this.infoRow(tile, 'Mode', dev.connMode);
-    if (dev.key) this.infoRow(tile, 'GCM Key', dev.key.length > 32 ? dev.key.slice(0, 32) + '...' : dev.key, true);
+    if (dev.key) this.infoRow(tile, 'AES-128 Key', dev.key.length > 32 ? dev.key.slice(0, 32) + '...' : dev.key, true);
 
     // Buttons row
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;margin-top:10px;';
 
     const detailBtn = document.createElement('button');
-    detailBtn.className = 'acct-btn';
-    detailBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;background:#1a1d23;color:#4fc3f7;border:1px solid #2a2d35;';
+    detailBtn.className = 'acct-btn acct-btn-secondary';
+    detailBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
     detailBtn.textContent = 'Details';
     detailBtn.addEventListener('click', () => this.showDeviceDetail(dev));
     btns.appendChild(detailBtn);
 
     const shareBtn = document.createElement('button');
-    shareBtn.className = 'acct-btn';
-    shareBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;background:#1a1d23;color:#888;border:1px solid #2a2d35;';
+    shareBtn.className = 'acct-btn acct-btn-secondary';
+    shareBtn.style.cssText = 'flex:1;padding:6px;font-size:12px;';
     shareBtn.textContent = 'Share';
     shareBtn.addEventListener('click', () => this.showShareView(dev));
     btns.appendChild(shareBtn);
 
     tile.appendChild(btns);
     return tile;
+  }
+
+  private copyBtn(text: string): HTMLButtonElement {
+    return makeCopyButton(text);
   }
 
   private async showDeviceDetail(dev: RobotDevice): Promise<void> {
@@ -428,7 +831,7 @@ export class AccountPage {
       if (dev.connMode) this.infoRow(s, 'Mode', dev.connMode);
       if (dev.code) this.infoRow(s, 'Code', dev.code, true);
       this.infoRow(s, 'Owner', dev.own === 1 ? 'Yes' : 'Shared');
-      if (dev.key) this.infoRow(s, 'GCM Key', dev.key, true);
+      if (dev.key) this.infoRow(s, 'AES-128 Key', dev.key, true);
       if (dev.remark) this.infoRow(s, 'Remark', dev.remark);
       this.content.appendChild(s);
 
@@ -448,7 +851,10 @@ export class AccountPage {
       }));
       this.content.appendChild(edit);
 
-      // Firmware
+      // Firmware Updates — manual download links + cloud-orchestrated OTA
+      // (matches the official APK flow). Family is inferred from the device
+      // series: Go2 uses single-shot upgrade, everything else (G1/H1/B2/R1)
+      // uses the Explorer two-step download+install.
       try {
         const fw = await cloudApi.listFirmwareUpdates(dev.sn);
         if (fw.length) {
@@ -467,25 +873,46 @@ export class AccountPage {
             fws.appendChild(row);
           }
           this.content.appendChild(fws);
+
+          // Cloud OTA — only the first (latest) entry is upgrade-eligible.
+          // Skip if there's no firmwareId (defensive; shouldn't happen).
+          if (fw[0].firmwareId) {
+            const family: OtaFamily = dev.series.startsWith('Go2') ? 'Go2' : 'G1';
+            this.content.appendChild(this.buildOtaSection(dev.sn, family, fw[0]));
+          }
         }
       } catch { /* ignore */ }
 
 
 
-      // Danger zone
+      // Danger zone — unbind goes through `device/unbind` with an RSA-
+      // encrypted SN (same convention as device/bind / device/bindExtData).
       const danger = this.section('Danger Zone');
       danger.style.borderColor = '#c62828';
       const unbindBtn = document.createElement('button');
       unbindBtn.className = 'acct-btn acct-btn-danger';
       unbindBtn.textContent = 'Unbind Robot';
+      const unbindStatus = document.createElement('span');
+      unbindStatus.style.cssText = 'margin-left:10px;font-size:12px;';
       unbindBtn.addEventListener('click', async () => {
-        if (!confirm(`Unbind ${dev.sn}?`)) return;
+        if (!confirm(`Unbind ${dev.sn}?\n\nThis removes the cloud-side binding (alias, mac, AES-128 key). You'll need to re-bind to use the robot from this account again.`)) return;
+        unbindBtn.disabled = true;
+        unbindStatus.style.color = '#888';
+        unbindStatus.textContent = 'Encrypting SN…';
         try {
-          await cloudApi.unbindDevice(dev.sn);
+          const snEncrypted = await rsaEncryptSn(dev.sn);
+          unbindStatus.textContent = 'Calling device/unbind…';
+          await cloudApi.unbindDevice(snEncrypted);
+          clearCachedAesKey(dev.sn);
           this.switchTab('devices');
-        } catch (e) { alert(String(e)); }
+        } catch (e) {
+          unbindStatus.style.color = '#e57373';
+          unbindStatus.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+          unbindBtn.disabled = false;
+        }
       });
       danger.appendChild(unbindBtn);
+      danger.appendChild(unbindStatus);
       this.content.appendChild(danger);
     } catch (e) {
       this.content.innerHTML = '';
@@ -546,6 +973,20 @@ export class AccountPage {
     } catch { /* ignore */ }
   }
 
+  /**
+   * Bind form — mirrors the apk's `device/bind` payload:
+   *   sn        — RSA-wrapped serial number (we wrap on submit)
+   *   mac       — robot AP MAC (on V3 firmware this needs the BLE V3 GCM
+   *               command path; for now the user pastes it, e.g. from a
+   *               previous device entry's `dev.mac` or the robot label)
+   *   alias     — display name
+   *   remark    — free-text notes
+   *   extData   — 44-char base64 BLE GCM key (paste from BT popup)
+   *
+   * On success the cloud derives the 16-byte AES-128 key from `extData` and
+   * surfaces it as `dev.key` on the next `device/bind/list` — that's the
+   * value the WebRTC frontend then consumes as `appKeyBytes` for `data2=3`.
+   */
   private showBindForm(): void {
     this.content.innerHTML = '';
     const backLink = document.createElement('button');
@@ -556,16 +997,57 @@ export class AccountPage {
     this.content.appendChild(backLink);
 
     const s = this.section('Bind New Robot');
+
+    const blurb = document.createElement('div');
+    blurb.style.cssText = 'font-size:11px;color:#888;line-height:1.5;margin-bottom:10px;';
+    blurb.innerHTML = 'Pair the robot via BLE first. Copy the GCM key from the BT popup, then paste it below along with the SN and AP MAC. Submitting will register the robot to your account and have the cloud derive the AES-128 key — visible as <code style="color:#b3c0ff;">dev.key</code> on the next devices list refresh.';
+    s.appendChild(blurb);
+
     const snInput = this.input('Serial Number', 'text');
-    const aliasInput = this.input('Alias (optional)', 'text');
+    const aliasInput = this.input('Alias', 'text');
+    const macInput = this.input('AP MAC (xx:xx:xx:xx:xx:xx)', 'text');
+    const remarkInput = this.input('Remark (optional)', 'text');
+    const extInput = this.input('extData blob (344-char base64 — from BT popup, requires MTU=104)', 'text');
+    extInput.input.spellcheck = false;
+    extInput.input.autocomplete = 'off';
+    extInput.input.placeholder = 'RvEUsChKiyIkiPP7DmPZ08q/QXIMQrTMU…';
+
     s.appendChild(snInput.wrapper);
     s.appendChild(aliasInput.wrapper);
-    s.appendChild(this.button('Bind Robot', async () => {
+    s.appendChild(macInput.wrapper);
+    s.appendChild(remarkInput.wrapper);
+    s.appendChild(extInput.wrapper);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:11px;color:#888;margin:6px 0;min-height:14px;';
+    s.appendChild(status);
+
+    const submit = this.button('Bind Robot', async () => {
+      const sn = snInput.input.value.trim();
+      const mac = macInput.input.value.trim();
+      const alias = aliasInput.input.value.trim();
+      const remark = remarkInput.input.value.trim();
+      const extData = extInput.input.value.trim();
+      if (!sn) { status.style.color = '#e57373'; status.textContent = 'Serial Number required.'; return; }
+      if (!extData) { status.style.color = '#e57373'; status.textContent = 'BLE GCM Key required (paste from BT popup).'; return; }
+      submit.disabled = true;
+      status.style.color = '#888';
+      status.textContent = 'Encrypting SN…';
       try {
-        await cloudApi.bindDevice(snInput.input.value.trim(), aliasInput.input.value.trim());
-        this.switchTab('devices');
-      } catch (e) { alert(String(e)); }
-    }));
+        const snEncrypted = await rsaEncryptSn(sn);
+        status.textContent = 'Calling device/bind…';
+        await cloudApi.bindDevice(snEncrypted, mac, alias, remark, extData);
+        status.style.color = '#66bb6a';
+        status.textContent = 'Bound — refreshing devices list.';
+        // Brief delay so the user sees the success state before jumping back.
+        setTimeout(() => this.switchTab('devices'), 600);
+      } catch (e) {
+        status.style.color = '#e57373';
+        status.textContent = `Failed: ${e instanceof Error ? e.message : String(e)}`;
+        submit.disabled = false;
+      }
+    });
+    s.appendChild(submit);
     this.content.appendChild(s);
   }
 
@@ -679,12 +1161,14 @@ export class AccountPage {
     const methodWrap = document.createElement('div');
     methodWrap.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;';
     const methodSel = document.createElement('select');
-    methodSel.style.cssText = 'width:80px;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#fff;border-radius:6px;';
+    methodSel.className = 'acct-input';
+    methodSel.style.cssText = 'width:80px;padding:8px;font-size:13px;';
     methodSel.innerHTML = '<option>GET</option><option>POST</option>';
     const pathInput = document.createElement('input');
     pathInput.type = 'text';
     pathInput.placeholder = 'endpoint/path';
-    pathInput.style.cssText = 'flex:1;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#4fc3f7;border-radius:6px;font-family:monospace;font-size:13px;';
+    pathInput.className = 'acct-input acct-input-mono';
+    pathInput.style.cssText = 'flex:1;padding:8px;font-size:13px;';
     methodWrap.appendChild(methodSel);
     methodWrap.appendChild(pathInput);
     form.appendChild(methodWrap);
@@ -692,7 +1176,8 @@ export class AccountPage {
     const paramsInput = document.createElement('textarea');
     paramsInput.placeholder = 'key=value (one per line)';
     paramsInput.rows = 4;
-    paramsInput.style.cssText = 'width:100%;padding:8px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-family:monospace;font-size:12px;resize:vertical;';
+    paramsInput.className = 'acct-input acct-input-mono';
+    paramsInput.style.cssText = 'padding:8px;font-size:12px;resize:vertical;';
     form.appendChild(paramsInput);
 
     // Decryption status banner (hidden until first request)
@@ -704,27 +1189,10 @@ export class AccountPage {
     resultWrap.style.cssText = 'position:relative;margin-top:8px;display:none;';
     const resultEl = document.createElement('pre');
     resultEl.style.cssText = 'font-family:monospace;font-size:12px;color:#888;white-space:pre-wrap;word-break:break-all;max-height:400px;overflow:auto;padding:10px 10px 10px 10px;background:#08090c;border:1px solid #1a1d23;border-radius:6px;margin:0;user-select:text;-webkit-user-select:text;';
-    const copyBtn = document.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.textContent = 'Copy';
-    copyBtn.style.cssText = 'position:absolute;top:6px;right:6px;padding:3px 10px;font-size:11px;border-radius:4px;border:1px solid #2a2d35;background:rgba(26,29,35,0.9);color:#aaa;cursor:pointer;font-family:inherit;';
-    copyBtn.addEventListener('mouseenter', () => { copyBtn.style.background = 'rgba(79,195,247,0.15)'; copyBtn.style.color = '#4fc3f7'; copyBtn.style.borderColor = 'rgba(79,195,247,0.4)'; });
-    copyBtn.addEventListener('mouseleave', () => { copyBtn.style.background = 'rgba(26,29,35,0.9)'; copyBtn.style.color = '#aaa'; copyBtn.style.borderColor = '#2a2d35'; });
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(resultEl.textContent || '');
-        const orig = copyBtn.textContent;
-        copyBtn.textContent = 'Copied ✓';
-        setTimeout(() => { copyBtn.textContent = orig; }, 1200);
-      } catch {
-        // Fallback: select the text so the user can Ctrl+C
-        const range = document.createRange();
-        range.selectNodeContents(resultEl);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      }
-    });
+    const copyBtn = makeCopyButton(() => resultEl.textContent || '');
+    copyBtn.style.position = 'absolute';
+    copyBtn.style.top = '6px';
+    copyBtn.style.right = '6px';
     resultWrap.appendChild(resultEl);
     resultWrap.appendChild(copyBtn);
 
@@ -877,7 +1345,6 @@ export class AccountPage {
       ]],
       ['Content', [
         ['GET', 'tutorial/list', 'appName=Go2\ntype='],
-        ['GET', 'v2/tutorial/list', 'appName=Go2\ntype='],
         ['POST', 'tutorial/read', 'id='],
         ['GET', 'app/notice/list', ''],
         ['GET', 'advertisements', 'position=1'],
@@ -930,34 +1397,215 @@ export class AccountPage {
     return s;
   }
 
+  /** Cloud-OTA control panel for one firmware. Mirrors the official APK
+   *  flow:
+   *    Go2: single Upgrade button → server runs download+install,
+   *         progress label flips at 50% from "Downloading" to "Installing".
+   *    G1:  Download button → polls until 50% boundary (current==500),
+   *         then surfaces an Install button → polls install to 100%.
+   *  Polling cadence: 1 s tick, 20-tick offline budget — matches the APK.
+   *  Resume support: on mount we check `getCurrentUpgradeTask(sn)` and
+   *  re-attach to any in-flight job so back-out + return doesn't lose
+   *  state. */
+  private buildOtaSection(sn: string, family: OtaFamily, fw: FirmwareInfo): HTMLElement {
+    const sec = this.section('Install via Cloud (OTA)');
+    sec.appendChild(this.makeOtaContent(sn, family, fw));
+    return sec;
+  }
+
+  private makeOtaContent(sn: string, family: OtaFamily, fw: FirmwareInfo): HTMLElement {
+    const wrap = document.createElement('div');
+
+    const subtitle = document.createElement('div');
+    subtitle.style.cssText = 'font-size:12px;color:#888;margin-bottom:8px;';
+    subtitle.innerHTML = `Server-orchestrated upgrade — the Unitree cloud pushes V${this.esc(fw.version)} to the robot. <strong style="color:#aaa;">${family === 'G1' ? 'Two-step (download then install).' : 'Single-step.'}</strong>`;
+    wrap.appendChild(subtitle);
+
+    const warn = document.createElement('div');
+    warn.style.cssText = 'font-size:11px;color:#e57373;margin-bottom:10px;line-height:1.4;';
+    warn.textContent = 'The robot must stay powered on and online with the cloud throughout. Do not power-cycle until the upgrade reports completion. The robot will reboot at the end.';
+    wrap.appendChild(warn);
+
+    const startBtn = document.createElement('button');
+    startBtn.className = 'acct-btn acct-btn-primary';
+    startBtn.textContent = family === 'G1' ? 'Start Download' : 'Start Upgrade';
+    startBtn.style.marginRight = '8px';
+
+    const installBtn = document.createElement('button');
+    installBtn.className = 'acct-btn acct-btn-primary';
+    installBtn.textContent = 'Install on Robot';
+    installBtn.style.cssText = 'margin-right:8px;display:none;';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'acct-btn';
+    cancelBtn.style.cssText = 'background:#2a2d35;color:#ccc;display:none;';
+    cancelBtn.textContent = 'Stop Watching';
+
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;';
+    buttons.append(startBtn, installBtn, cancelBtn);
+    wrap.appendChild(buttons);
+
+    // Progress bar (hidden until first non-idle state).
+    const barWrap = document.createElement('div');
+    barWrap.style.cssText = 'display:none;margin-bottom:8px;';
+    const barLabel = document.createElement('div');
+    barLabel.style.cssText = 'font-size:12px;color:#aaa;margin-bottom:4px;display:flex;justify-content:space-between;';
+    const barTrack = document.createElement('div');
+    barTrack.style.cssText = 'height:10px;background:#1a1d23;border-radius:5px;overflow:hidden;border:1px solid #2a2d35;';
+    const barFill = document.createElement('div');
+    barFill.style.cssText = 'height:100%;width:0;background:linear-gradient(90deg,#4fc3f7,#6879e4);transition:width 0.3s ease;';
+    barTrack.appendChild(barFill);
+    barWrap.append(barLabel, barTrack);
+    wrap.appendChild(barWrap);
+
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:12px;line-height:1.4;';
+    wrap.appendChild(status);
+
+    const setStatus = (text: string, color: string): void => {
+      status.style.color = color;
+      status.textContent = text;
+    };
+
+    // Single controller per UI mount. Cancelled when device-detail is
+    // re-rendered (back / switchTab) — the cloud-side job keeps running.
+    let ctrl: OtaController | null = null;
+
+    const newController = (): OtaController => {
+      const c = new OtaController(sn, family, fw);
+      c.subscribe((s) => render(s));
+      return c;
+    };
+
+    const render = (s: OtaState): void => {
+      // Phase → button visibility map.
+      switch (s.phase) {
+        case 'idle':
+          startBtn.disabled = false;
+          startBtn.style.display = '';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          break;
+        case 'starting':
+          startBtn.disabled = true;
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          setStatus('Starting…', '#888');
+          break;
+        case 'downloading':
+          startBtn.style.display = 'none';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = '';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>${family === 'G1' ? 'Downloading to robot' : 'Cloud → Robot'}</span><span>${Math.round(s.progressPct)}%</span>`;
+          barFill.style.width = `${s.progressPct}%`;
+          setStatus(`current=${s.current} / total=${s.total}`, '#666');
+          break;
+        case 'awaiting-install':
+          startBtn.style.display = 'none';
+          installBtn.style.display = '';
+          installBtn.disabled = false;
+          cancelBtn.style.display = '';
+          barWrap.style.display = 'none';
+          setStatus('Download complete. Tap Install to apply on the robot.', '#66bb6a');
+          break;
+        case 'installing':
+          startBtn.style.display = 'none';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = '';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>Installing on robot</span><span>${Math.round(s.progressPct)}%</span>`;
+          barFill.style.width = `${s.progressPct}%`;
+          setStatus(`current=${s.current} / total=${s.total}`, '#666');
+          break;
+        case 'completed':
+          startBtn.disabled = true;
+          startBtn.style.display = '';
+          startBtn.textContent = 'Upgrade Complete';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = '';
+          barLabel.innerHTML = `<span>Done</span><span>100%</span>`;
+          barFill.style.width = '100%';
+          setStatus('Upgrade complete. The robot is rebooting and will reconnect shortly.', '#66bb6a');
+          break;
+        case 'failed':
+          startBtn.disabled = false;
+          startBtn.style.display = '';
+          startBtn.textContent = family === 'G1' ? 'Retry Download' : 'Retry Upgrade';
+          installBtn.style.display = 'none';
+          cancelBtn.style.display = 'none';
+          barWrap.style.display = 'none';
+          setStatus(s.message || 'Upgrade failed.', '#e57373');
+          break;
+      }
+    };
+
+    startBtn.addEventListener('click', async () => {
+      // Spin up a fresh controller — the previous one (if any) is fully
+      // resolved by this point (completed / failed / cancelled).
+      ctrl?.cancel();
+      ctrl = newController();
+      try {
+        await ctrl.start();
+      } catch (e) {
+        setStatus(`Failed to start: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+      }
+    });
+
+    installBtn.addEventListener('click', async () => {
+      if (!ctrl) return;
+      installBtn.disabled = true;
+      try {
+        await ctrl.startInstall();
+      } catch (e) {
+        setStatus(`Install failed: ${e instanceof Error ? e.message : String(e)}`, '#e57373');
+        installBtn.disabled = false;
+      }
+    });
+
+    cancelBtn.addEventListener('click', () => {
+      ctrl?.cancel();
+      ctrl = null;
+      // Reset to idle so the user can start over (cloud job keeps running
+      // server-side; "Stop Watching" just severs the local poll).
+      render({ phase: 'idle', progressPct: 0, current: 0, total: 0 });
+      startBtn.textContent = family === 'G1' ? 'Start Download' : 'Start Upgrade';
+      setStatus('Stopped watching. The cloud job (if any) keeps running on the robot.', '#888');
+    });
+
+    // Resume check — if the cloud reports an active task for this SN, hook
+    // the controller into it so back-out + return doesn't lose progress.
+    void cloudApi.getCurrentUpgradeTask(sn).then((updateId) => {
+      if (!updateId) return;
+      ctrl = newController();
+      ctrl.attach(updateId);
+      setStatus(`Resumed in-flight upgrade (updateId=${updateId})`, '#888');
+    });
+
+    return wrap;
+  }
+
   private infoRow(parent: HTMLElement, label: string, value: string, mono = false, color = ''): void {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;padding:3px 0;font-size:13px;align-items:center;';
+    row.className = 'acct-info-row';
     const labelSpan = document.createElement('span');
-    labelSpan.style.cssText = 'color:#888;min-width:80px;flex-shrink:0;';
+    labelSpan.className = 'acct-info-label';
     labelSpan.textContent = label;
     row.appendChild(labelSpan);
 
     const valueSpan = document.createElement('span');
-    valueSpan.style.cssText = `color:${color || '#e0e0e0'};${mono ? 'font-family:monospace;font-size:12px;' : ''}word-break:break-all;user-select:text;cursor:text;flex:1;`;
+    valueSpan.className = `acct-info-value${mono ? ' acct-info-mono' : ''}`;
+    if (color) valueSpan.style.color = color;
     valueSpan.textContent = value || '-';
     row.appendChild(valueSpan);
 
     // Copy button for mono values (SN, IP, keys, etc.)
     if (mono && value && value !== '-') {
-      const copyBtn = document.createElement('button');
-      copyBtn.style.cssText = 'background:none;border:none;cursor:pointer;padding:2px 4px;color:#555;font-size:11px;flex-shrink:0;';
-      copyBtn.textContent = '📋';
-      copyBtn.title = 'Copy to clipboard';
-      copyBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(value).then(() => {
-          copyBtn.textContent = '✓';
-          copyBtn.style.color = '#66bb6a';
-          setTimeout(() => { copyBtn.textContent = '📋'; copyBtn.style.color = '#555'; }, 1500);
-        });
-      });
-      row.appendChild(copyBtn);
+      row.appendChild(makeCopyButton(value));
     }
 
     parent.appendChild(row);
@@ -972,7 +1620,7 @@ export class AccountPage {
     wrapper.appendChild(lbl);
     const input = document.createElement('input');
     input.type = inputType || type;
-    input.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:14px;';
+    input.className = 'acct-input';
     wrapper.appendChild(input);
     return { wrapper, input };
   }
@@ -989,6 +1637,136 @@ export class AccountPage {
     const el = document.createElement('span');
     el.textContent = s;
     return el.innerHTML;
+  }
+
+  /**
+   * Decode a JWT's payload (the middle base64url-encoded JSON segment).
+   * Returns null when the input isn't a 3-part JWT or fails to parse —
+   * Unitree currently mints standard HS256 JWTs, but defensive nulls
+   * keep the UI honest if that ever changes. */
+  private parseJwt(token: string): Record<string, unknown> | null {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    try {
+      // base64url → base64 (replace -/_ with +/, pad with =)
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const json = atob(b64);
+      const obj = JSON.parse(json);
+      return (obj && typeof obj === 'object') ? obj as Record<string, unknown> : null;
+    } catch { return null; }
+  }
+
+  /** Build a token row: one-line chip + always-visible parsed claims below.
+   *  The chip itself is selectable so the user can grab the raw token. */
+  private buildTokenRow(label: string, token: string): HTMLElement {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:12px;';
+
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'font-size:11px;color:#666;flex-shrink:0;';
+    lbl.textContent = label;
+    row.appendChild(lbl);
+
+    const chip = document.createElement('span');
+    chip.style.cssText = 'flex:1;min-width:0;font-family:monospace;font-size:11px;color:#aaa;background:#0a0c10;border:1px solid #1f2229;border-radius:4px;padding:4px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text;-webkit-user-select:text;';
+    chip.textContent = token;
+    chip.title = token;
+    row.appendChild(chip);
+
+    row.appendChild(this.copyBtn(token));
+    wrap.appendChild(row);
+
+    // Always-visible parsed claims block below the chip.
+    const claims = document.createElement('div');
+    claims.style.cssText = 'margin-top:8px;padding:8px 10px;background:#08090c;border:1px solid #1a1d23;border-radius:4px;font-family:monospace;font-size:11px;line-height:1.6;color:#ccc;';
+    const payload = this.parseJwt(token);
+    if (!payload) {
+      claims.style.fontFamily = 'system-ui,-apple-system,sans-serif';
+      claims.style.color = '#888';
+      claims.textContent = 'Not a JWT — raw token shown above.';
+    } else {
+      const now = Math.floor(Date.now() / 1000);
+      const lines: string[] = [];
+      // Render known time fields as ISO + relative ("in 23h", "12m ago");
+      // pass everything else through verbatim so new claims show up too.
+      for (const [k, v] of Object.entries(payload)) {
+        let display: string;
+        if ((k === 'exp' || k === 'iat' || k === 'nbf') && typeof v === 'number') {
+          const iso = new Date(v * 1000).toISOString().replace('T', ' ').slice(0, 19);
+          const delta = v - now;
+          const rel = delta >= 0
+            ? `in ${this.formatDuration(delta)}`
+            : `${this.formatDuration(-delta)} ago`;
+          const isExpired = k === 'exp' && delta < 0;
+          const color = isExpired ? '#ef5350' : (k === 'exp' ? '#66bb6a' : '#888');
+          display = `<span style="color:${color}">${iso} UTC (${rel})</span>`;
+        } else if (typeof v === 'object') {
+          display = `<span style="color:#aaa">${this.esc(JSON.stringify(v))}</span>`;
+        } else {
+          display = `<span style="color:#aaa">${this.esc(String(v))}</span>`;
+        }
+        lines.push(`<div><span style="color:#6879e4;">${this.esc(k)}</span>: ${display}</div>`);
+      }
+      claims.innerHTML = lines.join('') || '<div style="color:#888;">Empty payload</div>';
+    }
+    wrap.appendChild(claims);
+
+    return wrap;
+  }
+
+  /** Format a positive number of seconds as "1d 3h", "23m", "45s". */
+  private formatDuration(sec: number): string {
+    sec = Math.floor(sec);
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${m}m`;
+    const h = Math.floor(m / 60);
+    const mr = m % 60;
+    if (h < 24) return mr ? `${h}h ${mr}m` : `${h}h`;
+    const d = Math.floor(h / 24);
+    const hr = h % 24;
+    return hr ? `${d}d ${hr}h` : `${d}d`;
+  }
+
+  /**
+   * Render an avatar with a robust fallback. Some Unitree CDNs (notably
+   * fitness-static.unitree.com, which hosts the default avatar set
+   * /css/images/avatar/default/N.png) reject browser requests with 403 +
+   * ORB outside the mobile-app referer allowlist. Swap in a generated
+   * initial-circle so the UI doesn't render a broken image.
+   */
+  private createAvatarImg(url: string | undefined, size: number, displayName: string, rounded: boolean): HTMLImageElement {
+    const img = document.createElement('img');
+    const radius = rounded ? '50%' : '8px';
+    const border = rounded ? 'border:2px solid var(--avatar-border,#2a2d35);' : '';
+    img.style.cssText = `width:${size}px;height:${size}px;border-radius:${radius};object-fit:cover;${border}`;
+    img.alt = displayName;
+    // fitness-static.unitree.com's WAF returns 403 when the Referer header
+    // names an origin outside the mobile-app allowlist. Direct address-bar
+    // navigation works because no Referer is sent — replicate that here so
+    // the actual avatar loads instead of the SVG fallback.
+    img.referrerPolicy = 'no-referrer';
+    const fallback = this.makeInitialAvatarDataUrl(size, displayName);
+    img.addEventListener('error', () => {
+      if (img.src !== fallback) img.src = fallback;
+    }, { once: true });
+    img.src = url || fallback;
+    return img;
+  }
+
+  private makeInitialAvatarDataUrl(size: number, name: string): string {
+    const trimmed = name.trim();
+    const initial = (trimmed[0] || '?').toUpperCase();
+    let hue = 0;
+    for (const ch of trimmed) hue = (hue * 31 + ch.charCodeAt(0)) >>> 0;
+    hue = hue % 360;
+    const fontSize = Math.round(size * 0.45);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="${size}" height="${size}" rx="${size / 2}" fill="hsl(${hue},45%,42%)"/><text x="50%" y="55%" text-anchor="middle" dominant-baseline="central" font-family="system-ui,-apple-system,sans-serif" font-size="${fontSize}" font-weight="600" fill="white">${this.esc(initial)}</text></svg>`;
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
   }
 
   destroy(): void { this.container.remove(); }

@@ -5,10 +5,36 @@
  */
 
 import forge from 'node-forge';
+import { setCachedAesKey } from './aes-key-derive';
 
 const API_BASE = '/unitree-api';
 const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
 const SIGN_SECRET = 'XyvkwK45hp5PHfA8';
+
+// Robot families this UI is tested against. The Unitree cloud server keys
+// some responses (tutorials, firmware lists, announcements) off the AppName
+// header — Go2 has its own dedicated mobile app (AppName='Go2'); G1 ships
+// in the Unitree Explorer app which identifies as 'B2' internally
+// (RetrofitFactory.java:139 in the decompiled APK). Other Explorer-line
+// models (R1 / B2 / H1) presumably share AppName='B2' but aren't on hand
+// to verify, so the choice is intentionally limited to Go2 + G1.
+export type RobotFamily = 'Go2' | 'G1';
+export const ROBOT_FAMILIES: ReadonlyArray<RobotFamily> = ['Go2', 'G1'];
+const APP_NAME: Record<RobotFamily, string> = {
+  Go2: 'Go2',
+  G1:  'B2',
+};
+/** Human-readable label for the family pill. */
+export const FAMILY_LABEL: Record<RobotFamily, string> = {
+  Go2: 'Go2',
+  G1:  'G1',
+};
+
+// Region selects which Unitree cloud endpoint the Vite proxy forwards to.
+// Sent as the `X-Unitree-Region` header; the proxy maps it to a hostname and
+// strips the header before forwarding upstream.
+export type Region = 'global' | 'cn';
+export const REGIONS: ReadonlyArray<Region> = ['global', 'cn'];
 
 // Unitree shipped response-body encryption in recent app versions (v1.12+).
 // Some endpoints (tutorial/list, app/version, app/version/intro/list) now
@@ -83,7 +109,12 @@ export function getLastResponseMeta(): LastResponseMeta { return { ..._lastRespo
  *  a few (notably GET /app/version) key their response off this. */
 export type Platform = 'Android' | 'iOS';
 
-function buildHeaders(token = '', platform: Platform = 'Android'): Record<string, string> {
+function buildHeaders(
+  token = '',
+  platform: Platform = 'Android',
+  family: RobotFamily = 'Go2',
+  region: Region = 'global',
+): Record<string, string> {
   const ts = Date.now().toString();
   const nonce = crypto.randomUUID?.()?.replace(/-/g, '') || md5(ts + Math.random());
   const sign = md5(`${SIGN_SECRET}${ts}${nonce}`);
@@ -96,15 +127,19 @@ function buildHeaders(token = '', platform: Platform = 'Android'): Record<string
     'AppTimestamp': ts,
     'AppNonce': nonce,
     'AppSign': sign,
-    'Channel': 'UMENG_CHANNEL',
+    'Channel': 'release',
     'Token': token,
-    'AppName': 'Go2',
+    'AppName': APP_NAME[family],
+    'X-Unitree-Region': region,
   };
 
+  // DeviceId fields are pipe-joined to match the Unitree Explorer / Go2 apps —
+  // the upstream API doesn't validate the value but matching the format keeps
+  // server-side analytics clean.
   if (platform === 'iOS') {
     return {
       ...common,
-      'DeviceId': 'Apple/iPhone/iPhone15,3/17.6.1/34',
+      'DeviceId': 'Apple|iPhone|iPhone15,3|iPhone15,3|17.6.1|34',
       'DevicePlatform': 'iOS',
       'DeviceModel': 'iPhone15,3',
       'SystemVersion': '17.6.1',
@@ -113,7 +148,7 @@ function buildHeaders(token = '', platform: Platform = 'Android'): Record<string
 
   return {
     ...common,
-    'DeviceId': 'Samsung/Samsung/SM-S931B/s24/14/34',
+    'DeviceId': 'Samsung|Samsung|SM-S931B|s24|14|34',
     'DevicePlatform': 'Android',
     'DeviceModel': 'SM-S931B',
     'SystemVersion': '34',
@@ -153,6 +188,24 @@ export interface FirmwareInfo {
   description: string;
   download: string;
   md5: string;
+  /** Optional: present in v1/firmware/package/upgrade/list responses.
+   *  "1" = the cloud already pushed this package to the robot in a
+   *  previous session; the install can be triggered without redownload
+   *  (G1/Explorer two-step flow). */
+  alreadyDownload?: string;
+  /** Optional: human-readable warning text (e.g. low-battery caveat). */
+  note?: string;
+  /** Optional: package size in bytes. */
+  storageLimit?: number;
+}
+
+/** Progress payload from `firmware/upgrade/progress`.
+ *  - `code != 0` is treated as device-offline (matches APK). */
+export interface UpgradeProgress {
+  code: number;
+  current: number;
+  total: number;
+  message: string;
 }
 
 export interface AppVersionInfo {
@@ -195,11 +248,89 @@ class UnitreeCloudError extends Error {
   }
 }
 
+function readLocalEnum<T extends string>(key: string, allowed: ReadonlyArray<T>, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return (v && (allowed as ReadonlyArray<string>).includes(v)) ? (v as T) : fallback;
+  } catch { return fallback; }
+}
+
+function readPersistedFamily(): RobotFamily {
+  try {
+    const v = localStorage.getItem('unitree_family');
+    if (v === 'Go2' || v === 'G1') return v;
+    // Migrate legacy values written before the family list was simplified
+    // (anything other than Go2 maps onto the Explorer-line, now keyed as G1).
+    if (v === 'Explorer' || v === 'B2' || v === 'R1' || v === 'H1' || v === 'H2') {
+      localStorage.setItem('unitree_family', 'G1');
+      return 'G1';
+    }
+  } catch { /* ignore */ }
+  return 'Go2';
+}
+
+/** Load the connect-side family preference. Independent of the account
+ *  family — the user picks this on the Connect screen to drive the
+ *  connection UI / control view. Falls back to 'Go2' so first-run users
+ *  get a sensible default before they touch the picker. */
+function readPersistedConnectFamily(): RobotFamily {
+  try {
+    const v = localStorage.getItem('unitree_connect_family');
+    if (v === 'Go2' || v === 'G1') return v;
+  } catch { /* ignore */ }
+  return 'Go2';
+}
+
 export class UnitreeCloudAPI {
   private token = '';
   private refreshToken = '';
   private _lastRefreshedAt: number | null = null;
   user: UserInfo | null = null;
+
+  // Persisted in localStorage. Two independent family slots:
+  //   _family        — the *account* family. Picked on the Account-login
+  //                    screen and used for cloud-API request signing
+  //                    (AppName header). Different families = different
+  //                    Unitree apps / different account namespaces.
+  //   _connectFamily — the *connect* family. Picked on the Connect screen
+  //                    to drive the connection UI + control view. Lets the
+  //                    user be logged in as one family but visually pick
+  //                    a different connection target.
+  private _family: RobotFamily = readPersistedFamily();
+  private _connectFamily: RobotFamily = readPersistedConnectFamily();
+  private _region: Region = readLocalEnum<Region>('unitree_region', REGIONS, 'global');
+
+  // Subscribers fire on any auth-state mutation (login, logout, token set,
+  // session load, refresh). Lets the persistent status icon track login
+  // state without polling.
+  private authListeners = new Set<() => void>();
+  onAuthChange(cb: () => void): () => void {
+    this.authListeners.add(cb);
+    return () => this.authListeners.delete(cb);
+  }
+  private emitAuthChange(): void {
+    for (const cb of this.authListeners) {
+      try { cb(); } catch { /* ignore */ }
+    }
+  }
+
+  get family(): RobotFamily { return this._family; }
+  setFamily(f: RobotFamily): void {
+    this._family = f;
+    try { localStorage.setItem('unitree_family', f); } catch { /* ignore */ }
+  }
+
+  get connectFamily(): RobotFamily { return this._connectFamily; }
+  setConnectFamily(f: RobotFamily): void {
+    this._connectFamily = f;
+    try { localStorage.setItem('unitree_connect_family', f); } catch { /* ignore */ }
+  }
+
+  get region(): Region { return this._region; }
+  setRegion(r: Region): void {
+    this._region = r;
+    try { localStorage.setItem('unitree_region', r); } catch { /* ignore */ }
+  }
 
   get isLoggedIn(): boolean {
     return !!this.token;
@@ -215,8 +346,11 @@ export class UnitreeCloudAPI {
   }
 
   setAccessToken(token: string): void {
+    const wasLoggedIn = !!this.token;
     this.token = token;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
+    if (wasLoggedIn !== !!this.token) this.emitAuthChange();
+    else if (this.token) this.emitAuthChange();
   }
 
   // ─── Session persistence ─────────────────────────────────────────
@@ -241,6 +375,7 @@ export class UnitreeCloudAPI {
       this.refreshToken = data.refreshToken || '';
       this.user = data.user || null;
       this._lastRefreshedAt = typeof data.lastRefreshedAt === 'number' ? data.lastRefreshedAt : null;
+      if (this.token) this.emitAuthChange();
       return !!this.token;
     } catch {
       return false;
@@ -248,11 +383,13 @@ export class UnitreeCloudAPI {
   }
 
   clearSession(): void {
+    const wasLoggedIn = !!this.token;
     this.token = '';
     this.refreshToken = '';
     this.user = null;
     this._lastRefreshedAt = null;
     localStorage.removeItem('unitree_session');
+    if (wasLoggedIn) this.emitAuthChange();
   }
 
   /** Proactively refresh the access token if it's near/past expiry.
@@ -282,7 +419,7 @@ export class UnitreeCloudAPI {
 
     const resp = await fetch(url, {
       method,
-      headers: buildHeaders(this.token, platform),
+      headers: buildHeaders(this.token, platform, this._family, this._region),
       body: method === 'POST' && params ? new URLSearchParams(params) : undefined,
       signal: AbortSignal.timeout(15000),
     });
@@ -387,6 +524,7 @@ export class UnitreeCloudAPI {
     this.user = resp.data!.user || null;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
+    this.emitAuthChange();
     return this.user!;
   }
 
@@ -394,9 +532,37 @@ export class UnitreeCloudAPI {
     await this.post('captcha/email', { email });
   }
 
-  async registerEmail(email: string, password: string, captcha: string): Promise<void> {
+  /** Fetch a fresh image-captcha session for registration.
+   *  `code` is an opaque session token the server uses to look up which
+   *  puzzle was issued; `svg` is the raw SVG markup of the 4-character
+   *  distorted-text image, ready to inject into a container's innerHTML.
+   *  See APK LoginApi.getImageCode() / RegisterFragment.onCodeGetResult(). */
+  async getImageCaptcha(): Promise<{ code: string; svg: string }> {
+    return this.get<{ code: string; svg: string }>('captcha');
+  }
+
+  /** Email registration flow. Matches the official `register/email`
+   *  contract from the decompiled APK: the server expects both halves of
+   *  the captcha pair (`code` = session id from getImageCaptcha; `captcha`
+   *  = the 4-char string the user typed reading the SVG) plus three empty
+   *  company fields (always blank for personal accounts). On success the
+   *  response carries an access+refresh token — the user is logged in
+   *  immediately, no separate login call. */
+  async registerEmail(
+    email: string,
+    password: string,
+    captchaCode: string,
+    captchaSolution: string,
+  ): Promise<UserInfo> {
     const resp = await this.request<{ accessToken: string; refreshToken: string; user: UserInfo }>('POST', 'register/email', {
-      email, password: md5(password), captcha, region: 'US',
+      email,
+      password: md5(password),
+      code: captchaCode,
+      captcha: captchaSolution,
+      companyName: '',
+      companyContact: '',
+      companyAccountRemark: '',
+      region: '',
     });
     if (resp.code !== 100) throw new UnitreeCloudError(resp.code, resp.errorMsg || 'Registration failed');
     this.token = resp.data!.accessToken;
@@ -404,6 +570,8 @@ export class UnitreeCloudAPI {
     this.user = resp.data!.user || null;
     this._lastRefreshedAt = Math.floor(Date.now() / 1000);
     this.saveSession();
+    this.emitAuthChange();
+    return this.user!;
   }
 
   async resetPassword(email: string, captcha: string, newPassword: string): Promise<void> {
@@ -418,11 +586,23 @@ export class UnitreeCloudAPI {
     this.clearSession();
   }
 
+  /** Permanently destroy the authenticated user's Unitree account.
+   *  Mirrors the official APK: bare `POST user/destroy` with no body —
+   *  the server identifies the account from the bearer token alone.
+   *  No password re-entry, no captcha, no soft-delete window. After a
+   *  100/true response the session is cleared locally too.
+   *  See LoginApi.deleteUser() in the decompiled G1 1.9.3 APK. */
+  async deleteAccount(): Promise<void> {
+    await this.post('user/destroy');
+    this.clearSession();
+  }
+
   // ─── User ────────────────────────────────────────────────────────
 
   async getUserInfo(): Promise<UserInfo> {
     this.user = await this.get<UserInfo>('user/info');
     this.saveSession();
+    this.emitAuthChange();
     return this.user;
   }
 
@@ -433,19 +613,48 @@ export class UnitreeCloudAPI {
   // ─── Devices ─────────────────────────────────────────────────────
 
   async listDevices(): Promise<RobotDevice[]> {
-    return (await this.get<RobotDevice[]>('device/bind/list')) || [];
+    const devices = (await this.get<RobotDevice[]>('device/bind/list')) || [];
+    // Prime the local AES-128 key cache from the cloud-stored keys so the
+    // WebRTC data2=3 path can pick them up without prompting the user.
+    for (const d of devices) {
+      if (d.sn && d.key && d.key.trim()) setCachedAesKey(d.sn, d.key.trim());
+    }
+    return devices;
   }
 
-  async bindDevice(sn: string, alias = ''): Promise<void> {
-    await this.post('device/bind', { sn, alias, mac: '', remark: '' });
+  /**
+   * `device/bind` — initial bind for a new robot. The `sn` field carries the
+   * RSA-encrypted SN (caller wraps it via `rsaEncryptSn`); the other fields
+   * are plain. `extData` is the 344-char base64 RSA blob from the BT popup;
+   * the cloud uses it on this initial-bind path to populate `dev.key` (the
+   * 16-byte AES-128 key for `data2=3`). Subsequent `device/bind/list` calls
+   * return `dev.key` directly.
+   */
+  async bindDevice(snEncrypted: string, mac: string, alias: string, remark: string, extData: string): Promise<void> {
+    await this.post('device/bind', {
+      sn: snEncrypted,
+      mac,
+      alias,
+      remark,
+      extData,
+    });
   }
 
-  async unbindDevice(sn: string): Promise<void> {
-    await this.post('device/unbind', { sn });
+  /**
+   * `device/unbind` — same RSA-encrypted-SN convention as bind. Caller wraps
+   * the SN via `rsaEncryptSn` before calling.
+   */
+  async unbindDevice(snEncrypted: string): Promise<void> {
+    await this.post('device/unbind', { sn: snEncrypted });
   }
 
   async getDeviceOnlineStatus(sn: string): Promise<boolean> {
     return !!(await this.get<boolean>('device/online/status', { sn }));
+  }
+
+  /** Cloud-side RSA public key used to wrap the SN for bind / unbind. */
+  async getPubKey(): Promise<string> {
+    return (await this.get<string>('system/pubKey')) || '';
   }
 
   async updateDevice(sn: string, alias: string, remark = ''): Promise<void> {
@@ -489,8 +698,59 @@ export class UnitreeCloudAPI {
   }
 
   getFirmwareDownloadUrl(downloadPath: string): string {
-    return downloadPath.startsWith('http') ? downloadPath : `${FIRMWARE_CDN}${downloadPath}`;
+    if (downloadPath.startsWith('http')) return downloadPath;
+    // The API returns `download` as an unencoded path (e.g. ".../package_..._G1_Edu+_...upk")
+    // while the parallel `packageName` field is URL-encoded ("..._G1_Edu%2B_..."). The CDN
+    // routes on the encoded form — fetching the raw `+` returns 404 because `+` decodes to
+    // a space in URL parsers. Percent-encode each path segment (preserving the slashes).
+    const encoded = downloadPath.split('/').map(s => encodeURIComponent(s)).join('/');
+    return `${FIRMWARE_CDN}${encoded}`;
   }
+
+  // ─── OTA: server-orchestrated firmware upgrade ───────────────────
+  // The cloud handles the heavy lifting — these endpoints just kick off
+  // the job (or resume a previous one) and let the app poll progress.
+  // Two paths exist (mirrors the APK):
+  //   * Go2 / quadruped:   single-shot `firmware/package/upgrade`
+  //   * G1 / Explorer:    two-step `firmware/package/download` then
+  //                       `firmware/package/install` (with a 500/1000
+  //                       progress boundary between phases).
+
+  /** Single-shot upgrade kick (Go2). Returns the updateId to poll on. */
+  async startFirmwareUpgrade(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/upgrade', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Two-step phase 1 (G1/Explorer): cloud pushes the package to the robot. */
+  async startFirmwareDownload(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/download', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Two-step phase 2 (G1/Explorer): robot applies the previously-downloaded package. */
+  async startFirmwareInstall(sn: string, firmwareId: string): Promise<string> {
+    const r = await this.post<{ updateId: string }>('firmware/package/install', { sn, firmwareId });
+    return r.updateId;
+  }
+
+  /** Poll for OTA progress. `code != 0` means the cloud lost the device. */
+  async getUpgradeProgress(updateId: string): Promise<UpgradeProgress> {
+    return this.get<UpgradeProgress>('firmware/upgrade/progress', { updateId });
+  }
+
+  /** Resume anchor: returns the active updateId (or '' if nothing is running)
+   *  for the given robot. Lets the UI re-attach to an in-flight job after
+   *  app restart / reconnect. */
+  async getCurrentUpgradeTask(sn: string): Promise<string> {
+    try {
+      const r = await this.post<string>('firmware/upgrade/task/current', { sn });
+      return r || '';
+    } catch { return ''; }
+  }
+
+  // (device/online/status liveness probe is already exposed above as
+  // `getDeviceOnlineStatus(sn)`; the OTA controller uses it directly.)
 
   // ─── App info ────────────────────────────────────────────────────
 
@@ -506,20 +766,43 @@ export class UnitreeCloudAPI {
     } catch { return null; }
   }
 
-  async getTutorials(): Promise<TutorialGroup[]> {
-    // Try v2 (grouped), fall back to v1 (flat)
-    try {
-      const resp = await this.request<{ groupList?: Array<{ name: string; tutorialList: unknown[] }> }>('GET', 'v2/tutorial/list', { appName: 'Go2' });
-      if (resp.code === 100 && resp.data?.groupList) {
-        return resp.data.groupList.map(g => ({
-          name: g.name,
-          tutorials: g.tutorialList as TutorialGroup['tutorials'],
-        }));
+  /**
+   * Fetch tutorial videos. The cloud filters by (series, model) tuple —
+   * decompiled from the Explore APK at
+   *   com/unitree/godog/data/repository/AppRepository.getTutorialList()
+   * which calls GET tutorial/list?appName=<currentDog.series>&type=<currentDog.model>.
+   * Empty model returns the generic legacy set, so G1-specific tutorials
+   * only show up when `type` is the actual device model (e.g. "day" for
+   * G1 EDU).
+   *
+   * Caller can pass an explicit `model`; otherwise we look up the user's
+   * first bound device matching the account family and use its model. As
+   * a last-resort fallback for G1 (no device bound yet) we default to
+   * "day", which covers the common G1 EDU variant.
+   */
+  async getTutorials(model?: string): Promise<TutorialGroup[]> {
+    // appName here is the device *series* (the value the cloud filters on),
+    // NOT the AppName HTTP header (which is "B2" for the whole Explorer
+    // line). The APK passes currentDog.series directly — for G1 robots
+    // that's literally "G1", and for Go2 it's "Go2".
+    let appName: string = this._family;
+    let type = model ?? '';
+    if (model === undefined && this._family === 'G1') {
+      try {
+        const devs = await this.listDevices();
+        const g1 = devs.find(d => d.series === 'G1');
+        if (g1) {
+          appName = g1.series;
+          type = g1.model || 'day';
+        } else {
+          type = 'day';
+        }
+      } catch {
+        type = 'day';
       }
-    } catch { /* fall through */ }
-
+    }
     try {
-      const flat = await this.get<TutorialGroup['tutorials']>('tutorial/list', { appName: 'Go2' });
+      const flat = await this.get<TutorialGroup['tutorials']>('tutorial/list', { appName, type });
       if (Array.isArray(flat) && flat.length) return [{ name: 'Tutorials', tutorials: flat }];
     } catch { /* ignore */ }
     return [];

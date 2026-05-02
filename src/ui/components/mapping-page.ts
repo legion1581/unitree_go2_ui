@@ -5,6 +5,7 @@ import { putBundle, getBundle, deleteBundle, bytesToBase64, base64ToBytes, bundl
 import { theme } from '../theme';
 import type { BluetoothStatus } from './bt-status-icon';
 import { PipCamera } from './pip-camera';
+import { makeCopyButton } from './copy-button';
 
 const BT_SVG = (color: string): string =>
   `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>`;
@@ -198,7 +199,6 @@ export class MappingPage {
   private wifiIconEl!: HTMLImageElement;
   private btIconWrap!: HTMLElement;
   private themeIconWrap!: HTMLElement;
-  private onBtClick: (() => void) | null = null;
   private unsubTheme: (() => void) | null = null;
   private pipCamera: PipCamera | null = null;
   private locHint!: HTMLElement;
@@ -221,7 +221,6 @@ export class MappingPage {
     onUnsubscribe: (topic: string) => void,
     onRequestFile?: (path: string, cb: (data: string | null) => void) => void,
     onPushFile?: (path: string, b64: string, onProgress?: (frac: number) => void) => Promise<void>,
-    onBtClick?: () => void,
   ) {
     this.onBack = onBack;
     this.publish = onPublish;
@@ -229,7 +228,6 @@ export class MappingPage {
     this.unsubscribe = onUnsubscribe;
     this.requestFile = onRequestFile ?? null;
     this.pushFile = onPushFile ?? null;
-    this.onBtClick = onBtClick ?? null;
 
     this.container = document.createElement('div');
     this.container.className = 'mapping-page';
@@ -287,8 +285,8 @@ export class MappingPage {
     renderTheme(theme().theme);
     this.unsubTheme = theme().onChange((t) => renderTheme(t));
 
-    // BT icon — hover effect + click forwards to the popover toggle.
-    this.btIconWrap.addEventListener('click', () => this.onBtClick?.());
+    // BT icon — passive status indicator (matches the floating one).
+    // BT controls live on the landing-page Bluetooth tile.
 
     this.container.appendChild(header);
 
@@ -894,22 +892,7 @@ export class MappingPage {
       topicHint.className = 'mapping-cmd-hint mapping-log-topic';
       topicHint.textContent = `← ${RTC_TOPIC.USLAM_SERVER_LOG}`;
       header.appendChild(topicHint);
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'mapping-log-copy';
-      copyBtn.textContent = 'Copy';
-      copyBtn.addEventListener('click', async () => {
-        const text = this.logEl?.innerText ?? '';
-        try {
-          await navigator.clipboard.writeText(text);
-          const prev = copyBtn.textContent;
-          copyBtn.textContent = 'Copied';
-          setTimeout(() => { copyBtn.textContent = prev; }, 1200);
-        } catch {
-          copyBtn.textContent = 'Failed';
-          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
-        }
-      });
-      header.appendChild(copyBtn);
+      header.appendChild(makeCopyButton(() => this.logEl?.innerText ?? ''));
       body.appendChild(header);
 
       this.logEl = document.createElement('div');

@@ -10,22 +10,28 @@ import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { MappingPage } from './components/mapping-page';
 import { AccountPage } from './components/account-page';
 import { BtStatusIcon, type BluetoothStatus } from './components/bt-status-icon';
-import { BtPopover } from './components/bt-popover';
+import { BtPage } from './components/bt-page';
 import { ThemeToggle } from './components/theme-toggle';
+import { AccountStatusIcon } from './components/account-status-icon';
 import { btBackend } from '../api/bt-backend';
+import { cloudApi } from '../api/unitree-cloud';
 import { theme } from './theme';
 import { connectLocal } from '../connection/local-connector';
+import { promptAesKey } from './components/aes-key-prompt';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
 import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account';
+type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account' | 'bt';
 
 export class App {
   private root: HTMLElement;
-  private currentScreen: Screen = 'connection';
+  private currentScreen: Screen = 'landing';
+  // True when the user is in Account Manager via the landing screen (not via
+  // the in-connection hub). Drives where the back button returns to.
+  private accountFromLanding = false;
 
   // Connection state (persists across screens)
   private connectionPanel: ConnectionPanel | null = null;
@@ -59,6 +65,7 @@ export class App {
   // Bluetooth status (persistent across screens)
   private btStatusIcon: BtStatusIcon | null = null;
   private themeToggle: ThemeToggle | null = null;
+  private accountStatusIcon: AccountStatusIcon | null = null;
   private btStatus: BluetoothStatus = {
     robotConnected: false, robotAddress: '',
     remoteConnected: false, remoteName: '', remoteAddress: '',
@@ -69,31 +76,30 @@ export class App {
   private relayUnsub: (() => void) | null = null;
   private leftJoystickWrap: HTMLElement | null = null;
   private rightJoystickWrap: HTMLElement | null = null;
-  private btPopover: BtPopover | null = null;
+  private btPage: BtPage | null = null;
+  // True when BT page is reached via the landing tile (vs the hub).
+  // Drives where the back button returns to (mirrors accountFromLanding).
+  private btFromLanding = false;
 
   // Robot state (accumulated from topic messages)
-  private robotState = {
+  private robotState: import('./components/status-page').RobotStatus = {
     batteryPercent: 0,
     batteryCurrent: 0,
     batteryVoltage: 0,
     batteryCycles: 0,
     batteryTemp: 0,
-    motorStates: [] as Array<{ q: number; dq: number; tau: number; temp: number; lost: number }>,
+    motorStates: [],
     networkType: '',
-    footForce: [] as number[],
+    footForce: [],
     imuTemp: 0,
     mode: 0,
     gaitType: 0,
-    position: [0, 0, 0] as number[],
-    velocity: [0, 0, 0] as number[],
-    // Firmware / version info (from bashrunner)
+    position: [0, 0, 0],
+    velocity: [0, 0, 0],
     firmwareVersion: '',
-    // Motion switcher
     motionMode: '',
-    // LiDAR state
-    lidarState: '' as string,
-    // Self-test results
-    selfTestResults: [] as string[],
+    lidarState: '',
+    selfTestResults: [],
   };
 
   constructor(root: HTMLElement) {
@@ -107,10 +113,13 @@ export class App {
     // Persistent theme toggle (sun/moon) next to the BT icon
     this.themeToggle = new ThemeToggle(document.body);
 
+    // Persistent account-status indicator — leftmost of the three icons.
+    // Pure status display: hover for tooltip, no click action.
+    this.accountStatusIcon = new AccountStatusIcon(document.body);
+
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
-    this.btStatusIcon.setClickHandler(() => this.toggleBtPopover());
     this.btStatusIcon.onStatusChange((s) => {
       this.btStatus = s;
       // Update nav-bar BT icon (control view)
@@ -124,29 +133,113 @@ export class App {
       }
     });
 
-    this.showConnectionScreen();
+    // Auto-login: if a token is in localStorage, restore it and refresh
+    // proactively so the persistent account-status icon shows the right
+    // state on first paint of the landing screen. Also prime the local
+    // AES-128 key cache from device/bind/list so WebRTC connect can
+    // skip the manual key prompt later.
+    if (cloudApi.loadSession()) {
+      void cloudApi.ensureFreshToken().then(async (ok) => {
+        if (!ok) return;
+        if (!cloudApi.user) {
+          try { await cloudApi.getUserInfo(); } catch { /* ignore */ }
+        }
+        try { await cloudApi.listDevices(); } catch { /* ignore */ }
+      });
+    }
+
+    this.showLandingScreen();
   }
 
   // ── Screen Navigation ──
 
+  private showLandingScreen(): void {
+    this.currentScreen = 'landing';
+    this.accountFromLanding = false;
+    this.btFromLanding = false;
+    this.root.innerHTML = '';
+    this.root.className = 'app-root landing-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'landing-container';
+
+    const title = document.createElement('h2');
+    title.className = 'landing-title';
+    title.textContent = 'Unitree UI';
+    wrap.appendChild(title);
+
+    const tiles = document.createElement('div');
+    tiles.className = 'landing-tiles';
+
+    const connectBtn = document.createElement('button');
+    connectBtn.className = 'hub-btn hub-btn-primary';
+    connectBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg><span>Connect</span>`;
+    connectBtn.addEventListener('click', () => this.showConnectionScreen());
+    tiles.appendChild(connectBtn);
+
+    const acctBtn = document.createElement('button');
+    acctBtn.className = 'hub-btn hub-btn-secondary';
+    acctBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Manager</span>`;
+    acctBtn.addEventListener('click', () => {
+      this.accountFromLanding = true;
+      this.showAccountScreen();
+    });
+    tiles.appendChild(acctBtn);
+
+    const btBtn = document.createElement('button');
+    btBtn.className = 'hub-btn hub-btn-secondary';
+    btBtn.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/></svg><span>Bluetooth</span>`;
+    btBtn.addEventListener('click', () => {
+      this.btFromLanding = true;
+      this.showBtScreen();
+    });
+    tiles.appendChild(btBtn);
+
+    wrap.appendChild(tiles);
+    this.root.appendChild(wrap);
+  }
+
   private showConnectionScreen(): void {
     this.currentScreen = 'connection';
     this.root.innerHTML = '';
-    this.root.className = 'app-root connection-screen';
+    this.applyConnectionFamilyClass();
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
     this.root.appendChild(modal);
 
-    this.connectionPanel = new ConnectionPanel(modal, (config) => this.connect(config));
+    this.connectionPanel = new ConnectionPanel(
+      modal,
+      (config) => this.connect(config),
+      () => this.showLandingScreen(),
+      () => {
+        this.accountFromLanding = true;
+        this.showAccountScreen();
+      },
+      () => this.applyConnectionFamilyClass(),
+    );
   }
+
+  /** Set connection-screen background art to match the currently selected
+   *  family. Called on screen entry and whenever the user toggles the
+   *  Family pill on the cloud-prefs row. */
+  private applyConnectionFamilyClass(): void {
+    if (this.currentScreen !== 'connection') return;
+    const familyMod = cloudApi.connectFamily === 'G1' ? 'connection-family-g1' : 'connection-family-go2';
+    this.root.className = `app-root connection-screen ${familyMod}`;
+  }
+
 
   private showHubScreen(): void {
     this.currentScreen = 'hub';
     this.root.innerHTML = '';
     this.root.className = 'app-root hub-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -164,20 +257,9 @@ export class App {
     info.className = 'hub-info';
     hub.appendChild(info);
 
-    const cachedDevicesForHeader = (() => {
-      try {
-        const c = localStorage.getItem('unitree_devices_cache');
-        return c ? JSON.parse(c) as Array<{ sn: string; alias: string }> : [];
-      } catch { return []; }
-    })();
-
     const renderHeader = (): void => {
       const sn = this.connectionConfig?.serialNumber || '';
-      let robotName = isConnected ? 'Go2 Connected' : 'Go2 Dashboard';
-      if (sn) {
-        const dev = cachedDevicesForHeader.find(d => d.sn === sn);
-        robotName = dev?.alias || sn;
-      }
+      const robotName = sn ? sn : (isConnected ? 'Connected' : 'Dashboard');
       title.textContent = robotName;
 
       const infoItems: string[] = [];
@@ -190,82 +272,14 @@ export class App {
     };
     renderHeader();
 
-    // ── Remote mode: robot picker + WebRTC connect/disconnect row ──
-    if (isRemoteMode) {
-      const remoteSection = document.createElement('div');
-      remoteSection.style.cssText = 'margin:16px 0;padding:12px 16px;background:rgba(26,29,35,0.5);border-radius:10px;border:1px solid #1f2229;';
-
-      // Robot select (only if multiple robots)
-      let cachedDevices: Array<{ sn: string; alias: string; series: string; connIp: string }> = [];
-      try {
-        const c = localStorage.getItem('unitree_devices_cache');
-        if (c) cachedDevices = JSON.parse(c);
-      } catch { /* ignore */ }
-
-      if (cachedDevices.length > 1) {
-        const robotSel = document.createElement('select');
-        robotSel.style.cssText = 'width:100%;padding:8px 10px;background:#0a0c10;border:1px solid #2a2d35;color:#e0e0e0;border-radius:6px;font-size:13px;margin-bottom:10px;';
-        const currentSn = this.connectionConfig?.serialNumber || '';
-        for (const d of cachedDevices) {
-          const opt = document.createElement('option');
-          opt.value = d.sn;
-          opt.textContent = `${d.alias || d.sn} — ${d.series} [${d.sn}]`;
-          if (d.sn === currentSn) opt.selected = true;
-          robotSel.appendChild(opt);
-        }
-        robotSel.addEventListener('change', () => {
-          if (this.connectionConfig) this.connectionConfig.serialNumber = robotSel.value;
-          renderHeader();
-        });
-        remoteSection.appendChild(robotSel);
-      }
-
-      // Single row: button + status
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:12px;';
-
-      const statusEl = document.createElement('span');
-      statusEl.style.cssText = 'font-size:12px;color:#888;flex:1;';
-
-      if (!isConnected) {
-        const connectBtn = document.createElement('button');
-        connectBtn.style.cssText = 'padding:8px 20px;background:#4fc3f7;color:#000;border:none;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
-        connectBtn.textContent = 'WebRTC Connect';
-        connectBtn.addEventListener('click', async () => {
-          connectBtn.disabled = true;
-          connectBtn.textContent = 'Connecting...';
-          connectBtn.style.opacity = '0.6';
-          statusEl.style.color = '#4fc3f7';
-          try {
-            await this.connectWebRTCFromHub((msg) => { statusEl.textContent = msg; });
-          } catch (e) {
-            statusEl.textContent = `${e instanceof Error ? e.message : String(e)}`;
-            statusEl.style.color = '#ef5350';
-            connectBtn.disabled = false;
-            connectBtn.textContent = 'WebRTC Connect';
-            connectBtn.style.opacity = '1';
-          }
-        });
-        row.appendChild(connectBtn);
-      } else {
-        const disconnectBtn = document.createElement('button');
-        disconnectBtn.style.cssText = 'padding:8px 20px;background:transparent;color:#ef5350;border:1px solid #ef5350;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;';
-        disconnectBtn.textContent = 'Disconnect';
-        disconnectBtn.addEventListener('click', () => this.disconnect());
-        row.appendChild(disconnectBtn);
-        statusEl.textContent = 'WebRTC connected';
-        statusEl.style.color = '#66bb6a';
-      }
-
-      row.appendChild(statusEl);
-      remoteSection.appendChild(row);
-      hub.appendChild(remoteSection);
-    }
+    // Remote auto-connects from the Connect screen, so the hub is always
+    // shown post-validation — no per-mode WebRTC button or robot picker
+    // here. Feature buttons render straight away for both Local and Remote.
 
     // ── Feature buttons ──
     const btnRow = document.createElement('div');
     btnRow.className = 'hub-buttons';
-    const needsWebRTC = isRemoteMode && !isConnected;
+    const needsWebRTC = false;
 
     // WebView
     const controlBtn = document.createElement('button');
@@ -291,54 +305,32 @@ export class App {
     else svcBtn.disabled = true;
     btnRow.appendChild(svcBtn);
 
-    // 3D LiDAR Mapping button
-    const mapBtn = document.createElement('button');
-    mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
-    mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
-    if (!needsWebRTC) mapBtn.addEventListener('click', () => this.showMappingScreen());
-    else mapBtn.disabled = true;
-    btnRow.appendChild(mapBtn);
-
-    // Account Management — only in Remote mode
-    if (isRemoteMode) {
-      const acctBtn = document.createElement('button');
-      acctBtn.className = 'hub-btn hub-btn-secondary';
-      acctBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Account Management</span>`;
-      acctBtn.addEventListener('click', () => this.showAccountScreen());
-      btnRow.appendChild(acctBtn);
+    // 3D LiDAR Mapping button — Go2 only. The G1 Explorer webview doesn't
+    // expose any mapping UI even though the URDF includes a mid360 LiDAR
+    // (verified against the decompiled APK 1.9.3 — pages/ has no mapping
+    // chunk and the G1 series subscription path skips rt/utlidar/*).
+    if (cloudApi.connectFamily !== 'G1') {
+      const mapBtn = document.createElement('button');
+      mapBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
+      mapBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg><span>Mapping</span>`;
+      if (!needsWebRTC) mapBtn.addEventListener('click', () => this.showMappingScreen());
+      else mapBtn.disabled = true;
+      btnRow.appendChild(mapBtn);
     }
+
+    // Account Manager lives on the landing page now — no need to surface it
+    // again on the hub. Going back to landing (via Disconnect) and clicking
+    // Account Manager covers the same flow.
 
     hub.appendChild(btnRow);
 
-    // Disconnect / Back button
-    if (!isRemoteMode) {
-      // Local mode: always show disconnect
-      const disconnectBtn = document.createElement('button');
-      disconnectBtn.className = 'hub-btn-disconnect';
-      disconnectBtn.textContent = 'Disconnect';
-      disconnectBtn.addEventListener('click', () => this.disconnect());
-      hub.appendChild(disconnectBtn);
-    } else if (!isConnected) {
-      // Remote mode, not connected: show "Back to login"
-      const backBtn = document.createElement('button');
-      backBtn.className = 'hub-btn-disconnect';
-      backBtn.style.background = 'transparent';
-      backBtn.style.border = '1px solid #333';
-      backBtn.style.color = '#888';
-      backBtn.textContent = 'Back to Login';
-      backBtn.addEventListener('click', () => {
-        this.disconnect();
-        this.showConnectionScreen();
-      });
-      hub.appendChild(backBtn);
-    } else {
-      // Remote mode, connected: disconnect both WebRTC and session
-      const disconnectBtn = document.createElement('button');
-      disconnectBtn.className = 'hub-btn-disconnect';
-      disconnectBtn.textContent = 'Disconnect';
-      disconnectBtn.addEventListener('click', () => this.disconnect());
-      hub.appendChild(disconnectBtn);
-    }
+    // Disconnect button — same for Local and Remote (auto-connect means
+    // we're always connected here).
+    const disconnectBtn = document.createElement('button');
+    disconnectBtn.className = 'hub-btn-disconnect';
+    disconnectBtn.textContent = 'Disconnect';
+    disconnectBtn.addEventListener('click', () => this.disconnect());
+    hub.appendChild(disconnectBtn);
 
     this.root.appendChild(hub);
   }
@@ -348,6 +340,7 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root control-screen';
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
+    this.accountStatusIcon?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -356,25 +349,33 @@ export class App {
 
     this.init3DScene();
 
-    // Nav bar (top) — back goes to hub, not disconnect
+    // Nav bar (top) — back goes to hub, not disconnect.
+    // BT icon is a passive status indicator (matches the floating one);
+    // the actual BT controls live on the landing-page Bluetooth tile.
     this.navBar = new NavBar(this.controlUi, () => this.goToHub());
-    this.navBar.setBtIconClick(() => this.toggleBtPopover());
     this.updateNavBarBtIcon();
 
-    // PIP camera
-    this.pipCamera = new PipCamera(this.controlUi);
-    if (this.videoStream) {
-      this.pipCamera.setStream(this.videoStream);
+    // PIP camera. The PIP bubble swaps the 3D scene and the camera between
+    // main-view and pip on tap. G1 has no 3D scene (camera is the only
+    // view), so the PIP would be empty in one mode and redundant in the
+    // other — skip it on humanoid families.
+    if (cloudApi.connectFamily !== 'G1') {
+      this.pipCamera = new PipCamera(this.controlUi);
+      if (this.videoStream) {
+        this.pipCamera.setStream(this.videoStream);
+      }
+      this.pipCamera.setOnTap(() => this.toggleViewMode());
     }
-    this.pipCamera.setOnTap(() => this.toggleViewMode());
 
     // Setting bar
     this.settingBar = new SettingBar(this.controlUi, {
+      family: cloudApi.connectFamily,
       onRadarToggle: (enabled) => this.sendRadarToggle(enabled),
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
       onRelayToggle: (enabled) => this.setRelay(enabled),
+      onWaistLockToggle: (lock) => this.sendWaistLock(lock),
     });
     this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
 
@@ -400,8 +401,12 @@ export class App {
     const w2 = document.createElement('div');
     w2.className = 'wrapper-2';
     this.actionBar = new ActionBar(w2, (action) => {
-      console.log(`[go2:action] REQ → ${action.name} (api_id=${action.apiId}, param=${action.param ?? '{}'})`);
-      this.dataHandler?.publishRequest(RTC_TOPIC.SPORT_MOD, action.apiId, action.param);
+      // G1 modes + arm gestures all route through G1_ARM_REQUEST (the
+      // humanoid uses 'rt/api/arm/request' instead of 'rt/api/sport/request').
+      // Go2 keeps SPORT_MOD as before. Verified against Explorer 1.9.3.
+      const topic = cloudApi.connectFamily === 'G1' ? RTC_TOPIC.G1_ARM_REQUEST : RTC_TOPIC.SPORT_MOD;
+      console.log(`[action] REQ → ${action.name} (topic=${topic} api_id=${action.apiId}, param=${action.param ?? '{}'})`);
+      this.dataHandler?.publishRequest(topic, action.apiId, action.param);
     });
     opWrapper.appendChild(w2);
 
@@ -440,8 +445,13 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
-    this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub());
+    this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub(), {
+      mode: this.connectionConfig?.mode,
+      ip: this.connectionConfig?.ip,
+      serialNumber: this.connectionConfig?.serialNumber,
+    });
   }
 
   private showServicesScreen(): void {
@@ -449,6 +459,7 @@ export class App {
     this.root.innerHTML = '';
     this.root.className = 'app-root services-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -473,6 +484,7 @@ export class App {
     // (same shape as NavBar) — hide the body-mounted persistent icons so they
     // don't overlap.
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
+    this.accountStatusIcon?.setVisible(false);
 
     this.mappingPage = new MappingPage(
       this.root,
@@ -485,7 +497,6 @@ export class App {
         this.dataHandler
           ? this.dataHandler.pushFile(path, b64, 'uslam_final_pcd', 30 * 1024, onProgress)
           : Promise.reject(new Error('Data channel not ready')),
-      () => this.toggleBtPopover(),
     );
     // Seed the battery widget with the last-known value so it's not blank
     // until the next LOW_STATE message arrives.
@@ -498,8 +509,8 @@ export class App {
     }
     // Seed motor temp from cached state.
     if (this.robotState.motorStates.length > 0) {
-      const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
-      this.mappingPage.setMotorTemp(maxTemp);
+      const temps = this.robotState.motorStates.map((m) => m.temp).filter((t): t is number => Number.isFinite(t));
+      if (temps.length > 0) this.mappingPage.setMotorTemp(Math.max(...temps));
     }
     // Forward BT status changes so the inline BT icon stays in sync.
     this.mappingPage.setBtStatus(this.btStatus);
@@ -515,54 +526,33 @@ export class App {
     }
   }
 
-  /** Connect WebRTC from the hub screen (Remote mode only). */
-  private async connectWebRTCFromHub(onStep: (msg: string) => void): Promise<void> {
-    const config = this.connectionConfig;
-    if (!config || config.mode !== 'STA-T') throw new Error('Not in Remote mode');
-    if (!config.token) throw new Error('Not logged in');
-    if (!config.serialNumber) throw new Error('No robot selected');
-
-    const callbacks: ConnectionCallbacks = {
-      onStateChange: (state: ConnectionState) => this.onStateChange(state),
-      onValidated: () => {
-        this.enableVideoAndSubscribe();
-        this.showHubScreen(); // Re-render hub with connected state
-      },
-      onMessage: (msg: DataChannelMessage) => {
-        if (this.dataHandler) this.dataHandler.handleMessage(msg);
-      },
-      onVideoTrack: (stream: MediaStream) => {
-        this.videoStream = stream;
-        this.pipCamera?.setStream(stream);
-        this.mappingPage?.setStream(stream);
-        if (this.viewMode === 'video' && this.videoBg) {
-          this.videoBg.srcObject = stream;
-          this.videoBg.style.display = 'block';
-          if (this.noiseBgCanvas) this.noiseBgCanvas.style.display = 'none';
-          this.stopBgNoise();
-        }
-      },
-      onAudioTrack: () => {},
-    };
-
-    this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
-    this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
-  }
-
   private showAccountScreen(): void {
     this.currentScreen = 'account';
     this.root.innerHTML = '';
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
-    this.accountPage = new AccountPage(this.root, () => this.goToHub());
+    this.accountStatusIcon?.setVisible(true);
+    const back = this.accountFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
+    this.accountPage = new AccountPage(this.root, back);
+  }
+
+  private showBtScreen(): void {
+    this.currentScreen = 'bt';
+    this.root.innerHTML = '';
+    this.root.className = 'app-root status-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
+    this.btPage?.destroy();
+    const back = this.btFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
+    this.btPage = new BtPage(this.root, back);
   }
 
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
     this.setRelay(false);
-    this.btPopover?.close();
-    this.btPopover = null;
+    this.btPage?.destroy();
+    this.btPage = null;
     this.stopBgNoise();
     this.pipCamera?.destroy();
     this.pipCamera = null;
@@ -582,6 +572,38 @@ export class App {
   }
 
   private async init3DScene(): Promise<void> {
+    // G1's Explorer webview ships no 3D model — the camera stream IS the
+    // view. Skip Scene3D / Go2.glb load; mount the fullscreen video bg
+    // immediately and lock viewMode to 'video' so the rest of the UI
+    // (toggle, PIP) doesn't try to swap with a non-existent canvas.
+    if (cloudApi.connectFamily === 'G1') {
+      this.viewMode = 'video';
+      this.videoBg = document.createElement('video');
+      this.videoBg.id = 'video-bg';
+      this.videoBg.className = 'video-bg-fullscreen';
+      this.videoBg.autoplay = true;
+      this.videoBg.playsInline = true;
+      this.videoBg.muted = true;
+      // Override the .video-bg-fullscreen CSS default of display:none —
+      // Go2's setViewMode() does this in the swap path; for G1 we mount
+      // the video element straight to visible.
+      this.videoBg.style.display = 'block';
+      this.root.insertBefore(this.videoBg, this.controlUi);
+      this.noiseBgCanvas = document.createElement('canvas');
+      this.noiseBgCanvas.id = 'noise-bg';
+      this.noiseBgCanvas.className = 'noise-bg-fullscreen';
+      this.root.insertBefore(this.noiseBgCanvas, this.controlUi);
+      if (this.videoStream) {
+        this.videoBg.srcObject = this.videoStream;
+      } else {
+        // Static-noise placeholder until the WebRTC video track lands.
+        // The handler in onVideoTrack swaps the noise canvas off and the
+        // video element on (it's already display:block) when stream arrives.
+        this.noiseBgCanvas.style.display = 'block';
+        this.startBgNoise();
+      }
+      return;
+    }
     try {
       const { Scene3D: S3D } = await import('./scene/scene');
       const canvas = document.createElement('canvas');
@@ -695,7 +717,7 @@ export class App {
     }
   }
 
-  // ── Nav-bar BT icon & popover ──
+  // ── Nav-bar BT icon ──
 
   private updateNavBarBtIcon(): void {
     if (!this.navBar) return;
@@ -706,15 +728,6 @@ export class App {
     if (s.remoteConnected) parts.push(`Remote: ${s.remoteName || s.remoteAddress}`);
     const tooltip = connected ? parts.join(' · ') : 'Bluetooth: not connected';
     this.navBar.setBluetoothStatus(connected, tooltip);
-  }
-
-  private toggleBtPopover(): void {
-    if (this.btPopover) {
-      this.btPopover.close();
-      this.btPopover = null;
-    } else {
-      this.btPopover = new BtPopover(() => { this.btPopover = null; });
-    }
   }
 
   // ── BT Remote Relay Loop ──
@@ -761,31 +774,75 @@ export class App {
 
     this.dataHandler.publishTyped('', 'on', DATA_CHANNEL_TYPE.VID);
 
-    // Subscribe to data topics (matching APK's WebRTC bridge subscriptions)
+    // Subscribe to data topics (matching APK's WebRTC bridge subscriptions).
+    // Family-specific paths:
+    //   * Go2: bms_state lives inside lowstate; single IMU on imu_state.
+    //   * G1:  bms_state arrives on its own topic (rt/lf/bmsstate);
+    //          dual IMU on rt/lf/lowstate_doubleimu (Body + Crotch);
+    //          no LiDAR / SLAM topics — Explorer doesn't expose them.
     this.dataHandler.subscribe(RTC_TOPIC.LOW_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.LF_SPORT_MOD_STATE);
-    this.dataHandler.subscribe(RTC_TOPIC.ROBOT_ODOM);
-    this.dataHandler.subscribe(RTC_TOPIC.LIDAR_ARRAY);
-    this.dataHandler.subscribe(RTC_TOPIC.LIDAR_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.MULTIPLE_STATE);
     this.dataHandler.subscribe(RTC_TOPIC.SELFTEST);
     this.dataHandler.subscribe(RTC_TOPIC.SERVICE_STATE);
-
-    // Enable LiDAR (send 5 times for reliability, like APK)
-    for (let i = 0; i < 5; i++) {
-      setTimeout(() => {
-        this.dataHandler?.publish(RTC_TOPIC.LIDAR_SWITCH, 'ON');
-      }, i * 100);
+    if (cloudApi.connectFamily === 'G1') {
+      this.dataHandler.subscribe(RTC_TOPIC.BMS_STATE);
+      this.dataHandler.subscribe(RTC_TOPIC.SECONDARY_IMU);
+      this.dataHandler.subscribe(RTC_TOPIC.G1_ARM_ACTION_STATE);
+    } else {
+      this.dataHandler.subscribe(RTC_TOPIC.ROBOT_ODOM);
+      this.dataHandler.subscribe(RTC_TOPIC.LIDAR_ARRAY);
+      this.dataHandler.subscribe(RTC_TOPIC.LIDAR_STATE);
+      // Enable LiDAR (send 5 times for reliability, like APK).
+      // G1 has a mid360 in the URDF but the Explorer webview never
+      // toggles it on, so we skip the switch on humanoid families.
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => {
+          this.dataHandler?.publish(RTC_TOPIC.LIDAR_SWITCH, 'ON');
+        }, i * 100);
+      }
     }
 
     this.dataHandler.onTopicData = (msg) => this.handleTopicMessage(msg);
     this.pollNetworkType();
 
     // APK init requests: firmware version, motion mode, gas sensor
-    this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
-      JSON.stringify({ script: 'get_whole_packet_version.sh' }));
+    this.runBashScript('get_whole_packet_version.sh');
     this.dataHandler.publishRequest(RTC_TOPIC.MOTION_SWITCHER, 1001);
     this.dataHandler.publishRequest(RTC_TOPIC.GAS_SENSOR, 1002);
+
+    // G1 has dedicated hardware + software version scripts
+    // (BaseRunner.GET_HARDWARE_VERSION, GET_SOFTWARE_VERSION) per
+    // com/unitree/webrtc/data/BaseRunner.java in the decompiled apk.
+    if (cloudApi.connectFamily === 'G1') {
+      this.runBashScript('get_hardware_version.sh');
+      this.runBashScript('get_software_version.sh');
+      this.runBashScript('get_ip_address.sh');
+    }
+  }
+
+  /** id → script line, used to correlate bashrunner responses to the
+   *  request that triggered them (multiple scripts share api_id 1001). */
+  private bashrunnerPending: Map<number, string> = new Map();
+
+  /** Submit a bashrunner script line. The wire body matches what the
+   * Explorer apk emits at WebEventServiceImpl.java:128 — a single 'script'
+   * field whose value is "<script.sh> <space-separated args>". Logs the
+   * request and tracks the request id so the response handler can route
+   * to the right RobotStatus field. */
+  private runBashScript(scriptLine: string): number | undefined {
+    if (!this.dataHandler) return;
+    const id = this.dataHandler.publishRequest(RTC_TOPIC.BASHRUNNER, 1001,
+      JSON.stringify({ script: scriptLine }));
+    this.bashrunnerPending.set(id, scriptLine);
+    return id;
+  }
+
+  /** Lock (true) or unlock (false) the G1 waist motor. Fires
+   *  BaseRunner.G1_SETUP_MACHINE_TYPE with arg "6"=lock / "5"=unlock,
+   *  per BaseInfoViewModel.kt:570. */
+  private sendWaistLock(lock: boolean): void {
+    this.runBashScript(`demarcate_setup_machine_type.sh ${lock ? 6 : 5}`);
   }
 
   private pollNetworkType(): void {
@@ -829,6 +886,14 @@ export class App {
       case RTC_TOPIC.LOW_STATE:
         this.handleLowState(msg.data);
         break;
+      case RTC_TOPIC.BMS_STATE:
+        // G1 publishes battery on its own topic; payload is the bms_state
+        // struct directly (not wrapped under d.bms_state like in lowstate).
+        this.handleLowState({ bms_state: msg.data });
+        break;
+      case RTC_TOPIC.SECONDARY_IMU:
+        this.handleSecondaryImu(msg.data);
+        break;
       case RTC_TOPIC.ROBOT_ODOM:
         this.handleRobotOdom(msg.data);
         break;
@@ -865,52 +930,149 @@ export class App {
     }
   }
 
-  private lowStateLogCount = 0;
-
   private handleLowState(data: unknown): void {
-    // Log first few messages to help debug field names
-    if (this.lowStateLogCount < 3) {
-      console.log('[go2:ui] LOW_STATE raw keys:', Object.keys(data as object));
-      console.log('[go2:ui] LOW_STATE sample:', JSON.stringify(data).slice(0, 500));
-      this.lowStateLogCount++;
-    }
-
     const d = data as {
-      motor_state?: Array<{ q: number; dq: number; tau_est: number; temperature: number; lost: number }>;
+      motor_state?: Array<{
+        q: number; dq: number; tau_est: number;
+        // Go2 ships temperature as a scalar, G1 as [casing, winding].
+        temperature: number | number[];
+        lost: number;
+        reserve?: number[];
+        motorstate?: number;
+      }>;
       bms_state?: { soc?: number; current?: number; voltage?: number; cycle?: number; temps?: number[] };
       foot_force?: number[];
-      imu_state?: { temperature?: number };
+      imu_state?: { temperature?: number; rpy?: number[] };
+      // Go2 lowstate root carries the pack voltage (V) and a body NTC (°C);
+      // G1 doesn't ship these — they're read defensively below.
+      power_v?: number;
+      temperature_ntc1?: number;
     };
+
 
     if (d.motor_state) {
       if (this.scene3d) this.scene3d.robotModel.updateMotorState(d.motor_state);
       if (this.mappingPage) this.mappingPage.updateMotorState(d.motor_state);
-      // Only first 12 motors are real (FR/FL/RR/RL hip/thigh/calf), rest are zeros
-      this.robotState.motorStates = d.motor_state.slice(0, 12).map((m) => ({
-        q: m.q ?? 0, dq: m.dq ?? 0, tau: m.tau_est ?? 0, temp: m.temperature ?? 0, lost: m.lost ?? 0,
-      }));
-      // Update nav bar max motor temp
-      const maxTemp = Math.max(...this.robotState.motorStates.map((m) => m.temp));
+      // Go2 lowstate carries 12 real motors followed by zeros; G1 has up to
+      // 29 (12 legs + 3 waist + 14 arms). Slice family-aware so the status
+      // page sees the full motor set on G1 but stays trim on Go2.
+      const motorLimit = cloudApi.connectFamily === 'G1' ? 29 : 12;
+      this.robotState.motorStates = d.motor_state.slice(0, motorLimit).map((m) => {
+        // G1's per-motor temperature is an array [casing, winding]; Go2's is
+        // a scalar. The summary bar only ever needs one number — pick the
+        // hotter of the two on G1 so 'Max Motor Temp' stays meaningful.
+        // Filter to finite numbers before Math.max — a dropped frame can
+        // surface as NaN/undefined and pollute the navbar.
+        const tempArr = Array.isArray(m.temperature) ? m.temperature : undefined;
+        const finiteArr = tempArr ? tempArr.filter((t): t is number => Number.isFinite(t)) : undefined;
+        const tempScalar = finiteArr && finiteArr.length > 0
+          ? Math.max(...finiteArr)
+          : (Number.isFinite(m.temperature as number) ? (m.temperature as number) : 0);
+        return {
+          q: m.q ?? 0,
+          dq: m.dq ?? 0,
+          tau: m.tau_est ?? 0,
+          temp: tempScalar,
+          lost: m.lost ?? 0,
+          temperature: tempArr,
+          reserve: Array.isArray(m.reserve) ? m.reserve : undefined,
+          motorstate: typeof m.motorstate === 'number' ? m.motorstate : undefined,
+        };
+      });
+      // Update nav bar max motor temp. Math.max(...[]) is -Infinity and
+      // Math.max(...[NaN, ...]) is NaN, so filter to finite numbers and
+      // fall back to 0 if nothing remains. Without this the navbar
+      // chip can read 'NaN°C' on a fresh G1 connection where motor
+      // temperatures arrive on the next frame after the array shape
+      // is already established.
+      const temps = this.robotState.motorStates.map((m) => m.temp).filter((t): t is number => Number.isFinite(t));
+      const maxTemp = temps.length > 0 ? Math.max(...temps) : 0;
       this.navBar?.setMotorTemp(maxTemp);
       this.mappingPage?.setMotorTemp(maxTemp);
     }
 
     if (d.bms_state) {
-      if (d.bms_state.soc !== undefined) {
-        this.robotState.batteryPercent = d.bms_state.soc;
-        this.navBar?.setBattery(d.bms_state.soc);
-        this.mappingPage?.setBattery(d.bms_state.soc);
+      const bms = d.bms_state as Record<string, unknown>;
+      if (typeof bms.soc === 'number') {
+        this.robotState.batteryPercent = bms.soc;
+        this.navBar?.setBattery(bms.soc);
+        this.mappingPage?.setBattery(bms.soc);
       }
-      if (d.bms_state.current !== undefined) this.robotState.batteryCurrent = d.bms_state.current;
-      if (d.bms_state.voltage !== undefined) this.robotState.batteryVoltage = d.bms_state.voltage;
-      if (d.bms_state.cycle !== undefined) this.robotState.batteryCycles = d.bms_state.cycle;
-      if (d.bms_state.temps?.[0] !== undefined) this.robotState.batteryTemp = d.bms_state.temps[0];
+      if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
+      if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
+
+      // Voltage + temperatures shape diverges per family — see comments
+      // below for the verified payload shapes.
+      if (cloudApi.connectFamily === 'G1') {
+        // G1 rt/lf/bmsstate (verified live capture):
+        //   bmsvoltage: [pack_mV, bat_mV, _]   ← pack scalar at [0], bat at [1]
+        //   cell_vol:   [c0_mV, c1_mV, …]      ← per-cell, padded to 40
+        //   temperature:[MOS, _, BAT1, RES, …] ← per BatteryDataViewmodel.kt
+        // Some firmwares may also surface scalar pack_voltage/bat_voltage —
+        // accept either shape so a future rename doesn't break us.
+        const bmsv = Array.isArray(bms.bmsvoltage) ? bms.bmsvoltage as unknown[] : [];
+        const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage
+                   : (typeof bmsv[0] === 'number' ? bmsv[0] as number : undefined);
+        const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage
+                   : (typeof bmsv[1] === 'number' ? bmsv[1] as number : undefined);
+        if (pack !== undefined) {
+          this.robotState.batteryPackVoltage = pack;
+          this.robotState.batteryVoltage = pack;
+        }
+        if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
+        const tempsArr = Array.isArray(bms.temperature) ? bms.temperature
+                       : Array.isArray(bms.temps)       ? bms.temps
+                       : null;
+        if (tempsArr) {
+          const numericTemps = (tempsArr as unknown[]).filter((t): t is number => typeof t === 'number');
+          this.robotState.batteryTemps = numericTemps;
+          if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
+        }
+      } else {
+        // Go2 verified live capture: bms_state has no voltage field at
+        // all. The pack voltage rides at the lowstate root as `power_v`
+        // (in *volts*, not mV — convert so the status page's /1000
+        // formatter still works). Battery temps come from `bq_ntc`
+        // (BQ fuel-gauge NTCs) and `mcu_ntc` (MCU NTCs).
+        if (typeof d.power_v === 'number') {
+          this.robotState.batteryVoltage = d.power_v * 1000;
+        }
+        const bq  = Array.isArray(bms.bq_ntc)  ? (bms.bq_ntc  as unknown[]).filter((t): t is number => typeof t === 'number') : [];
+        const mcu = Array.isArray(bms.mcu_ntc) ? (bms.mcu_ntc as unknown[]).filter((t): t is number => typeof t === 'number') : [];
+        const all = [...bq, ...mcu];
+        if (all.length > 0) this.robotState.batteryTemp = Math.max(...all);
+      }
     }
 
     if (d.foot_force) this.robotState.footForce = d.foot_force;
-    if (d.imu_state?.temperature !== undefined) this.robotState.imuTemp = d.imu_state.temperature;
+    if (d.imu_state?.temperature !== undefined) {
+      this.robotState.imuTemp = d.imu_state.temperature;
+      this.navBar?.setBodyTemp(d.imu_state.temperature);
+    }
+    // On G1 the lowstate's imu_state IS the torso ("Body") IMU. The
+    // Status panel's Body IMU section reads from robotState.bodyImu, so
+    // mirror the rpy+temp here. (On Go2 we don't expose a separate Body
+    // section, so populating this is harmless.)
+    if (cloudApi.connectFamily === 'G1' && d.imu_state) {
+      const im = d.imu_state as { rpy?: number[]; temperature?: number };
+      const rpy = (im.rpy && im.rpy.length >= 3 ? im.rpy : [0, 0, 0]).slice(0, 3) as [number, number, number];
+      this.robotState.bodyImu = { rpy, temp: typeof im.temperature === 'number' ? im.temperature : 0 };
+    }
 
     // Update status page if visible
+    if (this.currentScreen === 'status' && this.statusPage) {
+      this.statusPage.update(this.robotState);
+    }
+  }
+
+  // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
+  // G1ImuState payload (rpy + temperature, etc.). The torso ("Body")
+  // IMU is whatever already lives in lowstate.imu_state — populated by
+  // handleLowState. See BaseInfoViewModel.kt:195 in the decompiled apk.
+  private handleSecondaryImu(data: unknown): void {
+    const i = data as { rpy?: number[]; temperature?: number };
+    const rpy = (i.rpy && i.rpy.length >= 3 ? i.rpy : [0, 0, 0]).slice(0, 3) as [number, number, number];
+    this.robotState.crotchImu = { rpy, temp: typeof i.temperature === 'number' ? i.temperature : 0 };
     if (this.currentScreen === 'status' && this.statusPage) {
       this.statusPage.update(this.robotState);
     }
@@ -1034,36 +1196,75 @@ export class App {
   }
 
   private handleBashrunnerResponse(data: unknown): void {
-    console.log('[go2:ui] Bashrunner raw response:', JSON.stringify(data));
     const d = data as {
-      header?: { identity?: { api_id?: number }; status?: { code?: number } };
+      header?: { identity?: { id?: number; api_id?: number }; status?: { code?: number } };
       data?: string;
     };
-    console.log('[go2:ui] Bashrunner status code:', d.header?.status?.code, 'api_id:', d.header?.identity?.api_id, 'data type:', typeof d.data, 'data:', d.data);
-    if (d.header?.status?.code === 0 && typeof d.data === 'string') {
-      try {
-        const parsed = JSON.parse(d.data) as { result?: string; info?: string; type?: string };
-        console.log('[go2:ui] Bashrunner parsed data:', parsed);
-        if (parsed.info) {
-          this.robotState.firmwareVersion = parsed.info;
-          console.log('[go2:ui] Firmware version set to:', parsed.info);
-        } else if (parsed.result) {
-          this.robotState.firmwareVersion = parsed.result;
-          console.log('[go2:ui] Firmware version set to:', parsed.result);
-        } else {
-          this.robotState.firmwareVersion = d.data;
-          console.log('[go2:ui] Firmware version (raw data):', d.data);
+    const code = d.header?.status?.code;
+    const id = d.header?.identity?.id;
+    const scriptLine = id !== undefined ? this.bashrunnerPending.get(id) : undefined;
+    if (id !== undefined) this.bashrunnerPending.delete(id);
+    const scriptName = scriptLine ? scriptLine.split(' ')[0] : '?';
+
+    if (code !== 0 || typeof d.data !== 'string') {
+      if (scriptLine) console.warn(`[bashrunner] ${scriptName} failed (code=${code})`);
+      return;
+    }
+
+    let info: unknown;
+    let result: string | undefined;
+    try {
+      const parsed = JSON.parse(d.data) as { result?: string; info?: unknown; type?: string };
+      info = parsed.info;
+      result = parsed.result;
+    } catch {
+      info = d.data;
+    }
+
+    // Route by script. The robot replies with `info` shaped per script:
+    //   * get_ip_address.sh        -> { wlan0: "...", wlan1: "..." }
+    //   * get_hardware_version.sh  -> "10"   (formatted as "2.<n/10>.<n%10>")
+    //   * get_software_version.sh  -> "1.4.6"
+    //   * get_whole_packet_version.sh -> firmware string
+    //
+    // Go2 firmware doesn't reliably echo the request `id` back, so script
+    // correlation can fail and `scriptName` ends up as '?'. In that case
+    // — and on the explicit whole_packet_version path — populate
+    // firmwareVersion. This matches main's universal "any bashrunner
+    // success → firmware version" behaviour and restores Go2.
+    switch (scriptName) {
+      case 'get_ip_address.sh': {
+        if (info && typeof info === 'object') {
+          const ips = info as { wlan0?: string; wlan1?: string; eth0?: string };
+          const ip = ips.wlan0 || ips.wlan1 || ips.eth0 || '';
+          if (ip) this.robotState.ipAddress = ip;
         }
-      } catch {
-        // data might be the raw string
-        this.robotState.firmwareVersion = d.data;
-        console.log('[go2:ui] Firmware version (parse failed, raw):', d.data);
+        break;
       }
-      if (this.currentScreen === 'status' && this.statusPage) {
-        this.statusPage.update(this.robotState);
+      case 'get_hardware_version.sh': {
+        // BaseInfoViewModel.kt:232 formats as "2" + (n/10) + "." + (n%10),
+        // i.e. info=10 -> "2.1.0", info=12 -> "2.1.2".
+        const raw = typeof info === 'string' ? info : typeof info === 'number' ? String(info) : '';
+        const n = parseInt(raw, 10);
+        if (!Number.isNaN(n)) {
+          this.robotState.hardwareVersion = `2.${Math.floor(n / 10)}.${n % 10}`;
+        }
+        break;
       }
-    } else {
-      console.warn('[go2:ui] Bashrunner response not code 0 or data not string. code:', d.header?.status?.code, 'data:', d.data);
+      case 'get_software_version.sh': {
+        if (typeof info === 'string') this.robotState.softwareVersion = info;
+        break;
+      }
+      case 'get_whole_packet_version.sh':
+      default: {
+        const v = typeof info === 'string' ? info : (result || (typeof d.data === 'string' ? d.data : ''));
+        if (v) this.robotState.firmwareVersion = v;
+        break;
+      }
+    }
+
+    if (this.currentScreen === 'status' && this.statusPage) {
+      this.statusPage.update(this.robotState);
     }
   }
 
@@ -1221,12 +1422,17 @@ export class App {
 
     try {
       if (config.mode === 'STA-T') {
-        // Remote mode: go straight to hub — WebRTC connect happens from there
-        this.showHubScreen();
-        return;
+        // Remote: kick off WebRTC immediately — same UX as Local/AP. The
+        // hub is shown in the onValidated callback.
+        if (!config.token) throw new Error('Not logged in');
+        if (!config.serialNumber) throw new Error('No robot selected');
+        this.webrtc = await connectRemote(config.serialNumber, config.token, callbacks, onStep);
       } else {
         if (!config.ip) throw new Error('IP address required');
-        this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep);
+        this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep, {
+          sn: config.serialNumber,
+          promptKey: (sn, opts) => promptAesKey(sn, opts),
+        });
       }
       this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
     } catch (err) {
@@ -1328,12 +1534,11 @@ export class App {
     this.scene3d = null;
     this.viewMode = 'three';
 
-    if (wasRemote && this.connectionConfig) {
-      // Stay on hub — keep config, just clear WebRTC
-      this.showHubScreen();
-    } else {
-      this.connectionConfig = null;
-      this.showConnectionScreen();
-    }
+    // Auto-connect means the hub is always backed by an active WebRTC
+    // session. On disconnect (any mode) drop back to landing — re-entering
+    // Connect → robot will re-establish the session.
+    void wasRemote;
+    this.connectionConfig = null;
+    this.showLandingScreen();
   }
 }

@@ -4,14 +4,39 @@ import https from 'node:https';
 import dgram from 'node:dgram';
 
 // ── UDP Multicast Scanner (embedded) ──
+//
+// Wire protocol — same on Go2 and G1, only the multicast group(s) differ:
+//   * Send query to QUERY_PORT (10131): {"name":"unitree_dapengche"[,"sn":"..."]}
+//   * Receive response on RECV_PORT (10134): {sn, ip, ...}
+//
+// Multicast groups per family:
+//   * Go2: 231.1.1.1                       (server/scanner.mjs original)
+//   * G1:  231.1.1.2 + 239.255.1.1         (multicast_responder.py on the
+//                                          robot at /unitree/.../webrtc_dds_bridge/)
+//
+// G1 firmware ≥ 1.5.1 added an SN filter to multicast_responder.py: the
+// robot drops queries whose `sn` field doesn't match its own. To reach
+// those robots, callers must pass `sn` here so it gets embedded in the
+// outgoing payload. Queries without `sn` still work on Go2 and G1<1.5.1.
 
-const MULTICAST_GROUP = '231.1.1.1';
 const QUERY_PORT = 10131;
 const RECV_PORT = 10134;
-const QUERY_MSG = JSON.stringify({ name: 'unitree_dapengche' });
 const DEFAULT_SCAN_TIMEOUT = 3000;
 
-function scanForRobots(timeoutMs = DEFAULT_SCAN_TIMEOUT): Promise<Array<{ sn: string; ip: string }>> {
+const FAMILY_GROUPS: Record<string, string[]> = {
+  Go2: ['231.1.1.1'],
+  G1:  ['231.1.1.2', '239.255.1.1'],
+};
+
+function groupsForFamily(family: string): string[] {
+  return FAMILY_GROUPS[family] || FAMILY_GROUPS.Go2;
+}
+
+function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT, sn?: string): Promise<Array<{ sn: string; ip: string }>> {
+  const groups = groupsForFamily(family);
+  const queryPayload = sn
+    ? JSON.stringify({ name: 'unitree_dapengche', sn })
+    : JSON.stringify({ name: 'unitree_dapengche' });
   return new Promise((resolve, reject) => {
     const results: Array<{ sn: string; ip: string }> = [];
     const seen = new Set<string>();
@@ -27,32 +52,43 @@ function scanForRobots(timeoutMs = DEFAULT_SCAN_TIMEOUT): Promise<Array<{ sn: st
       try {
         const data = JSON.parse(msg.toString());
         if (data.sn && data.ip && !seen.has(data.sn)) {
+          // SN filter: when targeting a specific robot, drop replies from
+          // anyone else (the multicast group can be shared with other
+          // robots on the same LAN that respond to broadcast queries).
+          if (sn && data.sn !== sn) return;
           seen.add(data.sn);
           results.push({ sn: data.sn, ip: data.ip });
-          console.log(`[scanner] Found robot: SN=${data.sn} IP=${data.ip}`);
+          console.log(`[scanner] Found ${family} robot: SN=${data.sn} IP=${data.ip}`);
         }
       } catch { /* ignore non-JSON */ }
     });
 
     receiver.bind(RECV_PORT, () => {
-      try { receiver.addMembership(MULTICAST_GROUP); } catch { /* may already be member */ }
+      for (const g of groups) {
+        try { receiver.addMembership(g); } catch { /* may already be member */ }
+      }
 
       const sender = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-      const buf = Buffer.from(QUERY_MSG);
+      const buf = Buffer.from(queryPayload);
       let sent = 0;
-      const sendQuery = () => {
-        sender.send(buf, 0, buf.length, QUERY_PORT, MULTICAST_GROUP, (err) => {
-          if (err) console.warn('[scanner] Send error:', err.message);
-          sent++;
-          if (sent < 3) setTimeout(sendQuery, 200);
-          else sender.close();
-        });
+      const sendQuery = (): void => {
+        // Query every group in the family in parallel each iteration.
+        for (const g of groups) {
+          sender.send(buf, 0, buf.length, QUERY_PORT, g, (err) => {
+            if (err) console.warn(`[scanner] Send error to ${g}:`, err.message);
+          });
+        }
+        sent++;
+        if (sent < 3) setTimeout(sendQuery, 200);
+        else setTimeout(() => sender.close(), 100);
       };
       sendQuery();
     });
 
     setTimeout(() => {
-      try { receiver.dropMembership(MULTICAST_GROUP); } catch {}
+      for (const g of groups) {
+        try { receiver.dropMembership(g); } catch { /* not a member */ }
+      }
       receiver.close();
       resolve(results);
     }, timeoutMs);
@@ -71,9 +107,11 @@ export function robotProxyPlugin(): Plugin {
 
         if (url.pathname === '/scan' && req.method === 'GET') {
           const timeout = parseInt(url.searchParams.get('timeout') || String(DEFAULT_SCAN_TIMEOUT), 10);
-          console.log(`[scanner] Scan requested (timeout=${timeout}ms)`);
+          const family = url.searchParams.get('family') || 'Go2';
+          const sn = url.searchParams.get('sn') || undefined;
+          console.log(`[scanner] Scan requested (family=${family}, timeout=${timeout}ms${sn ? `, sn=${sn}` : ''})`);
 
-          scanForRobots(timeout)
+          scanForRobots(family, timeout, sn)
             .then((robots) => {
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({ robots }));
@@ -140,6 +178,16 @@ export function robotProxyPlugin(): Plugin {
               headers['content-length'] = body.length.toString();
             }
 
+            // Region selector: client sends `X-Unitree-Region: cn` to hit the
+            // mainland-China endpoint, anything else (or absent) defaults to
+            // the global endpoint. The header is consumed by the proxy and
+            // stripped before forwarding upstream.
+            const region = (headers['x-unitree-region'] || '').toLowerCase();
+            const hostname = region === 'cn'
+              ? 'robot-api.unitree.com'
+              : 'global-robot-api.unitree.com';
+            delete headers['x-unitree-region'];
+
             // Set User-Agent to match Android app (EdgeOne WAF blocks Node defaults)
             headers['user-agent'] = 'okhttp/4.11.0';
             // Ask for identity encoding — we don't want the server to gzip/deflate
@@ -157,7 +205,7 @@ export function robotProxyPlugin(): Plugin {
 
             const proxyReq = https.request(
               {
-                hostname: 'global-robot-api.unitree.com',
+                hostname,
                 port: 443,
                 path: targetPath,
                 method: req.method,
