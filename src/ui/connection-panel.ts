@@ -79,7 +79,7 @@ export class ConnectionPanel {
       </div>
       <div class="form-group" id="ip-group">
         <div id="scan-sn-row" style="margin-bottom:10px;display:none;">
-          <label for="scan-sn-input">Robot SN (>=v1.5.1)</label>
+          <label for="scan-sn-input">Robot SN</label>
           <input type="text" id="scan-sn-input" placeholder="e.g. B42D2000OBIB1F" autocomplete="off" spellcheck="false" />
         </div>
         <label for="ip-input">Robot IP Address</label>
