@@ -456,13 +456,18 @@ export class BtPage {
     }
     if (probeV3) this.robotBody.appendChild(v3Rows);
 
-    // AES-128 paste field — only useful on V3 firmware. We mount a hidden
-    // wrapper here and surface it once V3 is detected. The presence of a
-    // valid 32-hex key is what gates the WiFi form below. On Go2 (no V3
-    // ever), the AES gate is irrelevant — the WiFi form runs unencrypted.
-    const aesGate = this.buildAesGate();
-    aesGate.wrap.style.display = 'none';
-    if (probeV3) this.robotBody.appendChild(aesGate.wrap);
+    // AES-128 paste field — only useful on V3 firmware (G1 ≥ 1.5.1).
+    // Build *only* when we're actually probing V3: buildAesGate's
+    // constructor pre-fills from the localStorage AES cache and, if
+    // anything's there, immediately POSTs /v3/aes-key. That side-effect
+    // would generate spurious BLE traffic on Go2 even with the panel
+    // hidden — so skip the construction entirely when probeV3 is false.
+    let aesGate: ReturnType<BtPage['buildAesGate']> | null = null;
+    if (probeV3) {
+      aesGate = this.buildAesGate();
+      aesGate.wrap.style.display = 'none';
+      this.robotBody.appendChild(aesGate.wrap);
+    }
 
     const renderV3 = (gcm: V3KeyProbe, ver: V3Probe): void => {
       v3Supported = gcm.supported || ver.supported;
@@ -471,7 +476,7 @@ export class BtPage {
       renderProtoRow();
       if (!v3Supported) {
         v3Rows.remove();
-        aesGate.wrap.remove();
+        aesGate?.wrap.remove();
         return;
       }
       v3Rows.innerHTML = '';
@@ -491,7 +496,7 @@ export class BtPage {
           gcm.key,
         ));
       }
-      aesGate.wrap.style.display = '';
+      if (aesGate) aesGate.wrap.style.display = '';
     };
 
     if (probeV3) {
@@ -640,10 +645,17 @@ export class BtPage {
       [staBtn, apBtn].forEach((b) => { b.disabled = !enabled; b.style.opacity = dim; });
     };
     this.wifiGateApply = setWifiEnabled;
-    aesGate.onChange(() => this.refreshWifiGate());
-    // Initial gate evaluation — pulls v3Supported / gcmDecodeWorks from
-    // whatever the V3 + /info promises have set so far.
-    this.aesGateReady = aesGate.isReady;
+    if (aesGate) {
+      aesGate.onChange(() => this.refreshWifiGate());
+      // Initial gate evaluation — pulls v3Supported / gcmDecodeWorks from
+      // whatever the V3 + /info promises have set so far.
+      this.aesGateReady = aesGate.isReady;
+    } else {
+      // No V3 path on this device — keep aesGateReady at its safe default
+      // (() => false). v3Supported stays false too, so the WiFi gate
+      // shortcuts to "always enabled".
+      this.aesGateReady = () => false;
+    }
     this.refreshWifiGate();
   }
 
