@@ -19,7 +19,6 @@ export class ConnectionPanel {
   private connectBtn!: HTMLButtonElement;
   private scanBtn!: HTMLButtonElement;
   private scanSnInput!: HTMLInputElement;
-  private scanSnBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
   private robotPickerGroup!: HTMLElement;
   private robotSelect!: HTMLSelectElement;
@@ -84,9 +83,9 @@ export class ConnectionPanel {
           <input type="text" id="ip-input" placeholder="192.168.12.1" />
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
-        <div id="scan-sn-row" class="ip-row" style="margin-top:8px;display:none;">
-          <input type="text" id="scan-sn-input" placeholder="Robot SN (>=v1.5.1)" autocomplete="off" spellcheck="false" />
-          <button id="scan-sn-btn" class="btn-scan" title="Targeted scan by SN — required for G1 firmware ≥ 1.5.1">Scan by SN</button>
+        <div id="scan-sn-row" class="form-group" style="margin-top:8px;display:none;">
+          <label for="scan-sn-input">Robot SN (>=v1.5.1)</label>
+          <input type="text" id="scan-sn-input" placeholder="e.g. B42D2000OBIB1F" autocomplete="off" spellcheck="false" />
         </div>
         <div id="scan-results" class="scan-results" style="display:none;"></div>
       </div>
@@ -103,7 +102,11 @@ export class ConnectionPanel {
     this.connectBtn = this.container.querySelector('#connect-btn')!;
     this.scanBtn = this.container.querySelector('#scan-btn')!;
     this.scanSnInput = this.container.querySelector('#scan-sn-input')!;
-    this.scanSnBtn = this.container.querySelector('#scan-sn-btn')!;
+    this.scanSnInput.addEventListener('input', () => {
+      // Persist last SN per family so reopening Connect remembers it.
+      const fam = cloudApi.connectFamily;
+      try { localStorage.setItem(`unitree_last_sn_${fam.toLowerCase()}`, this.scanSnInput.value.trim()); } catch { /* ignore */ }
+    });
     this.statusEl = this.container.querySelector('#connection-status')!;
     this.robotPickerGroup = this.container.querySelector('#robot-picker-group')!;
     this.robotSelect = this.container.querySelector('#robot-select')!;
@@ -126,7 +129,13 @@ export class ConnectionPanel {
     const onPrefChange = (): void => {
       familyLabel.textContent = FAMILY_LABEL[cloudApi.connectFamily];
       this.onFamilyChange?.();
-      // Re-evaluate so the G1-only Scan-by-SN row appears/hides as the
+      // Restore the last SN typed for *this* family (G1 only — Go2
+      // doesn't have an SN field).
+      try {
+        const last = localStorage.getItem(`unitree_last_sn_${cloudApi.connectFamily.toLowerCase()}`) || '';
+        this.scanSnInput.value = last;
+      } catch { /* ignore */ }
+      // Re-evaluate so the G1-only SN row appears/hides as the
       // user toggles the Family pill.
       this.updateVisibility();
     };
@@ -155,7 +164,6 @@ export class ConnectionPanel {
     const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.handleConnect(); } };
     this.container.addEventListener('keydown', handleEnter);
     this.scanBtn.addEventListener('click', () => this.handleScan());
-    this.scanSnBtn.addEventListener('click', () => this.handleScanBySn());
     this.robotSelect.addEventListener('change', () => {
       this.selectedSn = this.robotSelect.value;
     });
@@ -306,51 +314,43 @@ export class ConnectionPanel {
     }
   }
 
-  /** SN-targeted scan, required for G1 firmware ≥ 1.5.1 — that build of
-   *  multicast_responder.py drops queries whose `sn` doesn't match the
-   *  robot's own. The unfiltered Scan still works on Go2 and G1 < 1.5.1. */
-  private async handleScanBySn(): Promise<void> {
-    const sn = this.scanSnInput.value.trim();
-    if (!sn) {
-      this.setStatus('Enter a robot SN first.', 'error');
-      this.scanSnInput.focus();
-      return;
-    }
-    this.scanSnBtn.disabled = true;
-    this.scanSnBtn.textContent = '...';
-    this.setStatus(`Scanning for SN ${sn}...`, 'info');
-    this.renderScanResults([]);
-    try {
-      const results = await scanForRobots(
-        cloudApi.connectFamily,
-        (msg) => this.setStatus(msg, 'info'),
-        sn,
-      );
-      if (results.length === 0) {
-        this.setStatus(`No reply from ${sn} on the local network.`, 'error');
-        return;
-      }
-      const only = results[0];
-      this.ipInput.value = only.ip;
-      this.modeSelect.value = 'STA-L';
-      this.updateVisibility();
-      this.setStatus(`Found ${sn} at ${only.ip}`, 'success');
-    } catch (err) {
-      this.setStatus('Scan failed: ' + (err instanceof Error ? err.message : 'unknown'), 'error');
-    } finally {
-      this.scanSnBtn.disabled = false;
-      this.scanSnBtn.textContent = 'Scan by SN';
-    }
-  }
-
+  /** Single Scan: fires an unfiltered broadcast first (works on Go2 +
+   *  G1 < 1.5.1), then a targeted query for every SN we know about
+   *  (cloud-bound devices + the SN typed in the optional G1 SN field),
+   *  since G1 firmware ≥ 1.5.1 silently ignores untargeted queries.
+   *  Results from all branches are deduped by SN. */
   private async handleScan(): Promise<void> {
     this.scanBtn.disabled = true;
     this.scanBtn.textContent = '...';
     this.setStatus('Scanning network...', 'info');
     this.renderScanResults([]);  // clear stale list
 
+    // Build the SN target set: bound-device SNs + the user's typed SN.
+    const targetSns = new Set<string>();
+    for (const d of this.devices) {
+      if (d.sn) targetSns.add(d.sn);
+    }
+    const typedSn = this.scanSnInput.value.trim();
+    if (typedSn) targetSns.add(typedSn);
+
     try {
-      const results = await scanForRobots(cloudApi.connectFamily, (msg) => this.setStatus(msg, 'info'));
+      // Fire the broadcast and every per-SN scan in parallel; aggregate
+      // and dedupe by SN. Each branch swallows its own errors so a
+      // single network blip doesn't sink the whole run.
+      const branches: Array<Promise<ScanResult[]>> = [
+        scanForRobots(cloudApi.connectFamily, (msg) => this.setStatus(msg, 'info')),
+        ...Array.from(targetSns).map((sn) =>
+          scanForRobots(cloudApi.connectFamily, undefined, sn).catch(() => [] as ScanResult[]),
+        ),
+      ];
+      const seen = new Map<string, ScanResult>();
+      const all = await Promise.all(branches);
+      for (const batch of all) {
+        for (const r of batch) {
+          if (r.sn && !seen.has(r.sn)) seen.set(r.sn, r);
+        }
+      }
+      const results = Array.from(seen.values());
       if (results.length === 0) {
         this.setStatus('No robots found on network', 'error');
         return;

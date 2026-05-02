@@ -5,6 +5,7 @@
  */
 
 import forge from 'node-forge';
+import { setCachedAesKey } from './aes-key-derive';
 
 const API_BASE = '/unitree-api';
 const FIRMWARE_CDN = 'https://firmware-cdn.unitree.com';
@@ -554,7 +555,13 @@ export class UnitreeCloudAPI {
   // ─── Devices ─────────────────────────────────────────────────────
 
   async listDevices(): Promise<RobotDevice[]> {
-    return (await this.get<RobotDevice[]>('device/bind/list')) || [];
+    const devices = (await this.get<RobotDevice[]>('device/bind/list')) || [];
+    // Prime the local AES-128 key cache from the cloud-stored keys so the
+    // WebRTC data2=3 path can pick them up without prompting the user.
+    for (const d of devices) {
+      if (d.sn && d.key && d.key.trim()) setCachedAesKey(d.sn, d.key.trim());
+    }
+    return devices;
   }
 
   /**

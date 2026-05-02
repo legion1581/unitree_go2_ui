@@ -139,12 +139,16 @@ export class App {
 
     // Auto-login: if a token is in localStorage, restore it and refresh
     // proactively so the persistent account-status icon shows the right
-    // state on first paint of the landing screen.
+    // state on first paint of the landing screen. Also prime the local
+    // AES-128 key cache from device/bind/list so WebRTC connect can
+    // skip the manual key prompt later.
     if (cloudApi.loadSession()) {
       void cloudApi.ensureFreshToken().then(async (ok) => {
-        if (ok && !cloudApi.user) {
+        if (!ok) return;
+        if (!cloudApi.user) {
           try { await cloudApi.getUserInfo(); } catch { /* ignore */ }
         }
+        try { await cloudApi.listDevices(); } catch { /* ignore */ }
       });
     }
 
