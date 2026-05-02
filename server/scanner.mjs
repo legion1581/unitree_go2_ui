@@ -31,6 +31,17 @@ const RECV_PORT = 10134;
 const DEFAULT_TIMEOUT = 3000;
 const HTTP_PORT = parseInt(process.env.SCANNER_PORT || '3001', 10);
 
+/** Best-effort family inference from the 16-char SN. Unitree SNs:
+ *    Go2: starts with B (e.g. B42D2000OBIB1F)
+ *    G1:  starts with E (e.g. E21D6000PBF9ELG5)
+ *  Returns null when we can't tell — those replies are let through. */
+function inferFamilyFromSn(sn) {
+  const c = sn?.[0]?.toUpperCase();
+  if (c === 'B') return 'Go2';
+  if (c === 'E') return 'G1';
+  return null;
+}
+
 /**
  * Perform a UDP multicast scan for a family of robots.
  * @param {'Go2' | 'G1'} family  Which multicast group set to use.
@@ -59,6 +70,14 @@ function scanForRobots(family = 'Go2', timeoutMs = DEFAULT_TIMEOUT, sn) {
         const data = JSON.parse(msg.toString());
         if (data.sn && data.ip && !seen.has(data.sn)) {
           if (sn && data.sn !== sn) return;
+          // Family filter: port 10134 is shared, so a Go2 announcement can
+          // arrive on a G1 scan (and vice versa). Drop replies whose SN
+          // prefix doesn't match the requested family.
+          const inferred = inferFamilyFromSn(data.sn);
+          if (inferred && inferred !== family) {
+            console.log(`[scanner] Dropping cross-family reply: requested=${family} sn=${data.sn} (looks like ${inferred})`);
+            return;
+          }
           seen.add(data.sn);
           results.push({ sn: data.sn, ip: data.ip });
           console.log(`[scanner] Found ${family} robot: SN=${data.sn} IP=${data.ip}`);

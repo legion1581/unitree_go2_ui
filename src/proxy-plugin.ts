@@ -32,6 +32,18 @@ function groupsForFamily(family: string): string[] {
   return FAMILY_GROUPS[family] || FAMILY_GROUPS.Go2;
 }
 
+// Best-effort family inference from the 16-char SN. Unitree SNs:
+//   Go2: starts with B (e.g. B42D2000OBIB1F)
+//   G1:  starts with E (e.g. E21D6000PBF9ELG5)
+// Returns null when we can't tell — those replies are let through so a new
+// SN format doesn't silently break discovery.
+function inferFamilyFromSn(sn: string): 'Go2' | 'G1' | null {
+  const c = sn?.[0]?.toUpperCase();
+  if (c === 'B') return 'Go2';
+  if (c === 'E') return 'G1';
+  return null;
+}
+
 function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT, sn?: string): Promise<Array<{ sn: string; ip: string }>> {
   const groups = groupsForFamily(family);
   const queryPayload = sn
@@ -56,6 +68,14 @@ function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT, sn?: st
           // anyone else (the multicast group can be shared with other
           // robots on the same LAN that respond to broadcast queries).
           if (sn && data.sn !== sn) return;
+          // Family filter: port 10134 is shared, so a Go2 announcement can
+          // arrive on a G1 scan (and vice versa). Drop replies whose SN
+          // prefix doesn't match the requested family.
+          const inferred = inferFamilyFromSn(data.sn);
+          if (inferred && inferred !== family) {
+            console.log(`[scanner] Dropping cross-family reply: requested=${family} sn=${data.sn} (looks like ${inferred})`);
+            return;
+          }
           seen.add(data.sn);
           results.push({ sn: data.sn, ip: data.ip });
           console.log(`[scanner] Found ${family} robot: SN=${data.sn} IP=${data.ip}`);
