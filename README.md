@@ -1,6 +1,6 @@
 # Unitree WebRTC UI
 
-A browser-based control interface for **Unitree Go2** and **Unitree G1** robots, communicating over the same WebRTC handshake the official mobile apps use. No jailbreak, no firmware modification, no phone app required.
+A browser-based control interface for **Unitree Go2** and **Unitree G1** robots, communicating over the same WebRTC connection the official mobile apps use. No jailbreak, no firmware modification, no phone app required.
 
 Built with TypeScript, Three.js, and Vite.
 
