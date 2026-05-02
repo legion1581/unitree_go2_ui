@@ -9,7 +9,12 @@ Built with TypeScript, Three.js, and Vite.
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 
 <p align="center">
-  <img src="images/landing.png" width="80%" />
+  <img src="images/webview_go2.png" width="90%" />
+</p>
+
+<p align="center">
+  <img src="images/connect_go2.png" width="44%" />
+  <img src="images/connect_g1.png" width="44%" />
 </p>
 
 ## Supported Robots
@@ -23,9 +28,9 @@ Built with TypeScript, Three.js, and Vite.
 ## Tour
 
 <p align="center">
-  <img src="images/connect_go2.png" width="32%" />
+  <img src="images/landing.png" width="32%" />
   <img src="images/hub.png" width="32%" />
-  <img src="images/webview_go2.png" width="32%" />
+  <img src="images/webview_g1.png" width="32%" />
 </p>
 
 <p align="center">
