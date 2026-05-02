@@ -5,6 +5,7 @@
  */
 
 import { btBackend } from '../../api/bt-backend';
+import { cloudApi } from '../../api/unitree-cloud';
 import { getCachedAesKey, setCachedAesKey } from '../../api/aes-key-derive';
 import { makeCopyButton } from './copy-button';
 
@@ -430,21 +431,26 @@ export class BtPage {
       if (!cached.info) infoRows.innerHTML = '<div style="color:#888;">Info unavailable</div>';
     });
 
-    // V3 info (G1 firmware 1.5.1+; not on Go2): module version + per-device GCM key for WebRTC auth.
-    // Both endpoints return `supported:false` on unsupported firmware; in that case we hide the section.
+    // V3 info (G1 firmware 1.5.1+ only — see docs/bluetooth-v3.md). Per
+    // the support table, V3 was never shipped on Go2 (any firmware), so
+    // we don't even build the V3 panel for Go2 — that avoids the
+    // backend firing F1/F2 BLE writes the robot will silently drop and
+    // keeps the BT-server logs quiet on V1/V2-only robots.
+    const probeV3 = cloudApi.connectFamily === 'G1';
     const v3Rows = document.createElement('div');
     v3Rows.style.cssText = 'font-size:11px;color:#888;margin-bottom:10px;font-family:monospace;line-height:1.6;';
-    if (!cached.v3Ver && !cached.v3Gcm) {
+    if (probeV3 && !cached.v3Ver && !cached.v3Gcm) {
       v3Rows.innerHTML = '<div style="color:#666;">V3 (loading…)</div>';
     }
-    this.robotBody.appendChild(v3Rows);
+    if (probeV3) this.robotBody.appendChild(v3Rows);
 
     // AES-128 paste field — only useful on V3 firmware. We mount a hidden
     // wrapper here and surface it once V3 is detected. The presence of a
-    // valid 32-hex key is what gates the WiFi form below.
+    // valid 32-hex key is what gates the WiFi form below. On Go2 (no V3
+    // ever), the AES gate is irrelevant — the WiFi form runs unencrypted.
     const aesGate = this.buildAesGate();
     aesGate.wrap.style.display = 'none';
-    this.robotBody.appendChild(aesGate.wrap);
+    if (probeV3) this.robotBody.appendChild(aesGate.wrap);
 
     const renderV3 = (gcm: V3KeyProbe, ver: V3Probe): void => {
       v3Supported = gcm.supported || ver.supported;
@@ -476,14 +482,20 @@ export class BtPage {
       aesGate.wrap.style.display = '';
     };
 
-    if (cached.v3Ver && cached.v3Gcm) renderV3(cached.v3Gcm, cached.v3Ver);
-    Promise.all([
-      this.fetchJSON<V3KeyProbe>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false }) as V3KeyProbe),
-      this.fetchJSON<V3Probe>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false }) as V3Probe),
-    ]).then(([gcm, ver]) => {
-      robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), v3Gcm: gcm, v3Ver: ver });
-      renderV3(gcm, ver);
-    });
+    if (probeV3) {
+      if (cached.v3Ver && cached.v3Gcm) renderV3(cached.v3Gcm, cached.v3Ver);
+      Promise.all([
+        this.fetchJSON<V3KeyProbe>('/v3/gcm-key', undefined, 6000).catch(() => ({ key: null, supported: false }) as V3KeyProbe),
+        this.fetchJSON<V3Probe>('/v3/version', undefined, 6000).catch(() => ({ version: null, supported: false }) as V3Probe),
+      ]).then(([gcm, ver]) => {
+        robotPanelCache.set(currentAddr, { ...(robotPanelCache.get(currentAddr) || {}), v3Gcm: gcm, v3Ver: ver });
+        renderV3(gcm, ver);
+      });
+    } else {
+      // Go2: short-circuit the gate state — V3 not supported, so the
+      // WiFi form ungate path treats this as a regular V1/V2 connection.
+      renderV3({ key: null, supported: false }, { version: null, supported: false });
+    }
 
     // WiFi config — gated on V3 firmware until a valid AES-128 key is provided.
     // The aesGate field above publishes its state via `aesGate.isReady()`; we
