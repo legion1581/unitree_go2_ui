@@ -19,10 +19,12 @@ Built with TypeScript, Three.js, and Vite.
 
 ## Supported Robots
 
-| Family | Auth |
-|--------|------|
-| **Go2** | `data2=1`, `data2=2` |
-| **G1**  | `data2=2`, `data2=3` — see [docs/connection.md](docs/connection.md#g1--151--aes-128-key-data23) |
+| Family | Firmware | Auth |
+|--------|----------|------|
+| **Go2** | 1.0.19 – 1.0.25 | `data2=1` |
+| **Go2** | 1.1.1 – 1.1.14 *(latest)* | `data2=2` |
+| **G1**  | 1.2.0 – 1.4.5 | `data2=2` |
+| **G1**  | 1.5.1+ *(latest)* | `data2=3` — see [docs/connection.md](docs/connection.md#g1--151--aes-128-key-data23) |
 
 ## Tour
 
