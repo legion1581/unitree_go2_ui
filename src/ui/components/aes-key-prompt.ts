@@ -2,9 +2,16 @@
  * Modal that asks the user for the 16-byte AES-128 key required to decrypt
  * a `data2 === 3` con_notify payload. Resolves with the trimmed hex string,
  * or rejects on cancel. Tied to a specific SN for caching downstream.
+ *
+ * `opts.previousKeyFailed` flips the modal into a "the previous key didn't
+ * decrypt" state so the user knows the cached / just-entered key was wrong
+ * and not just that the robot is rejecting them outright.
  */
+export interface AesKeyPromptOptions {
+  previousKeyFailed?: boolean;
+}
 
-export function promptAesKey(sn: string): Promise<string> {
+export function promptAesKey(sn: string, opts: AesKeyPromptOptions = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
@@ -15,8 +22,15 @@ export function promptAesKey(sn: string): Promise<string> {
 
     const title = document.createElement('div');
     title.style.cssText = 'font-size:14px;font-weight:600;margin-bottom:8px;';
-    title.textContent = 'AES-128 key required';
+    title.textContent = opts.previousKeyFailed ? 'AES-128 key didn’t decrypt — try again' : 'AES-128 key required';
     panel.appendChild(title);
+
+    if (opts.previousKeyFailed) {
+      const warn = document.createElement('div');
+      warn.style.cssText = 'font-size:12px;color:#ef9a9a;background:rgba(239,83,80,0.1);border:1px solid rgba(239,83,80,0.35);border-radius:6px;padding:6px 10px;margin-bottom:10px;';
+      warn.textContent = 'The previous key failed to decrypt the robot’s con_notify reply. Paste a different one — the bad key has been flushed from cache.';
+      panel.appendChild(warn);
+    }
 
     const sub = document.createElement('div');
     sub.style.cssText = 'font-size:12px;color:#9aa0aa;line-height:1.5;margin-bottom:12px;';

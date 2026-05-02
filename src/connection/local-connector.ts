@@ -4,13 +4,18 @@ import { loadPublicKey, rsaEncrypt } from '../crypto/rsa';
 import { LOCAL_PORT, LOCAL_OFFER_PORT } from './modes';
 import { WebRTCConnection } from './webrtc';
 import { cloudApi } from '../api/unitree-cloud';
-import { getCachedAesKey, setCachedAesKey } from '../api/aes-key-derive';
+import { getCachedAesKey, setCachedAesKey, clearCachedAesKey } from '../api/aes-key-derive';
 
 // Log prefix follows the active family at call time so a Go2 vs G1
 // connection attempt is distinguishable in DevTools.
 const tag = (): string => `[${cloudApi.connectFamily.toLowerCase()}]`;
 
-export type AesKeyPrompter = (sn: string) => Promise<string>;
+export interface AesKeyPromptOptions {
+  /** True when the previous key (cached or just-entered) failed to decrypt
+   *  the con_notify payload — the modal should surface that to the user. */
+  previousKeyFailed?: boolean;
+}
+export type AesKeyPrompter = (sn: string, opts?: AesKeyPromptOptions) => Promise<string>;
 
 function proxyUrl(path: string): string {
   return `/robot-api${path}`;
@@ -44,24 +49,41 @@ async function decryptData1(
     return await aesGcmDecrypt(resp.data1);
   }
   if (resp.data2 === 3) {
-    // Per-device AES-128 key required (G1 ≥ 1.5.1). Pull from cache; if the
-    // user hasn't derived one yet, ask via `promptKey` and cache the result.
-    const cached = sn ? getCachedAesKey(sn) : null;
-    let aesHex = cached;
-    if (!aesHex) {
-      if (!promptKey) {
-        throw new Error('data2=3 needs an AES-128 key. Open Account → device tile → "AES Key" to derive one for this SN.');
+    // Per-device AES-128 key required (G1 ≥ 1.5.1). Pull from cache first;
+    // if missing or wrong, prompt and retry. We give the user up to 3
+    // attempts before bubbling up the failure — a wrong key flushes the
+    // cache so the next visit doesn't auto-load the bad value.
+    const MAX_ATTEMPTS = 3;
+    let lastErr: Error | null = null;
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const fromCache = attempt === 0 && sn ? getCachedAesKey(sn) : null;
+      let aesHex = fromCache;
+      if (!aesHex) {
+        if (!promptKey) {
+          throw new Error('data2=3 needs an AES-128 key. Open Account → device tile → "AES Key" to derive one for this SN.');
+        }
+        aesHex = (await promptKey(sn, { previousKeyFailed: lastErr !== null })).trim();
+        if (!aesHex) throw new Error('AES-128 key required to decrypt con_notify');
+        if (sn) setCachedAesKey(sn, aesHex);
+        const note = lastErr ? 'AES-128 key (prompted again, previous key failed)' : 'AES-128 key (prompted)';
+        console.log(`${tag()} ${note} for SN ${sn || '<unknown>'} — cached for next time`);
+        onStep?.(`${note} — cached for SN ${sn || '<unknown>'}`);
+      } else {
+        console.log(`${tag()} AES-128 key loaded from localStorage cache for SN ${sn}`);
+        onStep?.(`AES-128 key from localStorage cache (SN ${sn})`);
       }
-      aesHex = (await promptKey(sn)).trim();
-      if (!aesHex) throw new Error('AES-128 key required to decrypt con_notify');
-      if (sn) setCachedAesKey(sn, aesHex);
-      console.log(`${tag()} AES-128 key prompted from user for SN ${sn || '<unknown>'} — cached for next time`);
-      onStep?.(`AES-128 key (prompted) — cached for SN ${sn || '<unknown>'}`);
-    } else {
-      console.log(`${tag()} AES-128 key loaded from localStorage cache for SN ${sn}`);
-      onStep?.(`AES-128 key from localStorage cache (SN ${sn})`);
+      try {
+        return await aesGcmDecrypt(resp.data1, hexToBytes(aesHex));
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        console.warn(`${tag()} AES-128 decrypt failed for SN ${sn || '<unknown>'} (${lastErr.message}) — flushing cached key, will reprompt`);
+        // The key (cached or just-entered) is wrong — flush it so a
+        // fresh attempt can collect a different one. Loop will reprompt
+        // unless we've exhausted attempts.
+        if (sn) clearCachedAesKey(sn);
+      }
     }
-    return await aesGcmDecrypt(resp.data1, hexToBytes(aesHex));
+    throw lastErr ?? new Error('AES-128 decrypt failed after retries');
   }
   return resp.data1;
 }

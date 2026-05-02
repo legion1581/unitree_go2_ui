@@ -1431,7 +1431,7 @@ export class App {
         if (!config.ip) throw new Error('IP address required');
         this.webrtc = await connectLocal(config.ip, config.mode, callbacks, onStep, {
           sn: config.serialNumber,
-          promptKey: (sn) => promptAesKey(sn),
+          promptKey: (sn, opts) => promptAesKey(sn, opts),
         });
       }
       this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
