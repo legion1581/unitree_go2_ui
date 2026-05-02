@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:host": "vite --host",
     "start": "bash start.sh",
     "start:no-ble": "bash start.sh --no-ble",
     "ble-server": "python3 server/ble_server.py",
