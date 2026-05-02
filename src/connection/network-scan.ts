@@ -15,15 +15,24 @@ export interface ScanResult {
   ip: string;
 }
 
-/** Scan for robots of the given family via the built-in UDP multicast scanner. */
+/** Scan for robots of the given family via the built-in UDP multicast scanner.
+ *  Pass `sn` to target a single robot by serial number — required for G1
+ *  firmware ≥ 1.5.1, which silently drops untargeted multicast queries
+ *  (see docs / multicast_responder.py). Without `sn`, only broadcast-
+ *  responsive firmwares (Go2 + G1 < 1.5.1) reply. */
 export async function scanForRobots(
   family: RobotFamily,
   onProgress?: (msg: string) => void,
+  sn?: string,
 ): Promise<ScanResult[]> {
-  onProgress?.(`Starting UDP multicast scan for ${family}...`);
+  onProgress?.(sn
+    ? `Starting UDP multicast scan for ${family} (SN ${sn})...`
+    : `Starting UDP multicast scan for ${family}...`);
 
   try {
-    const resp = await fetch(`/scan?family=${encodeURIComponent(family)}&timeout=3000`, {
+    const params = new URLSearchParams({ family, timeout: '3000' });
+    if (sn) params.set('sn', sn);
+    const resp = await fetch(`/scan?${params.toString()}`, {
       signal: AbortSignal.timeout(5000),
     });
 

@@ -18,6 +18,8 @@ export class ConnectionPanel {
   private ipInput!: HTMLInputElement;
   private connectBtn!: HTMLButtonElement;
   private scanBtn!: HTMLButtonElement;
+  private scanSnInput!: HTMLInputElement;
+  private scanSnBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
   private robotPickerGroup!: HTMLElement;
   private robotSelect!: HTMLSelectElement;
@@ -82,6 +84,10 @@ export class ConnectionPanel {
           <input type="text" id="ip-input" placeholder="192.168.12.1" />
           <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
         </div>
+        <div class="ip-row" style="margin-top:8px;">
+          <input type="text" id="scan-sn-input" placeholder="Robot SN (for G1 firmware ≥ 1.5.1)" autocomplete="off" spellcheck="false" />
+          <button id="scan-sn-btn" class="btn-scan" title="Targeted scan by SN — required for G1 firmware ≥ 1.5.1">Scan by SN</button>
+        </div>
         <div id="scan-results" class="scan-results" style="display:none;"></div>
       </div>
       <div class="form-group" id="robot-picker-group" style="display:none">
@@ -96,6 +102,8 @@ export class ConnectionPanel {
     this.ipInput = this.container.querySelector('#ip-input')!;
     this.connectBtn = this.container.querySelector('#connect-btn')!;
     this.scanBtn = this.container.querySelector('#scan-btn')!;
+    this.scanSnInput = this.container.querySelector('#scan-sn-input')!;
+    this.scanSnBtn = this.container.querySelector('#scan-sn-btn')!;
     this.statusEl = this.container.querySelector('#connection-status')!;
     this.robotPickerGroup = this.container.querySelector('#robot-picker-group')!;
     this.robotSelect = this.container.querySelector('#robot-select')!;
@@ -144,6 +152,7 @@ export class ConnectionPanel {
     const handleEnter = (e: KeyboardEvent) => { if (e.key === 'Enter') { e.preventDefault(); this.handleConnect(); } };
     this.container.addEventListener('keydown', handleEnter);
     this.scanBtn.addEventListener('click', () => this.handleScan());
+    this.scanSnBtn.addEventListener('click', () => this.handleScanBySn());
     this.robotSelect.addEventListener('change', () => {
       this.selectedSn = this.robotSelect.value;
     });
@@ -286,6 +295,43 @@ export class ConnectionPanel {
         email: '',
         password: '',
       });
+    }
+  }
+
+  /** SN-targeted scan, required for G1 firmware ≥ 1.5.1 — that build of
+   *  multicast_responder.py drops queries whose `sn` doesn't match the
+   *  robot's own. The unfiltered Scan still works on Go2 and G1 < 1.5.1. */
+  private async handleScanBySn(): Promise<void> {
+    const sn = this.scanSnInput.value.trim();
+    if (!sn) {
+      this.setStatus('Enter a robot SN first.', 'error');
+      this.scanSnInput.focus();
+      return;
+    }
+    this.scanSnBtn.disabled = true;
+    this.scanSnBtn.textContent = '...';
+    this.setStatus(`Scanning for SN ${sn}...`, 'info');
+    this.renderScanResults([]);
+    try {
+      const results = await scanForRobots(
+        cloudApi.connectFamily,
+        (msg) => this.setStatus(msg, 'info'),
+        sn,
+      );
+      if (results.length === 0) {
+        this.setStatus(`No reply from ${sn} on the local network.`, 'error');
+        return;
+      }
+      const only = results[0];
+      this.ipInput.value = only.ip;
+      this.modeSelect.value = 'STA-L';
+      this.updateVisibility();
+      this.setStatus(`Found ${sn} at ${only.ip}`, 'success');
+    } catch (err) {
+      this.setStatus('Scan failed: ' + (err instanceof Error ? err.message : 'unknown'), 'error');
+    } finally {
+      this.scanSnBtn.disabled = false;
+      this.scanSnBtn.textContent = 'Scan by SN';
     }
   }
 

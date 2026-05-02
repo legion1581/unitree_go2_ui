@@ -6,17 +6,21 @@ import dgram from 'node:dgram';
 // ── UDP Multicast Scanner (embedded) ──
 //
 // Wire protocol — same on Go2 and G1, only the multicast group(s) differ:
-//   * Send query to QUERY_PORT (10131): {"name":"unitree_dapengche"}
+//   * Send query to QUERY_PORT (10131): {"name":"unitree_dapengche"[,"sn":"..."]}
 //   * Receive response on RECV_PORT (10134): {sn, ip, ...}
 //
 // Multicast groups per family:
 //   * Go2: 231.1.1.1                       (server/scanner.mjs original)
 //   * G1:  231.1.1.2 + 239.255.1.1         (multicast_responder.py on the
 //                                          robot at /unitree/.../webrtc_dds_bridge/)
+//
+// G1 firmware ≥ 1.5.1 added an SN filter to multicast_responder.py: the
+// robot drops queries whose `sn` field doesn't match its own. To reach
+// those robots, callers must pass `sn` here so it gets embedded in the
+// outgoing payload. Queries without `sn` still work on Go2 and G1<1.5.1.
 
 const QUERY_PORT = 10131;
 const RECV_PORT = 10134;
-const QUERY_MSG = JSON.stringify({ name: 'unitree_dapengche' });
 const DEFAULT_SCAN_TIMEOUT = 3000;
 
 const FAMILY_GROUPS: Record<string, string[]> = {
@@ -28,8 +32,11 @@ function groupsForFamily(family: string): string[] {
   return FAMILY_GROUPS[family] || FAMILY_GROUPS.Go2;
 }
 
-function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT): Promise<Array<{ sn: string; ip: string }>> {
+function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT, sn?: string): Promise<Array<{ sn: string; ip: string }>> {
   const groups = groupsForFamily(family);
+  const queryPayload = sn
+    ? JSON.stringify({ name: 'unitree_dapengche', sn })
+    : JSON.stringify({ name: 'unitree_dapengche' });
   return new Promise((resolve, reject) => {
     const results: Array<{ sn: string; ip: string }> = [];
     const seen = new Set<string>();
@@ -45,6 +52,10 @@ function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT): Promis
       try {
         const data = JSON.parse(msg.toString());
         if (data.sn && data.ip && !seen.has(data.sn)) {
+          // SN filter: when targeting a specific robot, drop replies from
+          // anyone else (the multicast group can be shared with other
+          // robots on the same LAN that respond to broadcast queries).
+          if (sn && data.sn !== sn) return;
           seen.add(data.sn);
           results.push({ sn: data.sn, ip: data.ip });
           console.log(`[scanner] Found ${family} robot: SN=${data.sn} IP=${data.ip}`);
@@ -58,7 +69,7 @@ function scanForRobots(family: string, timeoutMs = DEFAULT_SCAN_TIMEOUT): Promis
       }
 
       const sender = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-      const buf = Buffer.from(QUERY_MSG);
+      const buf = Buffer.from(queryPayload);
       let sent = 0;
       const sendQuery = (): void => {
         // Query every group in the family in parallel each iteration.
@@ -97,9 +108,10 @@ export function robotProxyPlugin(): Plugin {
         if (url.pathname === '/scan' && req.method === 'GET') {
           const timeout = parseInt(url.searchParams.get('timeout') || String(DEFAULT_SCAN_TIMEOUT), 10);
           const family = url.searchParams.get('family') || 'Go2';
-          console.log(`[scanner] Scan requested (family=${family}, timeout=${timeout}ms)`);
+          const sn = url.searchParams.get('sn') || undefined;
+          console.log(`[scanner] Scan requested (family=${family}, timeout=${timeout}ms${sn ? `, sn=${sn}` : ''})`);
 
-          scanForRobots(family, timeout)
+          scanForRobots(family, timeout, sn)
             .then((robots) => {
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({ robots }));
