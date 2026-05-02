@@ -78,14 +78,14 @@ export class ConnectionPanel {
         <div id="remote-hint" class="conn-remote-hint" style="display:none;"></div>
       </div>
       <div class="form-group" id="ip-group">
+        <div id="scan-sn-row" style="margin-bottom:10px;display:none;">
+          <label for="scan-sn-input">Robot SN (>=v1.5.1)</label>
+          <input type="text" id="scan-sn-input" placeholder="e.g. B42D2000OBIB1F" autocomplete="off" spellcheck="false" />
+        </div>
         <label for="ip-input">Robot IP Address</label>
         <div class="ip-row">
           <input type="text" id="ip-input" placeholder="192.168.12.1" />
-          <button id="scan-btn" class="btn-scan" title="Scan network">Scan</button>
-        </div>
-        <div id="scan-sn-row" class="form-group" style="margin-top:8px;display:none;">
-          <label for="scan-sn-input">Robot SN (>=v1.5.1)</label>
-          <input type="text" id="scan-sn-input" placeholder="e.g. B42D2000OBIB1F" autocomplete="off" spellcheck="false" />
+          <button id="scan-btn" class="btn-scan" title="Scan network (broadcast + per-SN sweep for known devices)">Scan</button>
         </div>
         <div id="scan-results" class="scan-results" style="display:none;"></div>
       </div>
@@ -303,11 +303,18 @@ export class ConnectionPanel {
       // 192.168.12.1 is hardcoded so storing it is harmless but the
       // STA-L IP is the value that actually changes per network.
       if (ip) try { localStorage.setItem('unitree_last_ip', ip); } catch { /* ignore */ }
+      // Thread the SN through so the local connector can look up the
+      // cached AES-128 key on the data2=3 path (G1 ≥ 1.5.1). Sources,
+      // in order: typed value → first cloud-bound device of this family
+      // → empty (connector will fall back to promptKey).
+      const typedSn = this.scanSnInput.value.trim();
+      const familyDevs = this.devices.filter((d) => d.series === cloudApi.connectFamily);
+      const sn = typedSn || (familyDevs.length === 1 ? familyDevs[0].sn : '');
       this.onConnect({
         mode,
         ip,
         token: '',
-        serialNumber: '',
+        serialNumber: sn,
         email: '',
         password: '',
       });
