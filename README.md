@@ -49,7 +49,9 @@ npm run start          # Vite + Python BLE server together
 npm run start:no-ble   # Vite only, no Bluetooth features
 ```
 
-Open <http://localhost:5173> in **Chrome** (recommended). To expose the UI to other devices on your LAN (e.g. open it from your phone), use `npm run dev:host` instead — Vite will print a `Network:` URL alongside the local one.
+`npm run start` and `npm run start:no-ble` already bind Vite to all interfaces, so the terminal will print both a `Local:` (`http://localhost:5173`) and a `Network:` (`http://192.168.x.x:5173`) URL — open the Local one on this machine, the Network one from your phone or another device on the same WiFi. Use **Chrome** (recommended).
+
+If you want Vite by itself (no BLE backend), `npm run dev` is localhost-only; `npm run dev:host` is the LAN-exposed equivalent.
 
 The dev server includes hot module replacement, a built-in UDP multicast scanner (no separate process needed), and proxies for the robot API, Unitree cloud API, and BLE server.
 
