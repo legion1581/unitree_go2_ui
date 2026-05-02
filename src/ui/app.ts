@@ -945,10 +945,11 @@ export class App {
       imu_state?: { temperature?: number; rpy?: number[] };
     };
 
-    // Debug: dump the lowstate keys + raw bms_state on the first frame
-    // and once every ~5s after that, so we can verify the Go2 BMS shape
-    // without flooding the console at the lowstate ~50 Hz tick.
+    // Debug: dump the FULL lowstate payload on first arrival and once
+    // every ~5 s after that (so we can spot where Go2 stashes the
+    // voltage — bms_state alone doesn't expose it on the user's robot).
     this.logLowStateSample(data);
+
 
     if (d.motor_state) {
       if (this.scene3d) this.scene3d.robotModel.updateMotorState(d.motor_state);
@@ -999,23 +1000,17 @@ export class App {
         this.mappingPage?.setBattery(bms.soc);
       }
       if (typeof bms.current === 'number') this.robotState.batteryCurrent = bms.current;
-      // Voltage shapes:
-      //   * Go2 lowstate.bms_state.voltage    — scalar pack voltage (mV)
-      //   * Go2 lowstate.bms_state.bmsvoltage — per-CELL array (~4.1 V each),
-      //     not pack — don't conflate with pack_voltage.
-      //   * G1  bmsstate.pack_voltage / .bat_voltage — scalars (mV).
+      if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
+      // Voltage: G1 ships pack_voltage/bat_voltage; Go2 ships voltage.
       const pack = typeof bms.pack_voltage === 'number' ? bms.pack_voltage : undefined;
       const bat  = typeof bms.bat_voltage  === 'number' ? bms.bat_voltage  : undefined;
       const voltage = typeof bms.voltage   === 'number' ? bms.voltage      : undefined;
       if (pack !== undefined) this.robotState.batteryPackVoltage = pack;
       if (bat !== undefined) this.robotState.batteryBatVoltage = bat;
-      // G1 prefers pack_voltage; Go2 only has the scalar `voltage`.
       const v = pack ?? voltage ?? bat;
       if (v !== undefined) this.robotState.batteryVoltage = v;
-      if (typeof bms.cycle === 'number') this.robotState.batteryCycles = bms.cycle;
-      // Temps: Go2 ships `temperature: [t0..t11]`; some firmwares use `temps`.
-      // BatteryDataViewmodel.kt indexes 0=MOS, 2=BAT1, 3=RES (label set
-      // confirmed against the G1 apk; Go2 uses the same array shape).
+      // Temps: G1 ships `temperature: [MOS, _, BAT1, RES, ...]`;
+      // Go2 ships `bq_ntc: [t1,t2]` + `mcu_ntc: [t1,t2]`.
       const tempsArr = Array.isArray(bms.temperature) ? bms.temperature
                      : Array.isArray(bms.temps)       ? bms.temps
                      : null;
@@ -1023,6 +1018,11 @@ export class App {
         const numericTemps = (tempsArr as unknown[]).filter((t): t is number => typeof t === 'number');
         this.robotState.batteryTemps = numericTemps;
         if (numericTemps.length > 0) this.robotState.batteryTemp = numericTemps[0];
+      } else {
+        const bq  = Array.isArray(bms.bq_ntc)  ? (bms.bq_ntc  as unknown[]).filter((t): t is number => typeof t === 'number') : [];
+        const mcu = Array.isArray(bms.mcu_ntc) ? (bms.mcu_ntc as unknown[]).filter((t): t is number => typeof t === 'number') : [];
+        const all = [...bq, ...mcu];
+        if (all.length > 0) this.robotState.batteryTemp = Math.max(...all);
       }
     }
 
@@ -1047,10 +1047,10 @@ export class App {
     }
   }
 
-  /** Log the raw lowstate payload on first arrival and then once every
-   *  ~5s, so the console doesn't drown in 50 Hz ticks. The first frame
-   *  prints the entire payload (helpful for finding where BMS lives on
-   *  a new firmware); subsequent dumps print just the bms_state slice. */
+  /** Log the FULL lowstate payload on first arrival and every ~5 s
+   *  after that, so the console doesn't drown in 50 Hz ticks but we
+   *  can still see every key (not just bms_state) when chasing where
+   *  a particular field lives on a given firmware. */
   private logLowStateSample(data: unknown): void {
     const now = Date.now();
     if (!this.lowStateLogged) {
@@ -1058,13 +1058,12 @@ export class App {
       this.lowStateLogLast = now;
       const d = data as Record<string, unknown>;
       console.log('[lowstate] first frame — top-level keys:', Object.keys(d));
-      console.log('[lowstate] full payload:', JSON.stringify(data, null, 2));
+      console.log('[lowstate] first frame — full payload:', JSON.stringify(data, null, 2));
       return;
     }
     if (now - this.lowStateLogLast < 5000) return;
     this.lowStateLogLast = now;
-    const bms = (data as { bms_state?: unknown }).bms_state;
-    console.log('[lowstate] bms_state sample:', JSON.stringify(bms));
+    console.log('[lowstate] sample (full payload):', JSON.stringify(data));
   }
 
   // G1's pelvis ("Crotch") IMU rides on rt/lf/secondary_imu as a flat
