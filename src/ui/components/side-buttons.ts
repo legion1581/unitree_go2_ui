@@ -25,6 +25,14 @@ const RELAY_SVG = (color: string) => `<svg width="26" height="26" viewBox="0 0 2
   <circle cx="18" cy="13" r="1.8" fill="${color}" stroke="none"/>
 </svg>`;
 
+// Gamepad icon — controller with sticks and a plus sign
+const GAMEPAD_SVG = (color: string) => `<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 9 C3.5 9, 2.5 12.5, 3.5 16 C4 17.5, 5.5 18.5, 7.5 18 L10.5 16.5 L15.5 16.5 L18.5 18 C20.5 18.5, 22 17.5, 22.5 16 C23.5 12.5, 22.5 9, 20 9 Z"/>
+  <circle cx="9" cy="13" r="1.6" fill="${color}" stroke="none"/>
+  <circle cx="17" cy="13" r="1.6" fill="${color}" stroke="none"/>
+  <path d="M12.5 11v5M10 13.5h5" stroke-width="1.3"/>
+</svg>`;
+
 // Waist-lock padlock icon (G1)
 const WAIST_LOCK_SVG = (color: string) => `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <rect x="4" y="11" width="16" height="10" rx="2"/>
@@ -39,6 +47,7 @@ export interface SettingCallbacks {
   onVolumeSet: (level: number) => void;
   onLidarToggle: (enabled: boolean) => void;
   onRelayToggle: (enabled: boolean) => void;
+  onGamepadToggle: (enabled: boolean) => void;
   /** Optional Waist-Lock toggle — only rendered when handler is provided
    *  (G1 only). The flag indicates the desired locked state. */
   onWaistLockToggle?: (lock: boolean) => void;
@@ -62,6 +71,10 @@ export class SettingBar {
   private remoteName = '';
   private volumeLevel = 0;
   private lampLevel = 0;
+  private gamepadBtn!: HTMLButtonElement;
+  private gamepadOn = false;
+  private gamepadAvailable = false;
+  private gamepadName = '';
   private callbacks: SettingCallbacks;
 
   constructor(parent: HTMLElement, callbacks: SettingCallbacks) {
@@ -145,6 +158,20 @@ export class SettingBar {
     });
     this.container.appendChild(this.relayBtn);
 
+    // Gamepad button (disabled until a USB/wireless gamepad is detected)
+    this.gamepadBtn = this.createSvgBtn(GAMEPAD_SVG('#444'), 'Gamepad');
+    this.gamepadBtn.disabled = true;
+    this.gamepadBtn.title = 'Plug in a USB/wireless gamepad to enable';
+    this.gamepadBtn.style.cursor = 'not-allowed';
+    this.gamepadBtn.style.opacity = '0.5';
+    this.gamepadBtn.addEventListener('click', () => {
+      if (!this.gamepadAvailable) return;
+      this.gamepadOn = !this.gamepadOn;
+      this.updateGamepadVisual();
+      callbacks.onGamepadToggle(this.gamepadOn);
+    });
+    this.container.appendChild(this.gamepadBtn);
+
     parent.appendChild(this.container);
   }
 
@@ -188,6 +215,41 @@ export class SettingBar {
         : `Relay OFF — click to relay${nameSuffix}`;
     }
     this.relayBtn.title = tooltip;
+  }
+
+  /** Called when a USB/wireless gamepad is connected or disconnected. */
+  setGamepadAvailable(available: boolean, name: string = ''): void {
+    this.gamepadAvailable = available;
+    this.gamepadName = name;
+    if (!available && this.gamepadOn) {
+      this.gamepadOn = false;
+      this.callbacks.onGamepadToggle(false);
+    }
+    this.gamepadBtn.disabled = !available;
+    this.gamepadBtn.style.cursor = available ? 'pointer' : 'not-allowed';
+    this.gamepadBtn.style.opacity = available ? '1' : '0.5';
+    this.updateGamepadVisual();
+  }
+
+  setGamepadActive(active: boolean): void {
+    this.gamepadOn = active;
+    this.updateGamepadVisual();
+  }
+
+  private updateGamepadVisual(): void {
+    const color = !this.gamepadAvailable ? '#444' : (this.gamepadOn ? '#42CF55' : '#ccc');
+    this.gamepadBtn.innerHTML = GAMEPAD_SVG(color);
+
+    let tooltip: string;
+    if (!this.gamepadAvailable) {
+      tooltip = 'Plug in a USB/wireless gamepad to enable';
+    } else {
+      const nameSuffix = this.gamepadName ? ` (${this.gamepadName})` : '';
+      tooltip = this.gamepadOn
+        ? `Gamepad ON — controlling robot via${nameSuffix}`
+        : `Gamepad OFF — click to use${nameSuffix}`;
+    }
+    this.gamepadBtn.title = tooltip;
   }
 
   setRadar(enabled: boolean): void {
