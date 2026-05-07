@@ -235,13 +235,17 @@ export function robotProxyPlugin(): Plugin {
             // the proper Content-Encoding header, which makes the browser parse
             // them as binary JSON. Forcing identity avoids the ambiguity.
             headers['accept-encoding'] = 'identity';
-            // Remove headers that leak browser/proxy origin
+            // Remove headers that leak browser/proxy origin or bloat the request
             delete headers['sec-fetch-site'];
             delete headers['sec-fetch-mode'];
             delete headers['sec-fetch-dest'];
             delete headers['sec-ch-ua'];
             delete headers['sec-ch-ua-mobile'];
             delete headers['sec-ch-ua-platform'];
+            // Never forward browser cookies — they are unrelated to the upstream
+            // API (which uses the Token header for auth) and can cause nginx to
+            // reject the request with "400 Request Header Or Cookie Too Large".
+            delete headers['cookie'];
 
             const proxyReq = https.request(
               {
