@@ -41,8 +41,8 @@ Built with TypeScript, Three.js, and Vite.
 ## Quick Start
 
 ```bash
-git clone https://github.com/legion1581/unitree_go2_ui.git
-cd unitree_go2_ui
+git clone https://github.com/legion1581/unitree_ui.git
+cd unitree_ui
 npm install
 npm run start          # Vite + Python BLE server together
 # or:
