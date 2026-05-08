@@ -755,10 +755,12 @@ html[data-theme="light"] .auth-tab.active {
 }
 
 
-/* ── Emergency Stop (APK: swipe-left to activate) ── */
+/* ── Emergency Stop (APK: swipe-left to activate) ──
+   Sits below the setting bar AND clears the input-source picker popup
+   (which hangs from the setting bar and is capped at ~2 rows tall). */
 .emergency-stop {
   position: absolute;
-  top: 142px;
+  top: 240px;
   right: 0;
   height: 28px;
   background-color: #ff4848;

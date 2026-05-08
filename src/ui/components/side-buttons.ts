@@ -242,6 +242,10 @@ export class SettingBar {
       gap: '2px',
       zIndex: '30',
       minWidth: '220px',
+      // Cap height to ~2 rows; anything more scrolls. Keeps the popup clear
+      // of the e-stop slider that lives just below the setting bar.
+      maxHeight: '92px',
+      overflowY: 'auto',
       boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
     });
 
