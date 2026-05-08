@@ -5,7 +5,7 @@ import { GamepadManager } from './components/gamepad-manager';
 import { NavBar } from './components/status-bar';
 import { ActionBar } from './components/action-bar';
 import { PipCamera } from './components/pip-camera';
-import { SettingBar, EmergencyStop } from './components/side-buttons';
+import { SettingBar, EmergencyStop, type InputSource } from './components/side-buttons';
 import { StatusPage } from './components/status-page';
 import { ServicesPage, type ServiceEntry } from './components/services-page';
 import { MappingPage } from './components/mapping-page';
@@ -72,8 +72,9 @@ export class App {
     remoteConnected: false, remoteName: '', remoteAddress: '',
   };
 
-  // BT remote relay state
-  private relayOn = false;
+  // Active input-source state (BT relay or USB/HID gamepad — mutually
+  // exclusive; null = on-screen joysticks).
+  private activeSourceId: string | null = null;
   private relayUnsub: (() => void) | null = null;
   private leftJoystickWrap: HTMLElement | null = null;
   private rightJoystickWrap: HTMLElement | null = null;
@@ -82,9 +83,8 @@ export class App {
   // Drives where the back button returns to (mirrors accountFromLanding).
   private btFromLanding = false;
 
-  // Gamepad (USB / wired / Xbox / etc.) state
+  // Gamepad (USB / wired / Xbox / etc.) detection state
   private gamepadManager: GamepadManager | null = null;
-  private gamepadOn = false;
   private gamepadConnected = false;
   private gamepadName = '';
 
@@ -134,9 +134,11 @@ export class App {
       // Update mapping page's inline BT icon if present.
       this.mappingPage?.setBtStatus(s);
       if (this.currentScreen === 'control') {
-        const label = s.remoteName || s.remoteAddress;
-        this.settingBar?.setRelayAvailable(s.remoteConnected, label);
-        if (!s.remoteConnected && this.relayOn) this.setRelay(false);
+        this.refreshInputSources();
+        // If the active BT remote dropped out, fall back to on-screen joysticks.
+        if (!s.remoteConnected && this.activeSourceId?.startsWith('bt:')) {
+          this.setActiveInputSource(null);
+        }
       }
     });
 
@@ -155,17 +157,20 @@ export class App {
       });
     }
 
-    // USB / wired gamepad detection (Gamepad API)
+    // USB / wired gamepad detection (Gamepad API). Long-lived: scans for
+    // pads across reconnects, so we only tear it down when the page unloads.
     this.gamepadManager = new GamepadManager((connected, id) => {
       this.gamepadConnected = connected;
       this.gamepadName = id;
-      if (!connected && this.gamepadOn) {
-        this.setGamepadRelay(false);
-      }
       if (this.currentScreen === 'control') {
-        this.settingBar?.setGamepadAvailable(connected, id);
+        this.refreshInputSources();
+      }
+      // If the active gamepad disappeared, fall back to on-screen joysticks.
+      if (!connected && this.activeSourceId?.startsWith('gamepad:')) {
+        this.setActiveInputSource(null);
       }
     });
+    window.addEventListener('beforeunload', () => this.gamepadManager?.destroy());
 
     this.showLandingScreen();
   }
@@ -393,13 +398,12 @@ export class App {
       onLidarToggle: (enabled) => this.sendLidarToggle(enabled),
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
-      onRelayToggle: (enabled) => this.setRelay(enabled),
-      onGamepadToggle: (enabled) => this.setGamepadRelay(enabled),
+      onInputSourceSelect: (id) => this.setActiveInputSource(id),
       onWaistLockToggle: (lock) => this.sendWaistLock(lock),
     });
-    this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
-    this.settingBar.setGamepadAvailable(this.gamepadConnected, this.gamepadName);
-    if (this.gamepadOn) {
+    this.refreshInputSources();
+    if (this.activeSourceId !== null) {
+      // Active source still selected → keep on-screen joysticks hidden.
       if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
       if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
     }
@@ -575,7 +579,7 @@ export class App {
   private goToHub(): void {
     // Clean up control UI resources without disconnecting
     this.stopJoystickLoop();
-    this.setRelay(false);
+    this.setActiveInputSource(null);
     this.btPage?.destroy();
     this.btPage = null;
     this.stopBgNoise();
@@ -728,16 +732,17 @@ export class App {
 
   private startJoystickLoop(): void {
     this.joystickTimer = setInterval(() => {
-      // Gamepad takes priority when enabled
-      if (this.gamepadOn && this.gamepadManager?.currentState) {
+      // Gamepad active → publish its state on the same 20 Hz cadence.
+      if (this.activeSourceId?.startsWith('gamepad:') && this.gamepadManager?.currentState) {
         const { lx, ly, rx, ry, keys } = this.gamepadManager.currentState;
         if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || keys !== 0) {
           this.dataHandler?.publish(RTC_TOPIC.WIRELESS_CONTROLLER, { lx, ly, rx, ry, keys });
         }
         return;
       }
-      // BLE relay handles its own publishing
-      if (this.relayOn) return;
+      // BT relay subscribes to remote_state and publishes itself, so skip.
+      if (this.activeSourceId?.startsWith('bt:')) return;
+      // Default: on-screen joysticks.
       const { lx, ly, rx, ry } = this.joystickState;
       if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0) {
         this.dataHandler?.publish(RTC_TOPIC.WIRELESS_CONTROLLER, { lx, ly, rx, ry });
@@ -765,54 +770,75 @@ export class App {
     this.navBar.setBluetoothStatus(connected, tooltip);
   }
 
-  // ── BT Remote Relay Loop ──
+  // ── Input Source (BT relay or USB/HID gamepad) ──
 
-  private setRelay(enabled: boolean): void {
-    if (enabled) {
-      if (this.relayUnsub) return;
-      this.relayOn = true;
-      if (this.gamepadOn) this.setGamepadRelay(false); // mutually exclusive
-      // Zero virtual joystick state and hide them — BT remote is in charge
-      this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
-      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
-      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
-
-      // Subscribe to BT backend remote_state → publish to robot on every packet (~20 Hz)
-      const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
-      this.relayUnsub = btBackend().subscribe('remote_state', (s: { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> }) => {
-        if (!this.dataHandler) return;
-        let keys = 0;
-        for (let i = 0; i < order.length; i++) {
-          if (s.buttons[order[i]]) keys |= (1 << i);
-        }
-        this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
-          lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
-        });
+  /** Build the picker source list from current BT + gamepad availability and
+   *  push it to the SettingBar. Each "kind" currently has at most one entry
+   *  (backend constraint); when that grows the list just gets longer. */
+  private refreshInputSources(): void {
+    const sources: InputSource[] = [];
+    if (this.btStatus.remoteConnected) {
+      const label = this.btStatus.remoteName || this.btStatus.remoteAddress || 'BLE remote';
+      sources.push({
+        id: `bt:${this.btStatus.remoteAddress || 'unknown'}`,
+        kind: 'bt',
+        label,
       });
-    } else {
-      this.relayOn = false;
-      this.relayUnsub?.();
-      this.relayUnsub = null;
-      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
-      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
     }
+    if (this.gamepadConnected) {
+      sources.push({
+        id: 'gamepad:0',
+        kind: 'gamepad',
+        label: this.gamepadName || 'USB / wireless gamepad',
+      });
+    }
+    this.settingBar?.setInputSources(sources);
+    this.settingBar?.setActiveInputSource(this.activeSourceId);
   }
 
-  private setGamepadRelay(enabled: boolean): void {
-    if (enabled) {
-      if (this.gamepadOn) return;
-      this.gamepadOn = true;
-      if (this.relayOn) this.setRelay(false); // mutually exclusive with BLE relay
+  /** Switch the active input source. Pass null to fall back to on-screen
+   *  joysticks. Tears down the previous source's subscription / state. */
+  private setActiveInputSource(id: string | null): void {
+    if (id === this.activeSourceId) return;
+
+    // Tear down the previous source.
+    if (this.activeSourceId?.startsWith('bt:')) {
+      this.relayUnsub?.();
+      this.relayUnsub = null;
+    }
+    // (Gamepad has no per-activation subscription — just stops being read.)
+
+    this.activeSourceId = id;
+
+    if (id === null) {
+      // Restore on-screen joysticks.
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
+    } else {
+      // Hide on-screen joysticks; zero their state to be safe.
       this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
       if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
       if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
-    } else {
-      this.gamepadOn = false;
-      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
-      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
+
+      if (id.startsWith('bt:')) {
+        // Subscribe to BT backend remote_state → publish on every packet (~20 Hz).
+        const order = ['R1','L1','Start','Select','R2','L2','F1','F2','A','B','X','Y','Up','Right','Down','Left'];
+        this.relayUnsub = btBackend().subscribe('remote_state', (s: { lx: number; ly: number; rx: number; ry: number; buttons: Record<string, boolean> }) => {
+          if (!this.dataHandler) return;
+          let keys = 0;
+          for (let i = 0; i < order.length; i++) {
+            if (s.buttons[order[i]]) keys |= (1 << i);
+          }
+          this.dataHandler.publish(RTC_TOPIC.WIRELESS_CONTROLLER, {
+            lx: s.lx, ly: s.ly, rx: s.rx, ry: s.ry, keys,
+          });
+        });
+      }
+      // Gamepad path: startJoystickLoop reads gamepadManager.currentState directly.
     }
+
     if (this.currentScreen === 'control') {
-      this.settingBar?.setGamepadActive(this.gamepadOn);
+      this.settingBar?.setActiveInputSource(this.activeSourceId);
     }
   }
 
@@ -1559,8 +1585,7 @@ export class App {
     const wasRemote = this.connectionConfig?.mode === 'STA-T';
 
     this.stopJoystickLoop();
-    this.setRelay(false);
-    this.setGamepadRelay(false);
+    this.setActiveInputSource(null);
     this.stopBgNoise();
     this.dataHandler?.destroy();
     this.dataHandler = null;
