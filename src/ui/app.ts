@@ -1,6 +1,7 @@
 import type { ConnectionCallbacks, ConnectionConfig, ConnectionState, DataChannelMessage } from '../types';
 import { ConnectionPanel } from './connection-panel';
 import { Joystick } from './components/joystick';
+import { GamepadManager } from './components/gamepad-manager';
 import { NavBar } from './components/status-bar';
 import { ActionBar } from './components/action-bar';
 import { PipCamera } from './components/pip-camera';
@@ -81,6 +82,12 @@ export class App {
   // Drives where the back button returns to (mirrors accountFromLanding).
   private btFromLanding = false;
 
+  // Gamepad (USB / wired / Xbox / etc.) state
+  private gamepadManager: GamepadManager | null = null;
+  private gamepadOn = false;
+  private gamepadConnected = false;
+  private gamepadName = '';
+
   // Robot state (accumulated from topic messages)
   private robotState: import('./components/status-page').RobotStatus = {
     batteryPercent: 0,
@@ -147,6 +154,18 @@ export class App {
         try { await cloudApi.listDevices(); } catch { /* ignore */ }
       });
     }
+
+    // USB / wired gamepad detection (Gamepad API)
+    this.gamepadManager = new GamepadManager((connected, id) => {
+      this.gamepadConnected = connected;
+      this.gamepadName = id;
+      if (!connected && this.gamepadOn) {
+        this.setGamepadRelay(false);
+      }
+      if (this.currentScreen === 'control') {
+        this.settingBar?.setGamepadAvailable(connected, id);
+      }
+    });
 
     this.showLandingScreen();
   }
@@ -375,9 +394,15 @@ export class App {
       onLampSet: (level) => this.sendLamp(level),
       onVolumeSet: (level) => this.sendVolume(level),
       onRelayToggle: (enabled) => this.setRelay(enabled),
+      onGamepadToggle: (enabled) => this.setGamepadRelay(enabled),
       onWaistLockToggle: (lock) => this.sendWaistLock(lock),
     });
     this.settingBar.setRelayAvailable(this.btStatus.remoteConnected, this.btStatus.remoteName || this.btStatus.remoteAddress);
+    this.settingBar.setGamepadAvailable(this.gamepadConnected, this.gamepadName);
+    if (this.gamepadOn) {
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
+    }
 
     // Emergency stop
     new EmergencyStop(this.controlUi, (active) => this.sendStop(active));
@@ -703,6 +728,16 @@ export class App {
 
   private startJoystickLoop(): void {
     this.joystickTimer = setInterval(() => {
+      // Gamepad takes priority when enabled
+      if (this.gamepadOn && this.gamepadManager?.currentState) {
+        const { lx, ly, rx, ry, keys } = this.gamepadManager.currentState;
+        if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0 || keys !== 0) {
+          this.dataHandler?.publish(RTC_TOPIC.WIRELESS_CONTROLLER, { lx, ly, rx, ry, keys });
+        }
+        return;
+      }
+      // BLE relay handles its own publishing
+      if (this.relayOn) return;
       const { lx, ly, rx, ry } = this.joystickState;
       if (lx !== 0 || ly !== 0 || rx !== 0 || ry !== 0) {
         this.dataHandler?.publish(RTC_TOPIC.WIRELESS_CONTROLLER, { lx, ly, rx, ry });
@@ -736,6 +771,7 @@ export class App {
     if (enabled) {
       if (this.relayUnsub) return;
       this.relayOn = true;
+      if (this.gamepadOn) this.setGamepadRelay(false); // mutually exclusive
       // Zero virtual joystick state and hide them — BT remote is in charge
       this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
       if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
@@ -759,6 +795,24 @@ export class App {
       this.relayUnsub = null;
       if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
       if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
+    }
+  }
+
+  private setGamepadRelay(enabled: boolean): void {
+    if (enabled) {
+      if (this.gamepadOn) return;
+      this.gamepadOn = true;
+      if (this.relayOn) this.setRelay(false); // mutually exclusive with BLE relay
+      this.joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = 'hidden';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = 'hidden';
+    } else {
+      this.gamepadOn = false;
+      if (this.leftJoystickWrap) this.leftJoystickWrap.style.visibility = '';
+      if (this.rightJoystickWrap) this.rightJoystickWrap.style.visibility = '';
+    }
+    if (this.currentScreen === 'control') {
+      this.settingBar?.setGamepadActive(this.gamepadOn);
     }
   }
 
@@ -1506,6 +1560,7 @@ export class App {
 
     this.stopJoystickLoop();
     this.setRelay(false);
+    this.setGamepadRelay(false);
     this.stopBgNoise();
     this.dataHandler?.destroy();
     this.dataHandler = null;
