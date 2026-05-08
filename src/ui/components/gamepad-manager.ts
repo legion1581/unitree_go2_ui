@@ -95,6 +95,20 @@ export class GamepadManager {
   };
 
   private attach(gp: Gamepad): void {
+    // The button index → bitmask in poll() assumes the W3C "Standard
+    // Gamepad" layout. Non-standard pads (most generic HID joysticks,
+    // flight sticks, racing wheels) report mapping === '' and the button
+    // bits we send to the robot will be wrong. Sticks usually still work
+    // because axes 0–3 are conventionally LX/LY/RX/RY.
+    if (gp.mapping !== 'standard') {
+      console.warn(
+        `[gamepad] "${gp.id}" reported mapping="${gp.mapping || '(empty)'}" — `
+        + 'button bits may not match the robot\'s remote layout. Sticks should '
+        + 'still work. To get correct button mapping, remap the device to a '
+        + 'Standard Gamepad (Steam Input / DS4Windows / xboxdrv).'
+      );
+    }
+
     this.gamepadIndex = gp.index;
     this.reportedConnected = true;
     if (!this.polling) {

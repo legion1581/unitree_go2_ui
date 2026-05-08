@@ -157,7 +157,8 @@ export class App {
       });
     }
 
-    // USB / wired gamepad detection (Gamepad API)
+    // USB / wired gamepad detection (Gamepad API). Long-lived: scans for
+    // pads across reconnects, so we only tear it down when the page unloads.
     this.gamepadManager = new GamepadManager((connected, id) => {
       this.gamepadConnected = connected;
       this.gamepadName = id;
@@ -169,6 +170,7 @@ export class App {
         this.setActiveInputSource(null);
       }
     });
+    window.addEventListener('beforeunload', () => this.gamepadManager?.destroy());
 
     this.showLandingScreen();
   }
