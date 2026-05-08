@@ -41,13 +41,22 @@ const WAIST_LOCK_SVG = (color: string) => `<svg width="24" height="24" viewBox="
 
 import type { RobotFamily } from '../../api/unitree-cloud';
 
+export type InputSourceKind = 'bt' | 'gamepad';
+
+export interface InputSource {
+  /** Stable id, e.g. `bt:AA:BB:CC` or `gamepad:0`. Used for selection. */
+  id: string;
+  kind: InputSourceKind;
+  label: string;
+}
+
 export interface SettingCallbacks {
   onRadarToggle: (enabled: boolean) => void;
   onLampSet: (level: number) => void;
   onVolumeSet: (level: number) => void;
   onLidarToggle: (enabled: boolean) => void;
-  onRelayToggle: (enabled: boolean) => void;
-  onGamepadToggle: (enabled: boolean) => void;
+  /** Activate a specific input source by id, or pass null to deactivate. */
+  onInputSourceSelect: (id: string | null) => void;
   /** Optional Waist-Lock toggle — only rendered when handler is provided
    *  (G1 only). The flag indicates the desired locked state. */
   onWaistLockToggle?: (lock: boolean) => void;
@@ -63,18 +72,13 @@ export class SettingBar {
   private radarBtn!: HTMLButtonElement;
   private volumeBtn!: HTMLButtonElement;
   private lampBtn!: HTMLButtonElement;
-  private relayBtn!: HTMLButtonElement;
+  private inputSourceBtn!: HTMLButtonElement;
   private waistLockBtn: HTMLButtonElement | null = null;
   private waistLocked = false;
-  private relayOn = false;
-  private relayAvailable = false;
-  private remoteName = '';
   private volumeLevel = 0;
   private lampLevel = 0;
-  private gamepadBtn!: HTMLButtonElement;
-  private gamepadOn = false;
-  private gamepadAvailable = false;
-  private gamepadName = '';
+  private inputSources: InputSource[] = [];
+  private activeSourceId: string | null = null;
   private callbacks: SettingCallbacks;
 
   constructor(parent: HTMLElement, callbacks: SettingCallbacks) {
@@ -144,33 +148,18 @@ export class SettingBar {
       this.container.appendChild(this.waistLockBtn);
     }
 
-    // Relay Remote button (disabled until remote is connected)
-    this.relayBtn = this.createSvgBtn(RELAY_SVG('#444'), 'Relay Remote');
-    this.relayBtn.disabled = true;
-    this.relayBtn.title = 'Connect a BLE remote to enable relay';
-    this.relayBtn.style.cursor = 'not-allowed';
-    this.relayBtn.style.opacity = '0.5';
-    this.relayBtn.addEventListener('click', () => {
-      if (!this.relayAvailable) return;
-      this.relayOn = !this.relayOn;
-      this.updateRelayVisual();
-      callbacks.onRelayToggle(this.relayOn);
+    // Unified input-source button. Disabled while no BT remote / gamepad is
+    // available. Click opens a picker showing every connected source so the
+    // user can choose which one drives the robot (mutually exclusive).
+    this.inputSourceBtn = this.createSvgBtn(RELAY_SVG('#444'), 'Input Source');
+    this.inputSourceBtn.disabled = true;
+    this.inputSourceBtn.style.position = 'relative';
+    this.inputSourceBtn.addEventListener('click', () => {
+      if (this.inputSources.length === 0) return;
+      this.toggleSourcePicker();
     });
-    this.container.appendChild(this.relayBtn);
-
-    // Gamepad button (disabled until a USB/wireless gamepad is detected)
-    this.gamepadBtn = this.createSvgBtn(GAMEPAD_SVG('#444'), 'Gamepad');
-    this.gamepadBtn.disabled = true;
-    this.gamepadBtn.title = 'Plug in a USB/wireless gamepad to enable';
-    this.gamepadBtn.style.cursor = 'not-allowed';
-    this.gamepadBtn.style.opacity = '0.5';
-    this.gamepadBtn.addEventListener('click', () => {
-      if (!this.gamepadAvailable) return;
-      this.gamepadOn = !this.gamepadOn;
-      this.updateGamepadVisual();
-      callbacks.onGamepadToggle(this.gamepadOn);
-    });
-    this.container.appendChild(this.gamepadBtn);
+    this.container.appendChild(this.inputSourceBtn);
+    this.updateInputSourceVisual();
 
     parent.appendChild(this.container);
   }
@@ -186,70 +175,170 @@ export class SettingBar {
     else this.waistLockBtn.appendChild(lbl);
   }
 
-  /** Called when BLE remote connection status changes. */
-  setRelayAvailable(available: boolean, remoteName: string = ''): void {
-    this.relayAvailable = available;
-    this.remoteName = remoteName;
-    if (!available && this.relayOn) {
-      // Auto-disable relay if remote got disconnected
-      this.relayOn = false;
-      this.callbacks.onRelayToggle(false);
+  /** Push the full list of currently-available input sources (BT remotes,
+   *  USB/HID gamepads, …). Pass an empty list to mark no source available. */
+  setInputSources(sources: InputSource[]): void {
+    this.inputSources = sources.slice();
+    // If the active source vanished, the App layer is responsible for calling
+    // setActiveInputSource(null). We just refresh visuals & open picker.
+    this.updateInputSourceVisual();
+    // Re-render picker rows if it's open.
+    const popup = this.inputSourceBtn.querySelector('.source-picker') as HTMLElement | null;
+    if (popup) {
+      this.renderSourcePickerRows(popup);
     }
-    this.relayBtn.disabled = !available;
-    this.relayBtn.style.cursor = available ? 'pointer' : 'not-allowed';
-    this.relayBtn.style.opacity = available ? '1' : '0.5';
-    this.updateRelayVisual();
   }
 
-  private updateRelayVisual(): void {
-    const color = !this.relayAvailable ? '#444' : (this.relayOn ? '#42CF55' : '#ccc');
-    this.relayBtn.innerHTML = RELAY_SVG(color);
+  /** Mark which source is currently driving the robot (or null = none). */
+  setActiveInputSource(id: string | null): void {
+    this.activeSourceId = id;
+    this.updateInputSourceVisual();
+  }
+
+  private updateInputSourceVisual(): void {
+    const available = this.inputSources.length > 0;
+    const active = this.activeSourceId !== null
+      && this.inputSources.some(s => s.id === this.activeSourceId);
+
+    const color = !available ? '#444' : (active ? '#42CF55' : '#ccc');
+    this.inputSourceBtn.innerHTML = RELAY_SVG(color);
+    this.inputSourceBtn.disabled = !available;
+    this.inputSourceBtn.style.cursor = available ? 'pointer' : 'not-allowed';
+    this.inputSourceBtn.style.opacity = available ? '1' : '0.5';
 
     let tooltip: string;
-    if (!this.relayAvailable) {
-      tooltip = 'Connect a BLE remote to enable relay';
+    if (!available) {
+      tooltip = 'Connect a BLE remote or plug in a USB/wireless gamepad';
+    } else if (active) {
+      const src = this.inputSources.find(s => s.id === this.activeSourceId);
+      tooltip = src
+        ? `Active: ${src.label} — click to switch / disable`
+        : 'Input source active — click to switch';
     } else {
-      const nameSuffix = this.remoteName ? ` (${this.remoteName})` : '';
-      tooltip = this.relayOn
-        ? `Relay ON — controlling robot via${nameSuffix}`
-        : `Relay OFF — click to relay${nameSuffix}`;
+      tooltip = `Click to choose remote (${this.inputSources.length} available)`;
     }
-    this.relayBtn.title = tooltip;
+    this.inputSourceBtn.title = tooltip;
   }
 
-  /** Called when a USB/wireless gamepad is connected or disconnected. */
-  setGamepadAvailable(available: boolean, name: string = ''): void {
-    this.gamepadAvailable = available;
-    this.gamepadName = name;
-    if (!available && this.gamepadOn) {
-      this.gamepadOn = false;
-      this.callbacks.onGamepadToggle(false);
+  private toggleSourcePicker(): void {
+    const existing = this.inputSourceBtn.querySelector('.source-picker');
+    if (existing) {
+      existing.remove();
+      return;
     }
-    this.gamepadBtn.disabled = !available;
-    this.gamepadBtn.style.cursor = available ? 'pointer' : 'not-allowed';
-    this.gamepadBtn.style.opacity = available ? '1' : '0.5';
-    this.updateGamepadVisual();
+
+    const popup = document.createElement('div');
+    popup.className = 'source-picker';
+    Object.assign(popup.style, {
+      position: 'absolute',
+      top: '100%',
+      right: '0',
+      marginTop: '8px',
+      background: '#1a1d23',
+      borderRadius: '8px',
+      padding: '6px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '2px',
+      zIndex: '30',
+      minWidth: '220px',
+      boxShadow: '0 4px 16px rgba(0, 0, 0, 0.4)',
+    });
+
+    this.renderSourcePickerRows(popup);
+    this.inputSourceBtn.appendChild(popup);
+
+    const close = (e: MouseEvent) => {
+      if (!popup.contains(e.target as Node) && !this.inputSourceBtn.contains(e.target as Node)) {
+        popup.remove();
+        document.removeEventListener('click', close);
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        popup.remove();
+        document.removeEventListener('click', close);
+        document.removeEventListener('keydown', onKey);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener('click', close);
+      document.addEventListener('keydown', onKey);
+    }, 0);
   }
 
-  setGamepadActive(active: boolean): void {
-    this.gamepadOn = active;
-    this.updateGamepadVisual();
-  }
+  private renderSourcePickerRows(popup: HTMLElement): void {
+    popup.innerHTML = '';
 
-  private updateGamepadVisual(): void {
-    const color = !this.gamepadAvailable ? '#444' : (this.gamepadOn ? '#42CF55' : '#ccc');
-    this.gamepadBtn.innerHTML = GAMEPAD_SVG(color);
-
-    let tooltip: string;
-    if (!this.gamepadAvailable) {
-      tooltip = 'Plug in a USB/wireless gamepad to enable';
-    } else {
-      const nameSuffix = this.gamepadName ? ` (${this.gamepadName})` : '';
-      tooltip = this.gamepadOn
-        ? `Gamepad ON — controlling robot via${nameSuffix}`
-        : `Gamepad OFF — click to use${nameSuffix}`;
+    if (this.inputSources.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No remotes available';
+      Object.assign(empty.style, { color: '#888', padding: '8px', fontSize: '12px' });
+      popup.appendChild(empty);
+      return;
     }
-    this.gamepadBtn.title = tooltip;
+
+    for (const source of this.inputSources) {
+      const isActive = source.id === this.activeSourceId;
+      const row = document.createElement('button');
+      row.type = 'button';
+      Object.assign(row.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '8px 10px',
+        border: 'none',
+        borderRadius: '6px',
+        background: isActive ? 'rgba(66, 207, 85, 0.15)' : 'transparent',
+        color: '#eee',
+        cursor: 'pointer',
+        textAlign: 'left',
+        font: 'inherit',
+      });
+      row.addEventListener('mouseenter', () => {
+        if (!isActive) row.style.background = 'rgba(255,255,255,0.06)';
+      });
+      row.addEventListener('mouseleave', () => {
+        if (!isActive) row.style.background = 'transparent';
+      });
+
+      const icon = document.createElement('span');
+      icon.style.display = 'inline-flex';
+      icon.style.flex = '0 0 auto';
+      const iconColor = isActive ? '#42CF55' : '#aaa';
+      icon.innerHTML = source.kind === 'gamepad' ? GAMEPAD_SVG(iconColor) : RELAY_SVG(iconColor);
+      // Shrink row icon
+      const svgEl = icon.querySelector('svg');
+      if (svgEl) { svgEl.setAttribute('width', '20'); svgEl.setAttribute('height', '20'); }
+      row.appendChild(icon);
+
+      const label = document.createElement('span');
+      label.textContent = source.label;
+      label.style.flex = '1';
+      label.style.fontSize = '13px';
+      row.appendChild(label);
+
+      const status = document.createElement('span');
+      status.textContent = isActive ? 'ON' : '';
+      Object.assign(status.style, {
+        color: '#42CF55',
+        fontSize: '11px',
+        fontWeight: '600',
+        letterSpacing: '0.5px',
+      });
+      row.appendChild(status);
+
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Click same source → deactivate; click different → switch.
+        const newId = isActive ? null : source.id;
+        popup.remove();
+        this.callbacks.onInputSourceSelect(newId);
+      });
+
+      popup.appendChild(row);
+    }
   }
 
   setRadar(enabled: boolean): void {
