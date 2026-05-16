@@ -89,7 +89,7 @@ npm run build && npm run preview
 | [Connection](docs/connection.md) | Family selection, STA-L / AP / Remote modes, network scan, AES-128 key flow for G1 ≥ 1.5.1 |
 | [Control View](docs/control.md) | Joysticks, action bar, modes, sport command IDs, BLE remote relay |
 | [Robot Status](docs/status.md) | Battery / motor / IMU / system panels for both families |
-| [Errors](docs/errors.md) | Fault wire protocol, source/code catalog, badge / popover / page UI |
+| [Error Handling](docs/error-handling.md) | Fault wire protocol, Go2 + G1 source/code catalog, badge / popover / page UI |
 | [Service Manager](docs/services.md) | MCF service list, protection flag, start/stop |
 | [Account Manager](docs/account.md) | Cloud sign-in, devices, tutorials, debug console |
 | [Bluetooth](docs/bluetooth.md) | Robot provisioning + remote pairing overview |
