@@ -22,10 +22,14 @@ import { promptAesKey } from './components/aes-key-prompt';
 import { connectRemote, loginWithEmail } from '../connection/remote-connector';
 import { DataChannelHandler } from '../protocol/data-channel';
 import { RTC_TOPIC, SPORT_CMD, DATA_CHANNEL_TYPE } from '../protocol/topics';
+import { ErrorStore } from '../protocol/error-store';
+import { ErrorsBadge } from './components/errors-badge';
+import { ErrorToastHost } from './components/error-toast';
+import { ErrorsPage } from './components/errors-page';
 import type { WebRTCConnection } from '../connection/webrtc';
 import type { Scene3D } from './scene/scene';
 
-type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account' | 'bt';
+type Screen = 'landing' | 'connection' | 'hub' | 'control' | 'status' | 'services' | 'mapping' | 'account' | 'bt' | 'errors';
 
 export class App {
   private root: HTMLElement;
@@ -62,6 +66,12 @@ export class App {
   // Joystick state
   private joystickState = { lx: 0, ly: 0, rx: 0, ry: 0 };
   private joystickTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Robot fault tracking — single store, lives across reconnects; cleared on disconnect.
+  private errorStore = new ErrorStore();
+  private errorToastHost: ErrorToastHost | null = null;
+  private errorsBadgeFloating: ErrorsBadge | null = null;
+  private errorsPage: ErrorsPage | null = null;
 
   // Bluetooth status (persistent across screens)
   private btStatusIcon: BtStatusIcon | null = null;
@@ -124,6 +134,14 @@ export class App {
     // Pure status display: hover for tooltip, no click action.
     this.accountStatusIcon = new AccountStatusIcon(document.body);
 
+    // Persistent error toast host + floating error badge. The toast host renders
+    // bottom-right slide-in notifications on `add_error` deltas (snapshot replays
+    // are silent). The floating badge appears top-right whenever the active error
+    // set is non-empty, except on the control screen where the inline NavBar
+    // badge takes over.
+    this.errorToastHost = new ErrorToastHost(document.body, this.errorStore);
+    this.errorsBadgeFloating = new ErrorsBadge(document.body, this.errorStore, 'floating');
+
     // Persistent Bluetooth status icon (mounted on document.body so it survives
     // screen changes). Hidden on the control view where the relay icon takes over.
     this.btStatusIcon = new BtStatusIcon(document.body);
@@ -185,6 +203,7 @@ export class App {
     this.root.className = 'app-root landing-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
 
     const wrap = document.createElement('div');
     wrap.className = 'landing-container';
@@ -231,6 +250,7 @@ export class App {
     this.applyConnectionFamilyClass();
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
 
     const modal = document.createElement('div');
     modal.className = 'connection-modal';
@@ -264,6 +284,7 @@ export class App {
     this.root.className = 'app-root hub-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
 
     const hub = document.createElement('div');
     hub.className = 'hub-container';
@@ -321,6 +342,14 @@ export class App {
     else statusBtn.disabled = true;
     btnRow.appendChild(statusBtn);
 
+    // Errors
+    const errorsBtn = document.createElement('button');
+    errorsBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
+    errorsBtn.innerHTML = `<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><span>Errors</span>`;
+    if (!needsWebRTC) errorsBtn.addEventListener('click', () => this.showErrorsScreen());
+    else errorsBtn.disabled = true;
+    btnRow.appendChild(errorsBtn);
+
     // Services
     const svcBtn = document.createElement('button');
     svcBtn.className = `hub-btn ${needsWebRTC ? 'hub-btn-disabled' : 'hub-btn-secondary'}`;
@@ -365,6 +394,7 @@ export class App {
     this.root.className = 'app-root control-screen';
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
     this.accountStatusIcon?.setVisible(false);
+    this.errorsBadgeFloating?.setVisible(false);
 
     // Overlay container
     this.controlUi = document.createElement('div');
@@ -376,7 +406,7 @@ export class App {
     // Nav bar (top) — back goes to hub, not disconnect.
     // BT icon is a passive status indicator (matches the floating one);
     // the actual BT controls live on the landing-page Bluetooth tile.
-    this.navBar = new NavBar(this.controlUi, () => this.goToHub());
+    this.navBar = new NavBar(this.controlUi, () => this.goToHub(), this.errorStore);
     this.updateNavBarBtIcon();
 
     // PIP camera. The PIP bubble swaps the 3D scene and the camera between
@@ -475,6 +505,7 @@ export class App {
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
 
     this.statusPage = new StatusPage(this.root, this.robotState, () => this.goToHub(), {
       mode: this.connectionConfig?.mode,
@@ -489,6 +520,7 @@ export class App {
     this.root.className = 'app-root services-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
 
     this.servicesPage = new ServicesPage(
       this.root,
@@ -505,6 +537,17 @@ export class App {
     this.requestServiceReport();
   }
 
+  private showErrorsScreen(): void {
+    this.currentScreen = 'errors';
+    this.root.innerHTML = '';
+    this.root.className = 'app-root errors-screen';
+    this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
+    this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
+
+    this.errorsPage = new ErrorsPage(this.root, this.errorStore, () => this.goToHub());
+  }
+
   private showMappingScreen(): void {
     this.currentScreen = 'mapping';
     this.root.innerHTML = '';
@@ -514,6 +557,7 @@ export class App {
     // don't overlap.
     this.btStatusIcon?.setVisible(false); this.themeToggle?.setVisible(false);
     this.accountStatusIcon?.setVisible(false);
+    this.errorsBadgeFloating?.setVisible(false);
 
     this.mappingPage = new MappingPage(
       this.root,
@@ -561,6 +605,7 @@ export class App {
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
     const back = this.accountFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
     this.accountPage = new AccountPage(this.root, back);
   }
@@ -571,6 +616,7 @@ export class App {
     this.root.className = 'app-root status-screen';
     this.btStatusIcon?.setVisible(true); this.themeToggle?.setVisible(true);
     this.accountStatusIcon?.setVisible(true);
+    this.errorsBadgeFloating?.setVisible(true);
     this.btPage?.destroy();
     const back = this.btFromLanding ? () => this.showLandingScreen() : () => this.goToHub();
     this.btPage = new BtPage(this.root, back);
@@ -592,6 +638,7 @@ export class App {
     this.scene3d = null;
     this.statusPage = null;
     this.servicesPage = null;
+    this.errorsPage = null;
     this.mappingPage?.destroy();
     this.mappingPage = null;
     this.accountPage?.destroy();
@@ -1515,6 +1562,10 @@ export class App {
         });
       }
       this.dataHandler = new DataChannelHandler(this.webrtc, callbacks);
+      // Wire the error-message handler immediately — the robot sends its first
+      // "errors" snapshot the same tick as "Validation Ok.", which is BEFORE
+      // the onValidated callback runs. Don't wait for validation here.
+      this.dataHandler.onErrorMessage = (type, data) => this.errorStore.applyWireMessage(type, data);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Connection failed';
       this.connectionPanel?.setStatus(message, 'error');
@@ -1601,6 +1652,8 @@ export class App {
     this.settingBar = null;
     this.statusPage = null;
     this.servicesPage = null;
+    this.errorsPage = null;
+    this.errorStore.clear();
     this.mappingPage?.destroy();
     this.mappingPage = null;
     this.accountPage?.destroy();

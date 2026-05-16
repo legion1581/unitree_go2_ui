@@ -2907,10 +2907,11 @@ html[data-theme="light"] .svc-btn-waiting {
   border-color: #d4d9e4;
 }
 
-/* Push the page-header badge away from the floating theme + BT icons
-   (they sit at the top-right corner, so reserve ~90px of space) */
+/* Push the page-header badge away from the floating top-right icons.
+   The cluster (BT, theme, account, errors) currently spans ~182px from the
+   viewport edge; reserve a hair more so the count chip never collides. */
 .page-header-badge {
-  margin-right: 90px;
+  margin-right: 195px;
 }
 
 /* Battery text is hardcoded white — force a readable color on light bg
@@ -3165,5 +3166,169 @@ html[data-theme="light"] .mapping-notification {
   border-color: #c4cbd6;
   color: #1a1d23;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* ── Errors Page ── */
+.app-root.errors-screen {
+  background: #0f1114;
+  overflow: hidden;
+}
+
+.errors-page {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.errors-empty {
+  padding: 64px 20px;
+  text-align: center;
+  color: #555;
+  font-size: 13px;
+}
+
+.errors-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.errors-section {
+  background: rgba(26, 29, 35, 0.5);
+  border: 1px solid #1f2229;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.errors-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255, 61, 61, 0.06);
+  border-bottom: 1px solid rgba(255, 61, 61, 0.18);
+}
+
+.errors-section-source {
+  font-size: 13px;
+  font-weight: 600;
+  color: #FF6B6B;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.errors-section-code {
+  font-family: monospace;
+  font-size: 11px;
+  color: #888;
+  background: rgba(0, 0, 0, 0.25);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.errors-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-top: 1px solid rgba(26, 29, 35, 0.6);
+  gap: 12px;
+}
+
+.errors-row:first-of-type {
+  border-top: none;
+}
+
+.errors-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.errors-row-label {
+  font-size: 13px;
+  color: #e0e0e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.errors-row-code {
+  font-family: monospace;
+  font-size: 11px;
+  color: #b0b3bb;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+
+.errors-row-time {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.errors-row-time-abs {
+  font-size: 12px;
+  color: #c8ccd4;
+  font-family: monospace;
+}
+
+.errors-row-time-rel {
+  font-size: 10.5px;
+  color: #6a6f7a;
+}
+
+/* Light theme */
+html[data-theme="light"] .app-root.errors-screen {
+  background: #f4f6fb;
+}
+
+html[data-theme="light"] .errors-page {
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .errors-empty {
+  color: #8b92a0;
+}
+
+html[data-theme="light"] .errors-section {
+  background: #ffffff;
+  border-color: #d4d9e4;
+}
+
+html[data-theme="light"] .errors-section-heading {
+  background: rgba(255, 61, 61, 0.06);
+  border-bottom-color: rgba(255, 61, 61, 0.22);
+}
+
+html[data-theme="light"] .errors-row {
+  border-top-color: #e8ebf2;
+}
+
+html[data-theme="light"] .errors-row-label {
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .errors-row-code {
+  color: #5a6075;
+  background: #f1f3f8;
+  border-color: #d4d9e4;
+}
+
+html[data-theme="light"] .errors-row-time-abs {
+  color: #1a1d23;
+}
+
+html[data-theme="light"] .errors-row-time-rel {
+  color: #8b92a0;
 }
 

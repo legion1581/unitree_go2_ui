@@ -1,5 +1,7 @@
 import { theme } from '../theme';
 import { cloudApi } from '../../api/unitree-cloud';
+import type { ErrorStore } from '../../protocol/error-store';
+import { ErrorsBadge } from './errors-badge';
 
 const BT_SVG = (color: string) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
   <path d="M6.5 6.5 17.5 17.5 12 23V1l5.5 5.5L6.5 17.5"/>
@@ -35,14 +37,28 @@ export class NavBar {
   private themeIconWrap!: HTMLElement;
   private unsubTheme: () => void = () => {};
   private onBack: () => void;
+  private errorsBadge: ErrorsBadge | null = null;
 
-  constructor(parent: HTMLElement, onBack: () => void) {
+  constructor(parent: HTMLElement, onBack: () => void, errorStore?: ErrorStore) {
     this.onBack = onBack;
 
     this.container = document.createElement('div');
     this.container.className = 'nav-bar';
     this.build();
     parent.appendChild(this.container);
+
+    // Mount the inline error badge into the right-side cluster, just before
+    // the theme toggle. Visible only when active error count > 0.
+    // Clicking the badge opens an anchored popover (handled internally).
+    if (errorStore) {
+      const slot = this.container.querySelector('.nav-bar-right')!;
+      const themeIcon = slot.querySelector('.nav-theme-icon')!;
+      this.errorsBadge = new ErrorsBadge(slot as HTMLElement, errorStore, 'inline');
+      // Move the badge just before the theme icon so layout reads
+      // … wifi · [badge] · theme · bt
+      slot.insertBefore(this.errorsBadge.element, themeIcon);
+      this.errorsBadge.setVisible(true);
+    }
   }
 
   private build(): void {
@@ -106,6 +122,8 @@ export class NavBar {
 
   destroy(): void {
     this.unsubTheme();
+    this.errorsBadge?.destroy();
+    this.errorsBadge = null;
   }
 
   setBattery(percent: number): void {

@@ -129,6 +129,8 @@ export const DATA_CHANNEL_TYPE = {
   AUD: 'aud',
   ERR: 'err',
   ERRORS: 'errors',
+  ADD_ERROR: 'add_error',
+  RM_ERROR: 'rm_error',
   HEARTBEAT: 'heartbeat',
   RTC_INNER_REQ: 'rtc_inner_req',
   RTC_REPORT: 'rtc_report',

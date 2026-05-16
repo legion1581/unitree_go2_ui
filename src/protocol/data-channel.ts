@@ -11,6 +11,8 @@ export class DataChannelHandler {
   lastValidationKey: string = '';
   /** App-level handler for topic data messages (set by App after construction). */
   onTopicData: ((msg: DataChannelMessage) => void) | null = null;
+  /** App-level handler for "errors" / "add_error" / "rm_error" wire messages. */
+  onErrorMessage: ((type: string, data: unknown) => void) | null = null;
 
   constructor(webrtc: WebRTCConnection, callbacks: ConnectionCallbacks) {
     this.webrtc = webrtc;
@@ -67,9 +69,18 @@ export class DataChannelHandler {
       return;
     }
 
-    // Silently ignore heartbeat echoes and error messages
+    // Silently ignore heartbeat echoes
     if (msg.type === DATA_CHANNEL_TYPE.HEARTBEAT) return;
-    if (msg.type === DATA_CHANNEL_TYPE.ERRORS) return;
+
+    // Robot fault messages — snapshot + per-fault deltas (add_error / rm_error)
+    if (
+      msg.type === DATA_CHANNEL_TYPE.ERRORS ||
+      msg.type === DATA_CHANNEL_TYPE.ADD_ERROR ||
+      msg.type === DATA_CHANNEL_TYPE.RM_ERROR
+    ) {
+      this.onErrorMessage?.(msg.type, msg.data);
+      return;
+    }
 
     // Forward topic data to the app-level handler (avoids recursive loop with callbacks.onMessage)
     if (this.onTopicData) {

@@ -72,6 +72,7 @@ npm run build && npm run preview
 - **Real-time 3D viewport** — robot model with live joint angles, lidar spinning animation, voxel point cloud (Go2 SLAM).
 - **Camera + dual joystick control** — PIP video, on-screen joysticks, action carousel for sport commands and modes.
 - **Robot status** — battery, motors (temp / position / torque / lost packets), IMU, LiDAR, system info — family-aware fields for Go2 and G1.
+- **Error handling** — live decoding of firmware fault messages with snapshot + delta reconciliation; NavBar badge with active-count chip, click-anchored popover, transient toast on new faults, and a grouped full-screen list of every active error.
 - **Service manager** — list MCF services, start / stop with protection handling.
 - **Account manager** — Unitree cloud account: devices, firmware, tutorials, sharing, raw debug API console.
 - **3D LiDAR Mapping (SLAM)** — Go2 only: build maps, localize, navigate, patrol, auto-dock and charge; local IndexedDB cache + zip import/export.
@@ -88,6 +89,7 @@ npm run build && npm run preview
 | [Connection](docs/connection.md) | Family selection, STA-L / AP / Remote modes, network scan, AES-128 key flow for G1 ≥ 1.5.1 |
 | [Control View](docs/control.md) | Joysticks, action bar, modes, sport command IDs, BLE remote relay |
 | [Robot Status](docs/status.md) | Battery / motor / IMU / system panels for both families |
+| [Errors](docs/errors.md) | Fault wire protocol, source/code catalog, badge / popover / page UI |
 | [Service Manager](docs/services.md) | MCF service list, protection flag, start/stop |
 | [Account Manager](docs/account.md) | Cloud sign-in, devices, tutorials, debug console |
 | [Bluetooth](docs/bluetooth.md) | Robot provisioning + remote pairing overview |
